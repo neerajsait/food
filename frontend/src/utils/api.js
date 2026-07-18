@@ -1,9 +1,11 @@
 // API client for communicating with the Flask backend.
 // Implements a Mock Fallback Mode using localStorage if the backend is unreachable.
 
-export const API_BASE_URL = (window.location.port === "5173" || window.location.port === "5174" || window.location.port === "3000")
-  ? `${window.location.protocol}//${window.location.hostname}:5000/api`
-  : `${window.location.protocol}//${window.location.host}/api`;
+export const API_BASE_URL = import.meta.env.VITE_API_URL || (
+  (window.location.port === "5173" || window.location.port === "5174" || window.location.port === "3000")
+    ? `${window.location.protocol}//${window.location.hostname}:5000/api`
+    : `${window.location.protocol}//${window.location.host}/api`
+);
 
 // Helper to retrieve auth tokens
 function getAuthHeader() {
