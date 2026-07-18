@@ -22,7 +22,7 @@ import qrcode
 from models import (
     db, User, Outlet, MenuItem, OutletStock,
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
-    Order, OrderItem, Feedback, POSSale, POSSaleItem
+    Order, OrderItem, Feedback, POSSale, POSSaleItem, MenuItemReview, Coupon
 )
 from flask_cors import CORS
 
@@ -324,6 +324,7 @@ FlavorFlow Team
         items_data = data.get("items", [])
         delivery_address = data.get("delivery_address")
         payment_method = data.get("payment_method", "COD")
+        coupon_code = data.get("coupon_code")
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items in order"}), 400
@@ -343,6 +344,17 @@ FlavorFlow Team
             price = menu_item.price
             total += price * qty
             order_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))
+
+        discount_pct = 0
+        if coupon_code:
+            coupon = db.session.scalars(
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+            ).first()
+            if coupon:
+                discount_pct = coupon.discount_pct
+
+        if discount_pct > 0:
+            total = total * Decimal(str((100 - discount_pct) / 100))
 
         order = Order(customer_id=customer_id, total_price=total, items=order_items, delivery_address=delivery_address, payment_method=payment_method)
         db.session.add(order)
@@ -679,20 +691,22 @@ FlavorFlow Team
         db.session.commit()
         return jsonify({"message": "Updated", "order": order.to_dict()}), 200
 
-    # FIX: Added explicit ship route that frontend calls at /admin/orders/<id>/ship
     @app.route("/api/admin/orders/<int:order_id>/ship", methods=["PUT"])
     @role_required("admin")
     def admin_ship_order(order_id):
-        """Mark order as shipped with a tracking code."""
+        """Mark order as shipped with a tracking code and optional label upload."""
         order = db.session.get(Order, order_id)
         if not order:
             return jsonify({"error": "Not Found"}), 404
         data = request.get_json() or {}
         tracking_code = (data.get("tracking_code") or "").strip()
+        tracking_label = data.get("tracking_label")
         if not tracking_code:
             return jsonify({"error": "Bad Request", "message": "tracking_code is required"}), 400
         order.status = "shipped"
         order.tracking_code = tracking_code
+        if tracking_label:
+            order.tracking_label = tracking_label
         db.session.commit()
 
         # Send order shipped email to customer
@@ -721,29 +735,42 @@ FlavorFlow Team
         first_name = data.get("first_name")
         last_name = data.get("last_name")
         phone = data.get("phone")
+        role = (data.get("role") or "staff").strip().lower()
+
+        if role not in ("staff", "admin"):
+            return jsonify({"error": "Bad Request", "message": "Invalid role"}), 400
 
         if not email:
             return jsonify({"error": "Bad Request", "message": "email required"}), 400
         if db.session.scalars(select(User).where(User.email == email)).first():
             return jsonify({"error": "Conflict", "message": "Email already exists"}), 409
 
-        user = User(email=email, role="staff", outlet_id=outlet_id,
+        if role == "admin":
+            admin_count = db.session.scalar(
+                select(func.count(User.id)).where(User.role == "admin")
+            )
+            if admin_count >= 3:
+                return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
+
+        user = User(email=email, role=role, outlet_id=outlet_id if role == "staff" else None,
                     first_name=first_name, last_name=last_name, phone=phone)
         user.set_password(password, bcrypt)
         db.session.add(user)
         db.session.commit()
 
-        # Send staff onboarding email
-        outlet = db.session.get(Outlet, outlet_id) if outlet_id else None
-        _send_staff_created_email(app, user, password, outlet)
+        if role == "staff":
+            outlet = db.session.get(Outlet, outlet_id) if outlet_id else None
+            _send_staff_created_email(app, user, password, outlet)
+        else:
+            _send_admin_created_email(app, user, password)
 
-        return jsonify({"message": "Staff created", "user": user.to_dict(), "default_password": password}), 201
+        return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["PUT"])
     @role_required("admin")
     def admin_edit_staff(user_id):
         user = db.session.get(User, user_id)
-        if not user or user.role not in ("staff",):
+        if not user or user.role not in ("staff", "admin"):
             return jsonify({"error": "Not Found"}), 404
         data = request.get_json() or {}
         for field in ("first_name", "last_name", "phone"):
@@ -753,9 +780,17 @@ FlavorFlow Team
             user.outlet_id = data["outlet_id"]
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
+        
+        password_changed = False
         if "password" in data and len(data["password"]) >= 4:
             user.set_password(data["password"], bcrypt)
+            password_changed = True
+            
         db.session.commit()
+
+        if password_changed and user.role == "admin" and user.email:
+            _send_admin_password_changed_email(app, user, data["password"])
+
         return jsonify({"message": "Updated", "user": user.to_dict()}), 200
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["DELETE"])
@@ -1045,7 +1080,7 @@ FlavorFlow Team
     @role_required("admin")
     def admin_get_users():
         users = db.session.scalars(
-            select(User).where(User.role != "admin").order_by(User.created_at.desc())
+            select(User).order_by(User.created_at.desc())
         ).all()
         return jsonify([u.to_dict() for u in users]), 200
 
@@ -1055,21 +1090,34 @@ FlavorFlow Team
         user = db.session.get(User, user_id)
         if not user:
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
-        if user.role == "admin":
-            return jsonify({"error": "Forbidden", "message": "Cannot modify admin user"}), 403
 
         data = request.get_json() or {}
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
         if "role" in data:
             new_role = data["role"]
-            if new_role in ("customer", "staff", "outlet_owner"):
+            if new_role in ("customer", "staff", "outlet_owner", "admin"):
+                if new_role == "admin":
+                    admin_count = db.session.scalar(
+                        select(func.count(User.id)).where(User.role == "admin")
+                    )
+                    if admin_count >= 3:
+                        return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
                 user.role = new_role
         if "outlet_id" in data:
             oid = data["outlet_id"]
             user.outlet_id = int(oid) if oid is not None else None
-            
+        
+        password_changed = False
+        if "password" in data and len(data["password"]) >= 4:
+            user.set_password(data["password"], bcrypt)
+            password_changed = True
+
         db.session.commit()
+
+        if password_changed and user.role == "admin" and user.email:
+            _send_admin_password_changed_email(app, user, data["password"])
+
         return jsonify({"message": "User updated successfully", "user": user.to_dict()}), 200
 
     # ============================================================
@@ -1135,6 +1183,8 @@ FlavorFlow Team
         data = request.get_json() or {}
         items_data = data.get("items", [])
         payment_method = data.get("payment_method", "cash")
+        coupon_code = data.get("coupon_code")
+
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items"}), 400
 
@@ -1160,6 +1210,17 @@ FlavorFlow Team
                              change_qty=-qty, change_type="sale",
                              stock_before=before, stock_after=stock.current_stock,
                              performed_by=staff_id)
+
+        discount_pct = 0
+        if coupon_code:
+            coupon = db.session.scalars(
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+            ).first()
+            if coupon:
+                discount_pct = coupon.discount_pct
+
+        if discount_pct > 0:
+            total = total * Decimal(str((100 - discount_pct) / 100))
 
         sale = POSSale(outlet_id=oid, staff_id=staff_id,
                        total_amount=total, payment_method=payment_method, items=sale_items)
@@ -1394,12 +1455,130 @@ FlavorFlow Team
     # 6. DAILY REPORT (triggered manually or scheduled)
     # ============================================================
 
-    @app.route("/api/admin/trigger-report", methods=["POST"])
+    @app.route("/api/foods/menu-items/<int:item_id>/reviews", methods=["GET"])
+    def get_menu_item_reviews(item_id):
+        reviews = db.session.scalars(
+            select(MenuItemReview).where(MenuItemReview.menu_item_id == item_id).order_by(MenuItemReview.created_at.desc())
+        ).all()
+        return jsonify([r.to_dict() for r in reviews]), 200
+
+    @app.route("/api/foods/menu-items/<int:item_id>/reviews", methods=["POST"])
+    @jwt_required()
+    def create_menu_item_review(item_id):
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user or user.role != "customer":
+            return jsonify({"error": "Forbidden", "message": "Only customers can submit reviews"}), 403
+        
+        item = db.session.get(MenuItem, item_id)
+        if not item:
+            return jsonify({"error": "Not Found", "message": "Menu item not found"}), 404
+        
+        data = request.get_json() or {}
+        rating = data.get("rating")
+        comment = data.get("comment", "")
+        
+        if rating is None:
+            return jsonify({"error": "Bad Request", "message": "Rating is required"}), 400
+        try:
+            rating_val = int(rating)
+            if not (1 <= rating_val <= 5):
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Rating must be between 1 and 5"}), 400
+        
+        review = MenuItemReview(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment)
+        db.session.add(review)
+        db.session.commit()
+        return jsonify({"message": "Review submitted successfully", "review": review.to_dict()}), 201
+
+    @app.route("/api/admin/reviews", methods=["GET"])
     @role_required("admin")
-    def trigger_report():
-        with app.app_context():
-            report = _generate_daily_report()
-        return jsonify({"message": "Report generated", "report": report}), 200
+    def admin_get_reviews():
+        reviews = db.session.scalars(
+            select(MenuItemReview).order_by(MenuItemReview.created_at.desc())
+        ).all()
+        return jsonify([r.to_dict() for r in reviews]), 200
+
+    @app.route("/api/admin/reviews/<int:review_id>", methods=["DELETE"])
+    @role_required("admin")
+    def admin_delete_review(review_id):
+        review = db.session.get(MenuItemReview, review_id)
+        if not review:
+            return jsonify({"error": "Not Found", "message": "Review not found"}), 404
+        db.session.delete(review)
+        db.session.commit()
+        return jsonify({"message": "Review deleted successfully"}), 200
+
+    @app.route("/api/coupons/<string:code>", methods=["GET"])
+    def get_coupon(code):
+        """Validate and return coupon details."""
+        coupon = db.session.scalars(
+            select(Coupon).where(Coupon.code == code.upper().strip(), Coupon.is_active == True)
+        ).first()
+        if not coupon:
+            return jsonify({"error": "Not Found", "message": "Invalid or inactive coupon code"}), 404
+        return jsonify(coupon.to_dict()), 200
+
+    @app.route("/api/admin/coupons", methods=["GET"])
+    @role_required("admin")
+    def admin_get_coupons():
+        coupons = db.session.scalars(select(Coupon).order_by(Coupon.created_at.desc())).all()
+        return jsonify([c.to_dict() for c in coupons]), 200
+
+    @app.route("/api/admin/coupons", methods=["POST"])
+    @role_required("admin")
+    def admin_create_coupon():
+        data = request.get_json() or {}
+        code = (data.get("code") or "").strip().upper()
+        discount = data.get("discount_pct")
+        if not code or discount is None:
+            return jsonify({"error": "Bad Request", "message": "code and discount_pct required"}), 400
+        try:
+            discount = int(discount)
+            if not 1 <= discount <= 100:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "discount_pct must be between 1 and 100"}), 400
+
+        # Check unique
+        exists = db.session.scalars(select(Coupon).where(Coupon.code == code)).first()
+        if exists:
+            return jsonify({"error": "Conflict", "message": "Coupon code already exists"}), 409
+
+        coupon = Coupon(code=code, discount_pct=discount, is_active=data.get("is_active", True))
+        db.session.add(coupon)
+        db.session.commit()
+        return jsonify({"message": "Coupon created successfully", "coupon": coupon.to_dict()}), 201
+
+    @app.route("/api/admin/coupons/<int:coupon_id>", methods=["PUT"])
+    @role_required("admin")
+    def admin_update_coupon(coupon_id):
+        coupon = db.session.get(Coupon, coupon_id)
+        if not coupon:
+            return jsonify({"error": "Not Found", "message": "Coupon not found"}), 404
+        data = request.get_json() or {}
+        if "is_active" in data:
+            coupon.is_active = bool(data["is_active"])
+        if "discount_pct" in data:
+            try:
+                discount = int(data["discount_pct"])
+                if 1 <= discount <= 100:
+                    coupon.discount_pct = discount
+            except ValueError:
+                pass
+        db.session.commit()
+        return jsonify({"message": "Coupon updated successfully", "coupon": coupon.to_dict()}), 200
+
+    @app.route("/api/admin/coupons/<int:coupon_id>", methods=["DELETE"])
+    @role_required("admin")
+    def admin_delete_coupon(coupon_id):
+        coupon = db.session.get(Coupon, coupon_id)
+        if not coupon:
+            return jsonify({"error": "Not Found", "message": "Coupon not found"}), 404
+        db.session.delete(coupon)
+        db.session.commit()
+        return jsonify({"message": "Coupon deleted successfully"}), 200
 
     return app
 
@@ -1424,6 +1603,18 @@ def _seed_admin(app):
                 admin.is_first_login = True
                 db.session.commit()
                 logger.info("Forced is_first_login = True on admin because default password is still active")
+
+        # 1.5. Seed Coupons
+        if db.session.scalar(select(func.count(Coupon.id))) == 0:
+            coupons_to_seed = [
+                Coupon(code="WELCOME10", discount_pct=10),
+                Coupon(code="FESTIVE20", discount_pct=20),
+                Coupon(code="HALFOFF", discount_pct=50)
+            ]
+            for c in coupons_to_seed:
+                db.session.add(c)
+            db.session.commit()
+            logger.info("Default discount coupons seeded")
 
         # 2. Seed Outlets if none exist
         if db.session.scalar(select(func.count(Outlet.id))) == 0:
@@ -1765,6 +1956,53 @@ def _send_order_shipped_email(app, order, customer, tracking_code):
         mail.send(msg)
     except Exception as e:
         logger.warning(f"Failed to send order shipped email: {e}")
+
+
+def _send_admin_created_email(app, admin, temp_password):
+    try:
+        sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
+        msg = Message(subject="Welcome to FlavorFlow Admin Team! 🛡️", sender=sender, recipients=[admin.email])
+        content = f"""
+        <h2 style="color: #f97316; margin-top: 0;">Welcome to the Admin Team, {admin.first_name or 'Admin'}! 🛡️</h2>
+        <p>Your administrator profile has been successfully set up on the FlavorFlow ERP platform.</p>
+        <p>Here are your credentials to log in to the admin panel:</p>
+        
+        <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
+            <strong>Role:</strong> Administrator<br>
+            <strong>Username/Email:</strong> {admin.email}<br>
+            <strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{temp_password}</code>
+        </div>
+        
+        <div style="text-align: center;">
+            <a href="http://localhost:5173" class="btn">Launch Admin Dashboard</a>
+        </div>
+        """
+        msg.html = _get_email_html_wrapper("Admin Onboarding", content)
+        mail.send(msg)
+    except Exception as e:
+        logger.warning(f"Failed to send admin onboarding email: {e}")
+
+
+def _send_admin_password_changed_email(app, admin, new_password):
+    try:
+        sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
+        msg = Message(subject="FlavorFlow Admin Password Update 🔐", sender=sender, recipients=[admin.email])
+        content = f"""
+        <h2 style="color: #f97316; margin-top: 0;">Password Successfully Updated 🔐</h2>
+        <p>Hi {admin.first_name or 'Admin'}, the password for your FlavorFlow administrator account has been changed.</p>
+        <p>Here is your new password:</p>
+        
+        <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
+            <strong>Username/Email:</strong> {admin.email}<br>
+            <strong>New Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{new_password}</code>
+        </div>
+        
+        <p>If you did not request this change, please contact support immediately.</p>
+        """
+        msg.html = _get_email_html_wrapper("Password Changed", content)
+        mail.send(msg)
+    except Exception as e:
+        logger.warning(f"Failed to send password changed email: {e}")
 
 
 def _send_staff_created_email(app, staff, temp_password, outlet):

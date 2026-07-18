@@ -109,6 +109,38 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [feedbackComments, setFeedbackComments] = useState({});
   const [hoveredStars, setHoveredStars] = useState({});
 
+  // Food Item Reviews states
+  const [itemReviews, setItemReviews] = useState([]);
+  const [itemReviewsLoading, setItemReviewsLoading] = useState(false);
+  const [newReviewRating, setNewReviewRating] = useState(5);
+  const [newReviewComment, setNewReviewComment] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [hoveredItemStars, setHoveredItemStars] = useState(0);
+
+  // Coupon Discount states
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponError, setCouponError] = useState("");
+
+  // Load reviews when selectedItem changes
+  useEffect(() => {
+    if (selectedItem?.id) {
+      setItemReviewsLoading(true);
+      api.getMenuItemReviews(selectedItem.id)
+        .then(data => {
+          setItemReviews(data);
+          setItemReviewsLoading(false);
+        })
+        .catch(err => {
+          console.error("Failed to load reviews:", err);
+          setItemReviewsLoading(false);
+        });
+    } else {
+      setItemReviews([]);
+    }
+  }, [selectedItem?.id]);
+
+
   useEffect(() => {
     localStorage.setItem("customer_favorites", JSON.stringify(favorites));
   }, [favorites]);
@@ -153,6 +185,14 @@ export default function CustomerView({ onLogout, dbMode }) {
       return matchesCat && matchesSearch;
     });
   }, [menu, activeCategory, searchQuery, favorites]);
+
+  // Compute average rating for selected item reviews
+  const avgRating = useMemo(() => {
+    if (!itemReviews.length) return null;
+    const sum = itemReviews.reduce((acc, r) => acc + r.rating, 0);
+    return (sum / itemReviews.length).toFixed(1);
+  }, [itemReviews]);
+
 
   // Grouped menu
   const groupedMenu = useMemo(() => {
@@ -224,13 +264,15 @@ export default function CustomerView({ onLogout, dbMode }) {
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       
-      await api.placeOrder(items, addressStr, paymentMethod);
+      await api.placeOrder(items, addressStr, paymentMethod, appliedCoupon ? appliedCoupon.code : null);
       setCart({});
       setCardNumber("");
       setCardExpiry("");
       setCardCvv("");
       setCardName("");
       setPaymentMethod("COD");
+      setAppliedCoupon(null);
+      setCouponCodeInput("");
       setShowCartDrawer(false);
       setActiveTab("orders");
       loadData();
@@ -239,6 +281,20 @@ export default function CustomerView({ onLogout, dbMode }) {
       alert("Order failed: " + err.message);
     } finally {
       setPaymentProcessing(false);
+    }
+  };
+
+  const handleApplyCoupon = async () => {
+    if (!couponCodeInput.trim()) return;
+    setCouponError("");
+    try {
+      const coupon = await api.validateCoupon(couponCodeInput.trim());
+      setAppliedCoupon(coupon);
+      setCouponCodeInput("");
+      alert(`Coupon "${coupon.code}" applied! (${coupon.discount_pct}% off)`);
+    } catch (err) {
+      setCouponError(err.message || "Invalid coupon code");
+      setAppliedCoupon(null);
     }
   };
 
@@ -313,6 +369,29 @@ export default function CustomerView({ onLogout, dbMode }) {
     } catch (err) { alert("Feedback failed: " + err.message); }
   };
 
+  const handleSubmitMenuItemReview = async (e) => {
+    e.preventDefault();
+    if (!selectedItem) return;
+    if (!newReviewComment.trim()) {
+      alert("Please write a review comment.");
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      await api.submitMenuItemReview(selectedItem.id, newReviewRating, newReviewComment.trim());
+      setNewReviewComment("");
+      setNewReviewRating(5);
+      // reload reviews
+      const data = await api.getMenuItemReviews(selectedItem.id);
+      setItemReviews(data);
+      alert("Thank you for your review!");
+    } catch (err) {
+      alert("Failed to submit review: " + err.message);
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
   const addToCart = (itemId) => setCart(prev => ({ ...prev, [itemId]: (prev[itemId] || 0) + 1 }));
   const removeFromCart = (itemId) => setCart(prev => {
     const next = { ...prev };
@@ -340,6 +419,11 @@ export default function CustomerView({ onLogout, dbMode }) {
   const currentSelectedAddress = addresses.find(a => a.id === selectedAddressId) || addresses[0];
 
   const catConfig = (catId) => CATEGORIES.find(c => c.id === catId) || { emoji: "📦", color: "#6b7280", label: catId };
+
+  const discountAmount = appliedCoupon ? (getCartTotal() * appliedCoupon.discount_pct / 100) : 0;
+  const finalSubtotal = getCartTotal() - discountAmount;
+  const deliveryCharge = getCartTotal() >= 499 ? 0 : 49;
+  const finalTotal = finalSubtotal + deliveryCharge;
 
   return (
     <div style={{ maxWidth: "100%", minHeight: "100vh", position: "relative", background: "var(--bg-canvas)" }} className="animate-fade-in">
@@ -629,10 +713,17 @@ export default function CustomerView({ onLogout, dbMode }) {
                               {item.description}
                             </p>
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                              <div style={{ display: "flex", alignItems: "baseline", gap: "0.35rem" }}>
-                                <span style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: "800", color: "var(--brand)" }}>₹{item.price.toFixed(0)}</span>
-                                {item.original_price && item.original_price > item.price && (
-                                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textDecoration: "line-through" }}>₹{item.original_price.toFixed(0)}</span>
+                              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                                <div style={{ display: "flex", alignItems: "baseline", gap: "0.25rem" }}>
+                                  <span style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: "800", color: "var(--brand)" }}>₹{item.price.toFixed(0)}</span>
+                                  {item.original_price && item.original_price > item.price && (
+                                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textDecoration: "line-through" }}>₹{item.original_price.toFixed(0)}</span>
+                                  )}
+                                </div>
+                                {item.average_rating > 0 && (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "0.15rem", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)", borderRadius: "4px", padding: "1px 4px", fontSize: "0.65rem", fontWeight: "800", color: "var(--warning-color)" }} title={`${item.reviews_count} reviews`}>
+                                    ⭐ {item.average_rating}
+                                  </span>
                                 )}
                               </div>
                               <div onClick={e => e.stopPropagation()}>
@@ -687,6 +778,11 @@ export default function CustomerView({ onLogout, dbMode }) {
                     <div>
                       <span style={{ fontWeight: "700", fontSize: "0.95rem" }}>Order #{order.id}</span>
                       <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{new Date(order.created_at).toLocaleString()}</div>
+                      {order.tracking_code && (
+                        <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: "0.15rem" }}>
+                          🚚 Tracking ID: <span style={{ fontWeight: 800, color: "var(--brand)" }}>{order.tracking_code}</span>
+                        </div>
+                      )}
                     </div>
                     <span className={`badge-status status-${order.status}`}>{order.status}</span>
                   </div>
@@ -786,9 +882,30 @@ export default function CustomerView({ onLogout, dbMode }) {
 
                   {order.status === "shipped" && !order.is_received && (
                     <div style={{ background: "var(--bg-secondary)", padding: "0.75rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-light)", marginBottom: "0.75rem" }}>
-                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Enter Tracking Code to Confirm Receipt</label>
+                      <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginBottom: "0.4rem" }}>
+                        Order is shipped! Please confirm receipt using the Shipment Tracking ID:
+                      </div>
+                      {order.tracking_label && (
+                        <div style={{ marginBottom: "0.65rem", background: "var(--bg-card)", border: "1px solid var(--border-subtle)", padding: "0.5rem", borderRadius: "6px", textAlign: "center" }}>
+                          <span style={{ fontSize: "0.68rem", color: "var(--text-secondary)", display: "block", marginBottom: "0.3rem", fontWeight: "700" }}>
+                            Outside Vendor Barcode / QR Label
+                          </span>
+                          <img src={order.tracking_label} alt="Outside Vendor Label" style={{ maxHeight: "120px", maxWidth: "100%", objectFit: "contain", borderRadius: "4px", background: "#fff", padding: "4px" }} />
+                        </div>
+                      )}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg-card)", padding: "0.4rem 0.6rem", borderRadius: "6px", border: "1px solid var(--border-subtle)", marginBottom: "0.6rem" }}>
+                        <span style={{ fontSize: "0.78rem", fontFamily: "monospace", fontWeight: "700", color: "var(--brand)" }}>{order.tracking_code}</span>
+                        <button
+                          type="button"
+                          onClick={() => setTrackingCodes({ ...trackingCodes, [order.id]: order.tracking_code })}
+                          style={{ background: "var(--brand-dim)", border: "none", color: "var(--brand)", fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px", cursor: "pointer", fontWeight: "700" }}
+                        >
+                          Autofill ID
+                        </button>
+                      </div>
+                      <label className="form-label" style={{ fontSize: "0.7rem", fontWeight: 700 }}>Enter Tracking ID to Confirm Receipt</label>
                       <div style={{ display: "flex", gap: "0.25rem", marginTop: "0.25rem" }}>
-                        <input type="text" className="form-input" placeholder="Tracking Code" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem" }}
+                        <input type="text" className="form-input" placeholder="Tracking ID" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem" }}
                           value={trackingCodes[order.id] || ""} onChange={e => setTrackingCodes({ ...trackingCodes, [order.id]: e.target.value })} />
                         <button onClick={() => handleConfirmReceipt(order.id)} className="btn btn-primary" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}>Confirm</button>
                       </div>
@@ -859,10 +976,17 @@ export default function CustomerView({ onLogout, dbMode }) {
             <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", lineHeight: "1.6", marginBottom: "1rem" }}>{selectedItem.description}</p>
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
-              <div>
-                <span style={{ fontSize: "1.4rem", fontWeight: "900" }}>₹{selectedItem.price.toFixed(0)}</span>
-                {selectedItem.original_price > selectedItem.price && (
-                  <span style={{ fontSize: "0.85rem", color: "var(--text-muted)", textDecoration: "line-through", marginLeft: "0.5rem" }}>₹{selectedItem.original_price.toFixed(0)}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <div>
+                  <span style={{ fontSize: "1.4rem", fontWeight: "900" }}>₹{selectedItem.price.toFixed(0)}</span>
+                  {selectedItem.original_price > selectedItem.price && (
+                    <span style={{ fontSize: "0.85rem", color: "var(--text-muted)", textDecoration: "line-through", marginLeft: "0.5rem" }}>₹{selectedItem.original_price.toFixed(0)}</span>
+                  )}
+                </div>
+                {avgRating && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "0.15rem", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)", borderRadius: "6px", padding: "3px 8px", fontSize: "0.82rem", fontWeight: "800", color: "var(--warning-color)" }} title={`${itemReviews.length} reviews`}>
+                    ⭐ {avgRating}
+                  </span>
                 )}
               </div>
               <div>
@@ -878,6 +1002,85 @@ export default function CustomerView({ onLogout, dbMode }) {
                   </button>
                 )}
               </div>
+            </div>
+
+            {/* 💬 Customer Reviews & Writing a Review */}
+            <div style={{ borderTop: "1px solid var(--border-light)", paddingTop: "1.25rem", paddingBottom: "1.25rem" }}>
+              <h4 style={{ fontSize: "0.85rem", fontWeight: "800", color: "var(--text-primary)", marginBottom: "0.85rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <MessageSquare size={14} style={{ color: "var(--brand)" }} /> Customer Reviews
+              </h4>
+
+              {/* Submit review form */}
+              <form onSubmit={handleSubmitMenuItemReview} style={{ background: "var(--bg-secondary)", padding: "0.85rem", borderRadius: "10px", border: "1px solid var(--border-light)", marginBottom: "1.25rem" }}>
+                <div style={{ fontSize: "0.76rem", fontWeight: "800", marginBottom: "0.4rem" }}>Write a Product Review</div>
+                
+                <div style={{ display: "flex", gap: "0.25rem", marginBottom: "0.5rem", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginRight: "0.5rem" }}>Your Rating:</span>
+                  {[1, 2, 3, 4, 5].map(star => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setNewReviewRating(star)}
+                      onMouseEnter={() => setHoveredItemStars(star)}
+                      onMouseLeave={() => setHoveredItemStars(0)}
+                      style={{ background: "transparent", border: "none", cursor: "pointer", padding: "0.1rem", display: "flex" }}
+                    >
+                      <Star
+                        size={15}
+                        fill={(hoveredItemStars || newReviewRating) >= star ? "var(--warning-color)" : "transparent"}
+                        color={(hoveredItemStars || newReviewRating) >= star ? "var(--warning-color)" : "var(--border-dark)"}
+                      />
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ position: "relative" }}>
+                  <textarea
+                    required
+                    placeholder="Tell us what you think about the taste, quality, and spices..."
+                    value={newReviewComment}
+                    onChange={e => setNewReviewComment(e.target.value)}
+                    style={{ width: "100%", minHeight: "50px", fontSize: "0.78rem", padding: "0.45rem", borderRadius: "6px", border: "1px solid var(--border-light)", background: "var(--bg-card)", color: "var(--text-primary)", resize: "vertical", marginBottom: "0.5rem" }}
+                  />
+                </div>
+                
+                <button
+                  type="submit"
+                  disabled={submittingReview}
+                  className="btn btn-primary"
+                  style={{ width: "100%", padding: "0.45rem", fontSize: "0.78rem", fontWeight: "700" }}
+                >
+                  {submittingReview ? "Submitting..." : "Submit Review"}
+                </button>
+              </form>
+
+              {/* Reviews List */}
+              {itemReviewsLoading ? (
+                <div style={{ color: "var(--text-muted)", fontSize: "0.75rem", padding: "0.5rem" }}>Loading product reviews...</div>
+              ) : itemReviews.length === 0 ? (
+                <div style={{ color: "var(--text-muted)", fontSize: "0.75rem", padding: "0.5rem", fontStyle: "italic" }}>
+                  No reviews for this product yet. Be the first to write one!
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxHeight: "250px", overflowY: "auto", paddingRight: "0.25rem" }}>
+                  {itemReviews.map(r => (
+                    <div key={r.id} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)", borderRadius: "8px", padding: "0.65rem 0.85rem" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.3rem" }}>
+                        <span style={{ fontWeight: "700", fontSize: "0.78rem", color: "var(--text-primary)" }}>{r.customer_name}</span>
+                        <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>{new Date(r.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: "0.1rem", marginBottom: "0.35rem" }}>
+                        {[1, 2, 3, 4, 5].map(star => (
+                          <Star key={star} size={11} fill={r.rating >= star ? "var(--warning-color)" : "transparent"} color={r.rating >= star ? "var(--warning-color)" : "var(--border-dark)"} />
+                        ))}
+                      </div>
+                      <div style={{ fontSize: "0.76rem", color: "var(--text-secondary)", lineHeight: "1.4" }}>
+                        {r.comment}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* 🍿 Frequently Bought Together Pairing Carousel */}
@@ -1055,7 +1258,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                   <div style={{ background: "#ffffff", padding: "0.5rem", borderRadius: "6px", display: "inline-block", border: "1px solid #e2e8f0", marginBottom: "0.5rem" }}>
                     <div style={{ width: "120px", height: "120px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#1e293b" }}>
                       <span style={{ fontSize: "2rem" }}>📱</span>
-                      <strong style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>Pay ₹{(getCartTotal() + (getCartTotal() < 499 ? 49 : 0))}</strong>
+                      <strong style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>Pay ₹{finalTotal.toFixed(0)}</strong>
                       <span style={{ fontSize: "0.55rem", color: "var(--brand)", marginTop: "2px" }}>Suggula's Kitchen</span>
                     </div>
                   </div>
@@ -1129,11 +1332,60 @@ export default function CustomerView({ onLogout, dbMode }) {
               )}
             </div>
 
+            {/* Coupon Code section */}
+            <div style={{ background: "var(--bg-secondary)", padding: "1rem", borderRadius: "12px", border: "1px solid var(--border-light)", marginBottom: "1rem" }}>
+              <h4 style={{ fontSize: "0.82rem", fontWeight: "800", color: "var(--text-primary)", marginBottom: "0.6rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                🏷️ Discount Coupon
+              </h4>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter coupon (e.g. WELCOME10)"
+                  style={{ flex: 1, fontSize: "0.8rem", padding: "0.4rem 0.6rem", textTransform: "uppercase", height: "auto" }}
+                  value={couponCodeInput}
+                  onChange={e => setCouponCodeInput(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyCoupon}
+                  className="btn btn-primary"
+                  style={{ padding: "0.4rem 1rem", fontSize: "0.8rem", height: "auto" }}
+                >
+                  Apply
+                </button>
+              </div>
+              {couponError && (
+                <div style={{ fontSize: "0.72rem", color: "#ef4444", marginTop: "0.35rem", fontWeight: "600" }}>
+                  ❌ {couponError}
+                </div>
+              )}
+              {appliedCoupon && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "8px", padding: "0.4rem 0.6rem", marginTop: "0.5rem" }}>
+                  <span style={{ fontSize: "0.75rem", color: "var(--success)", fontWeight: "700" }}>
+                    ✓ Active: "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAppliedCoupon(null)}
+                    style={{ background: "none", border: "none", color: "#ef4444", fontSize: "0.7rem", cursor: "pointer", fontWeight: "700" }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Bill Summary details */}
             <div style={{ background: "var(--bg-secondary)", borderRadius: "12px", padding: "0.85rem", marginBottom: "1.25rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
                 <span>Subtotal ({getCartCount()} items)</span><span>₹{getCartTotal().toFixed(0)}</span>
               </div>
+              {appliedCoupon && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--success)", marginBottom: "0.35rem", fontWeight: "600" }}>
+                  <span>Discount ({appliedCoupon.code})</span><span>-₹{discountAmount.toFixed(0)}</span>
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>
                 <span>Delivery Charge</span><span style={{ color: getCartTotal() >= 499 ? "var(--success-color)" : "var(--text-secondary)" }}>{getCartTotal() >= 499 ? "FREE" : "₹49"}</span>
               </div>
@@ -1143,7 +1395,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                 </div>
               )}
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "800", fontSize: "1rem", borderTop: "1px solid var(--border-light)", paddingTop: "0.5rem" }}>
-                <span>Order Total</span><span>₹{(getCartTotal() + (getCartTotal() < 499 ? 49 : 0)).toFixed(0)}</span>
+                <span>Order Total</span><span>₹{finalTotal.toFixed(0)}</span>
               </div>
             </div>
 
@@ -1159,7 +1411,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                 </>
               ) : (
                 <>
-                  <ShoppingCart size={16} /> Confirm & Pay · ₹{(getCartTotal() + (getCartTotal() < 499 ? 49 : 0)).toFixed(0)}
+                  <ShoppingCart size={16} /> Confirm & Pay · ₹{finalTotal.toFixed(0)}
                 </>
               )}
             </button>

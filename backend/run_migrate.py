@@ -43,6 +43,9 @@ COLUMNS_TO_ADD = [
     ("orders",      "cancel_reason",        "VARCHAR(255) NULL"),
     ("orders",      "delivery_address",     "VARCHAR(500) NULL"),
     ("orders",      "payment_method",       "VARCHAR(50) NOT NULL DEFAULT 'COD'"),
+    ("orders",      "tracking_code",        "VARCHAR(100) NULL"),
+    ("orders",      "tracking_label",       "TEXT NULL"),
+    ("orders",      "is_received",          "BOOLEAN NOT NULL DEFAULT 0"),
     ("outlet_stocks","updated_at",           "DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
 ]
 

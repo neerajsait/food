@@ -158,9 +158,22 @@ function initMockDB() {
   if (!localStorage.getItem("mock_sales")) {
     localStorage.setItem("mock_sales", JSON.stringify([]));
   }
+  if (!localStorage.getItem("mock_menu_item_reviews")) {
+    localStorage.setItem("mock_menu_item_reviews", JSON.stringify([
+      { id: 1, menu_item_id: 1, menu_item_name: "Kobbari Karam 250g", customer_id: 2, customer_name: "Sarah Customer", rating: 5, comment: "Absolutely delicious and traditional taste! Highly recommend.", created_at: new Date().toISOString() },
+      { id: 2, menu_item_id: 1, menu_item_name: "Kobbari Karam 250g", customer_id: 2, customer_name: "Sarah Customer", rating: 4, comment: "Very fresh and fragrant, spice level is perfect.", created_at: new Date().toISOString() }
+    ]));
+  }
   if (!localStorage.getItem("mock_audit_logs")) {
     localStorage.setItem("mock_audit_logs", JSON.stringify([
       { id: 1, created_at: new Date().toISOString(), outlet_name: "Outlet 1: Connaught Place Corner", menu_item_name: "Crispy Samosa (Snack Supply)", change_qty: -5, change_type: "waste", stock_before: 20, stock_after: 15, notes: "Disposal: Damaged in storage" }
+    ]));
+  }
+  if (!localStorage.getItem("mock_coupons")) {
+    localStorage.setItem("mock_coupons", JSON.stringify([
+      { id: 1, code: "WELCOME10", discount_pct: 10, is_active: true },
+      { id: 2, code: "FESTIVE20", discount_pct: 20, is_active: true },
+      { id: 3, code: "HALFOFF", discount_pct: 50, is_active: true }
     ]));
   }
 }
@@ -193,11 +206,22 @@ const mockApi = {
   },
 
   async getFoodsMenu() {
-    const menu = JSON.parse(localStorage.getItem("mock_menu"));
-    return menu.filter(item => (item.business_type === "home_foods" || item.business_type === "both") && item.is_active);
+    const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+    const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+    return menu
+      .filter(item => (item.business_type === "home_foods" || item.business_type === "both") && item.is_active)
+      .map(item => {
+        const itemReviews = reviews.filter(r => r.menu_item_id === item.id);
+        const avg = itemReviews.length ? parseFloat((itemReviews.reduce((sum, r) => sum + r.rating, 0) / itemReviews.length).toFixed(1)) : 0.0;
+        return {
+          ...item,
+          average_rating: avg,
+          reviews_count: itemReviews.length
+        };
+      });
   },
 
-  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD") {
+  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null) {
     const menu = JSON.parse(localStorage.getItem("mock_menu"));
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
     
@@ -214,6 +238,14 @@ const mockApi = {
         price: menuItem.price
       };
     });
+
+    if (couponCode) {
+      const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+      const coupon = coupons.find(c => c.code === couponCode.toUpperCase().trim() && c.is_active);
+      if (coupon) {
+        total = total * ((100 - coupon.discount_pct) / 100);
+      }
+    }
 
     const newOrder = {
       id: orders.length + 1000,
@@ -295,7 +327,7 @@ const mockApi = {
     }));
   },
 
-  async posSell(userId, outletId, itemsData, paymentMethod) {
+  async posSell(userId, outletId, itemsData, paymentMethod, couponCode = null) {
     const outlets = JSON.parse(localStorage.getItem("mock_outlets"));
     const sales = JSON.parse(localStorage.getItem("mock_sales"));
 
@@ -320,6 +352,14 @@ const mockApi = {
         price: stockItem.menu_item_price
       };
     });
+
+    if (couponCode) {
+      const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+      const coupon = coupons.find(c => c.code === couponCode.toUpperCase().trim() && c.is_active);
+      if (coupon) {
+        totalAmount = totalAmount * ((100 - coupon.discount_pct) / 100);
+      }
+    }
 
     // Recompute outlet totals
     outlet.current_stock = (outlet.items || []).reduce((sum, s) => sum + s.current_stock, 0);
@@ -352,12 +392,15 @@ const mockApi = {
     return JSON.parse(localStorage.getItem("mock_orders")).reverse();
   },
 
-  async adminShipOrder(orderId, trackingCode) {
+  async adminShipOrder(orderId, trackingCode, trackingLabel = null) {
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
     const order = orders.find(o => o.id === parseInt(orderId));
     if (!order) throw new Error("Order not found");
     order.status = "shipped";
     order.tracking_code = trackingCode.trim();
+    if (trackingLabel) {
+      order.tracking_label = trackingLabel;
+    }
     order.updated_at = new Date().toISOString();
     localStorage.setItem("mock_orders", JSON.stringify(orders));
     return { message: "Order shipped successfully", order };
@@ -606,8 +649,7 @@ const mockApi = {
   },
 
   async adminGetUsers() {
-    const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
-    return users.filter(u => u.role !== "admin");
+    return JSON.parse(localStorage.getItem("mock_users") || "[]");
   },
 
   async adminUpdateUser(userId, data) {
@@ -615,10 +657,101 @@ const mockApi = {
     const user = users.find(u => u.id === parseInt(userId));
     if (!user) throw new Error("User not found");
     if (data.is_active !== undefined) user.is_active = data.is_active;
-    if (data.role) user.role = data.role;
+    if (data.role) {
+      if (data.role === "admin") {
+        const admins = users.filter(u => u.role === "admin");
+        if (admins.length >= 3) {
+          throw new Error("Maximum of 3 admin accounts allowed.");
+        }
+      }
+      user.role = data.role;
+    }
     if (data.outlet_id !== undefined) user.outlet_id = data.outlet_id;
+    if (data.password !== undefined) user.password = data.password;
     localStorage.setItem("mock_users", JSON.stringify(users));
     return { message: "User updated successfully", user };
+  },
+
+  async validateCoupon(code) {
+    const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+    const coupon = coupons.find(c => c.code === code.toUpperCase().trim() && c.is_active);
+    if (!coupon) throw new Error("Invalid or inactive coupon code");
+    return coupon;
+  },
+
+  async adminGetCoupons() {
+    return JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+  },
+
+  async adminAddCoupon(data) {
+    const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+    const code = (data.code || "").trim().toUpperCase();
+    if (coupons.find(c => c.code === code)) throw new Error("Coupon code already exists");
+    const newCoupon = {
+      id: Date.now(),
+      code,
+      discount_pct: parseInt(data.discount_pct),
+      is_active: data.is_active !== undefined ? data.is_active : true,
+      created_at: new Date().toISOString()
+    };
+    coupons.push(newCoupon);
+    localStorage.setItem("mock_coupons", JSON.stringify(coupons));
+    return { message: "Coupon created successfully", coupon: newCoupon };
+  },
+
+  async adminUpdateCoupon(couponId, data) {
+    const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+    const coupon = coupons.find(c => c.id === parseInt(couponId));
+    if (!coupon) throw new Error("Coupon not found");
+    if (data.is_active !== undefined) coupon.is_active = data.is_active;
+    if (data.discount_pct !== undefined) coupon.discount_pct = parseInt(data.discount_pct);
+    localStorage.setItem("mock_coupons", JSON.stringify(coupons));
+    return { message: "Coupon updated successfully", coupon };
+  },
+
+  async adminDeleteCoupon(couponId) {
+    let coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+    coupons = coupons.filter(c => c.id !== parseInt(couponId));
+    localStorage.setItem("mock_coupons", JSON.stringify(coupons));
+    return { message: "Coupon deleted successfully" };
+  },
+
+  async getMenuItemReviews(itemId) {
+    const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+    return reviews.filter(r => r.menu_item_id === parseInt(itemId)).reverse();
+  },
+
+  async submitMenuItemReview(userId, itemId, rating, comment) {
+    const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+    const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+    const item = menu.find(m => m.id === parseInt(itemId));
+    const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+    const user = users.find(u => u.id === parseInt(userId));
+    
+    const newReview = {
+      id: Date.now(),
+      menu_item_id: parseInt(itemId),
+      menu_item_name: item ? item.name : "Unknown Item",
+      customer_id: parseInt(userId),
+      customer_name: user ? `${user.first_name || ""} ${user.last_name || ""}`.trim() || user.email : "Customer",
+      rating: parseInt(rating),
+      comment,
+      created_at: new Date().toISOString()
+    };
+    reviews.push(newReview);
+    localStorage.setItem("mock_menu_item_reviews", JSON.stringify(reviews));
+    return { message: "Review submitted successfully", review: newReview };
+  },
+
+  async adminGetReviews() {
+    return JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]").reverse();
+  },
+
+  async adminDeleteReview(reviewId) {
+    let reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+    reviews = reviews.filter(r => r.id !== parseInt(reviewId));
+    localStorage.setItem("mock_menu_item_reviews", JSON.stringify(reviews));
+    return { message: "Review deleted successfully" };
   }
 };
 
@@ -690,17 +823,17 @@ export const api = {
     return res.json();
   },
 
-  async placeOrder(items, deliveryAddress, paymentMethod = "COD") {
+  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
-    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod);
+    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode);
 
     const res = await fetch(`${API_BASE_URL}/foods/order`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod })
+      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || "Failed to place order");
@@ -772,18 +905,18 @@ export const api = {
     return res.json();
   },
 
-  async posSell(items, paymentMethod) {
+  async posSell(items, paymentMethod, couponCode = null) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
-    if (!live) return mockApi.posSell(user.id, user.outlet_id, items, paymentMethod);
+    if (!live) return mockApi.posSell(user.id, user.outlet_id, items, paymentMethod, couponCode);
 
     // FIX: Correct endpoint is /pos/sell
     const res = await fetch(`${API_BASE_URL}/pos/sell`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ items, payment_method: paymentMethod })
+      body: JSON.stringify({ items, payment_method: paymentMethod, coupon_code: couponCode })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || "POS transaction failed");
@@ -802,15 +935,15 @@ export const api = {
     return res.json();
   },
 
-  async adminShipOrder(orderId, trackingCode) {
+  async adminShipOrder(orderId, trackingCode, trackingLabel = null) {
     const live = await checkBackendAlive();
-    if (!live) return mockApi.adminShipOrder(orderId, trackingCode);
+    if (!live) return mockApi.adminShipOrder(orderId, trackingCode, trackingLabel);
 
     // FIX: Correct endpoint is /admin/orders/<id>/ship (PUT)
     const res = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/ship`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ tracking_code: trackingCode })
+      body: JSON.stringify({ tracking_code: trackingCode, tracking_label: trackingLabel })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || "Failed to update ship status");
@@ -1127,6 +1260,109 @@ export const api = {
     const result = await res.json();
     if (!res.ok) throw new Error(result.message || result.error || "Failed to update user");
     return result;
+  },
+
+  async validateCoupon(code) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.validateCoupon(code);
+    const res = await fetch(`${API_BASE_URL}/coupons/${code}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || data.error || "Invalid coupon");
+    return data;
+  },
+
+  async adminGetCoupons() {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminGetCoupons();
+    const res = await fetch(`${API_BASE_URL}/admin/coupons`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load coupons");
+    return res.json();
+  },
+
+  async adminAddCoupon(data) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminAddCoupon(data);
+    const res = await fetch(`${API_BASE_URL}/admin/coupons`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(data)
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.message || "Failed to create coupon");
+    return result;
+  },
+
+  async adminUpdateCoupon(couponId, data) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminUpdateCoupon(couponId, data);
+    const res = await fetch(`${API_BASE_URL}/admin/coupons/${couponId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(data)
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.message || "Failed to update coupon");
+    return result;
+  },
+
+  async adminDeleteCoupon(couponId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminDeleteCoupon(couponId);
+    const res = await fetch(`${API_BASE_URL}/admin/coupons/${couponId}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.message || "Failed to delete coupon");
+    return result;
+  },
+
+  async getMenuItemReviews(itemId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.getMenuItemReviews(itemId);
+
+    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`);
+    if (!res.ok) throw new Error("Failed to load reviews");
+    return res.json();
+  },
+
+  async submitMenuItemReview(itemId, rating, comment) {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!user) throw new Error("Unauthorized");
+
+    if (!live) return mockApi.submitMenuItemReview(user.id, itemId, rating, comment);
+
+    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ rating: parseInt(rating), comment })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || data.error || "Review submission failed");
+    return data;
+  },
+
+  async adminGetReviews() {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminGetReviews();
+
+    const res = await fetch(`${API_BASE_URL}/admin/reviews`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load reviews");
+    return res.json();
+  },
+
+  async adminDeleteReview(reviewId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminDeleteReview(reviewId);
+
+    const res = await fetch(`${API_BASE_URL}/admin/reviews/${reviewId}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete review");
+    return data;
   },
 
   async cancelOrder(orderId, reason = "Cancelled by customer") {

@@ -5,7 +5,7 @@ import {
   Package, AlertTriangle, Plus, Store, Users, MapPin, Activity,
   Globe, QrCode, TrendingUp, ShieldAlert, Award, FileText, ShoppingBag,
   Truck, ArrowRight, Clock, Trash2, Calendar, RefreshCw, BarChart3,
-  ChevronRight, Zap, X, LogOut
+  ChevronRight, Zap, X, LogOut, MessageSquare, Star, Tag
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
 
@@ -54,6 +54,10 @@ export default function AdminView({ onLogout, dbMode }) {
   const [auditLogs, setAuditLogs] = useState([]);
   const [batches, setBatches] = useState([]);
   const [suppliers, setSuppliers] = useState(INITIAL_SUPPLIERS);
+  
+  // Product Reviews moderation states
+  const [reviews, setReviews] = useState([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
 
   // User Accounts management states
   const [users, setUsers] = useState([]);
@@ -68,9 +72,18 @@ export default function AdminView({ onLogout, dbMode }) {
   const [poUnit, setPoUnit] = useState("kg");
   const [draftPOs, setDraftPOs] = useState([]);
 
+  // Admin Coupon states
+  const [coupons, setCoupons] = useState([]);
+  const [couponsLoading, setCouponsLoading] = useState(false);
+  const [showAddCoupon, setShowAddCoupon] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [couponDiscount, setCouponDiscount] = useState("");
+  const [couponIsActive, setCouponIsActive] = useState(true);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [trackingCodes, setTrackingCodes] = useState({});
+  const [trackingLabels, setTrackingLabels] = useState({});
 
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [menuName, setMenuName] = useState("");
@@ -100,6 +113,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [staffLastName, setStaffLastName] = useState("");
   const [staffPhone, setStaffPhone] = useState("");
   const [staffOutletId, setStaffOutletId] = useState("");
+  const [staffRole, setStaffRole] = useState("staff");
 
   const loadData = async () => {
     setLoading(true); setError("");
@@ -107,10 +121,25 @@ export default function AdminView({ onLogout, dbMode }) {
       const [ordersData, outletsData, menuData, usersData] = await Promise.allSettled([
         api.adminGetOrders(), api.adminGetOutlets(), api.adminGetMenuItems(), api.adminGetUsers()
       ]);
-      if (ordersData.status === "fulfilled") setOrders(ordersData.value);
+      if (ordersData.status === "fulfilled") {
+        setOrders(ordersData.value);
+        const generatedCodes = {};
+        ordersData.value.forEach(o => {
+          if (o.status === "pending" || o.status === "processing") {
+            generatedCodes[o.id] = `TRK-${o.id}-${Math.floor(1000 + Math.random() * 9000)}`;
+          } else {
+            generatedCodes[o.id] = o.tracking_code || "";
+          }
+        });
+        setTrackingCodes(prev => ({ ...generatedCodes, ...prev }));
+      }
       if (outletsData.status === "fulfilled") setOutlets(outletsData.value);
       if (menuData.status === "fulfilled") setMenu(menuData.value);
       if (usersData.status === "fulfilled") setUsers(usersData.value);
+      try {
+        const couponsData = await api.adminGetCoupons();
+        setCoupons(couponsData);
+      } catch {}
       try { const a = await api.adminGetAnalytics(); setAnalytics(a); } catch {}
       try { const l = await api.adminGetAuditLogs(1, 40); setAuditLogs(l.logs || []); } catch {}
       try {
@@ -131,6 +160,45 @@ export default function AdminView({ onLogout, dbMode }) {
 
   useEffect(() => { loadData(); }, []);
   useEffect(() => { if (outlets.length > 0 && !staffOutletId) setStaffOutletId(outlets[0].id.toString()); }, [outlets]);
+
+  // Load coupons when active tab changes to coupons
+  useEffect(() => {
+    if (activeTab === "coupons") {
+      setCouponsLoading(true);
+      api.adminGetCoupons()
+        .then(setCoupons)
+        .catch(err => console.error("Failed to load coupons:", err))
+        .finally(() => setCouponsLoading(false));
+    }
+  }, [activeTab]);
+
+  // Load reviews when active tab changes to reviews
+  useEffect(() => {
+    if (activeTab === "reviews") {
+      setReviewsLoading(true);
+      api.adminGetReviews()
+        .then(data => {
+          setReviews(data);
+          setReviewsLoading(false);
+        })
+        .catch(err => {
+          alert("Failed to load reviews: " + err.message);
+          setReviewsLoading(false);
+        });
+    }
+  }, [activeTab]);
+
+  const handleDeleteReview = async (reviewId) => {
+    if (!confirm("Are you sure you want to delete this review?")) return;
+    try {
+      await api.adminDeleteReview(reviewId);
+      alert("Review deleted successfully!");
+      const data = await api.adminGetReviews();
+      setReviews(data);
+    } catch (err) {
+      alert("Failed to delete review: " + err.message);
+    }
+  };
 
   const openAddMenuModal = () => { loadData(); setShowAddMenu(true); };
   const openAddOutletModal = () => { loadData(); setShowAddOutlet(true); };
@@ -154,8 +222,11 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleShipOrder = async (orderId) => {
     const code = trackingCodes[orderId];
     if (!code?.trim()) { alert("Enter a tracking code first"); return; }
-    try { await api.adminShipOrder(orderId, code.trim()); alert("Marked as shipped!"); loadData(); }
-    catch (err) { alert("Failed: " + err.message); }
+    try {
+      await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null);
+      alert("Marked as shipped!");
+      loadData();
+    } catch (err) { alert("Failed: " + err.message); }
   };
 
   const handleAddMenuItem = async (e) => {
@@ -205,18 +276,91 @@ export default function AdminView({ onLogout, dbMode }) {
     try {
       const live = (await api.getMode()) === "Live Backend";
       if (live) {
-        const res = await fetch(`${API_BASE_URL}/admin/staff`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify({ email: staffEmail, password: staffPassword, first_name: staffFirstName, last_name: staffLastName, phone: staffPhone, outlet_id: staffOutletId ? parseInt(staffOutletId) : null }) });
-        const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
+        const res = await fetch(`${API_BASE_URL}/admin/staff`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
+          body: JSON.stringify({
+            email: staffEmail,
+            password: staffPassword,
+            first_name: staffFirstName,
+            last_name: staffLastName,
+            phone: staffPhone,
+            outlet_id: staffRole === "staff" && staffOutletId ? parseInt(staffOutletId) : null,
+            role: staffRole
+          })
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.message || "Failed to create account");
       } else {
         const list = JSON.parse(localStorage.getItem("mock_users") || "[]");
         if (list.find(u => u.email === staffEmail)) throw new Error("Email already registered");
-        list.push({ id: Date.now(), email: staffEmail, role: "staff", first_name: staffFirstName, last_name: staffLastName, phone: staffPhone, outlet_id: staffOutletId ? parseInt(staffOutletId) : null });
+        if (staffRole === "admin") {
+          const admins = list.filter(u => u.role === "admin");
+          if (admins.length >= 3) {
+            throw new Error("Maximum of 3 admin accounts allowed.");
+          }
+        }
+        list.push({
+          id: Date.now(),
+          email: staffEmail,
+          password: staffPassword,
+          role: staffRole,
+          first_name: staffFirstName,
+          last_name: staffLastName,
+          phone: staffPhone,
+          outlet_id: staffRole === "staff" && staffOutletId ? parseInt(staffOutletId) : null
+        });
         localStorage.setItem("mock_users", JSON.stringify(list));
       }
-      alert("Staff account created!"); setShowAddStaff(false);
-      setStaffEmail(""); setStaffPassword(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone("");
+      alert(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`);
+      setShowAddStaff(false);
+      setStaffEmail(""); setStaffPassword(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
+  };
+
+  const handleCreateCoupon = async (e) => {
+    e.preventDefault();
+    if (!couponCode.trim() || !couponDiscount) return;
+    try {
+      await api.adminAddCoupon({
+        code: couponCode.trim().toUpperCase(),
+        discount_pct: parseInt(couponDiscount),
+        is_active: couponIsActive
+      });
+      alert("Coupon created successfully!");
+      setShowAddCoupon(false);
+      setCouponCode("");
+      setCouponDiscount("");
+      setCouponIsActive(true);
+      const c = await api.adminGetCoupons();
+      setCoupons(c);
+    } catch (err) {
+      alert("Failed to create coupon: " + err.message);
+    }
+  };
+
+  const handleToggleCoupon = async (coupon) => {
+    try {
+      await api.adminUpdateCoupon(coupon.id, { is_active: !coupon.is_active });
+      alert(`Coupon "${coupon.code}" ${coupon.is_active ? "deactivated" : "activated"} successfully!`);
+      const c = await api.adminGetCoupons();
+      setCoupons(c);
+    } catch (err) {
+      alert("Failed to update coupon: " + err.message);
+    }
+  };
+
+  const handleDeleteCoupon = async (couponId) => {
+    if (!confirm("Are you sure you want to delete this coupon?")) return;
+    try {
+      await api.adminDeleteCoupon(couponId);
+      alert("Coupon deleted successfully!");
+      const c = await api.adminGetCoupons();
+      setCoupons(c);
+    } catch (err) {
+      alert("Failed to delete coupon: " + err.message);
+    }
   };
 
   const handleToggleUserActive = async (user) => {
@@ -252,8 +396,10 @@ export default function AdminView({ onLogout, dbMode }) {
     { id: "users",      label: "User Accounts",    icon: Users },
     { id: "batches",    label: "Expiry & Spoilage",icon: Calendar },
     { id: "suppliers",  label: "B2B Suppliers",   icon: Truck },
+    { id: "reviews",    label: "Product Reviews", icon: MessageSquare },
     { id: "logs",       label: "Audit Logs",       icon: FileText },
     { id: "qr",         label: "QR Dispatch",      icon: QrCode },
+    { id: "coupons",    label: "Discount Coupons", icon: Tag },
   ];
 
   const filteredUsers = useMemo(() => {
@@ -554,16 +700,51 @@ export default function AdminView({ onLogout, dbMode }) {
                     <td><span className={`badge-status status-${o.status}`}>{o.status}</span></td>
                     <td>
                       {(o.status === "pending" || o.status === "processing") ? (
-                        <div style={{ display: "flex", gap: "0.4rem" }}>
-                          <input type="text" placeholder="Tracking code" className="form-input" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem", width: 130, height: "auto" }} value={trackingCodes[o.id] || ""} onChange={e => setTrackingCodes({ ...trackingCodes, [o.id]: e.target.value })} />
-                          <button onClick={() => handleShipOrder(o.id)} className="btn btn-success" style={{ padding: "0.4rem 0.75rem", fontSize: "0.78rem", whiteSpace: "nowrap" }}>
-                            <Truck size={13} /> Ship
-                          </button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                          <div style={{ display: "flex", gap: "0.4rem" }}>
+                            <input type="text" placeholder="Tracking ID" className="form-input" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem", width: 130, height: "auto" }} value={trackingCodes[o.id] || ""} onChange={e => setTrackingCodes({ ...trackingCodes, [o.id]: e.target.value })} />
+                            
+                            <label style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px", borderRadius: "6px", background: trackingLabels[o.id] ? "rgba(34,197,94,0.12)" : "var(--bg-secondary)", border: trackingLabels[o.id] ? "1px solid #22c55e" : "1px solid var(--border-light)", cursor: "pointer", color: trackingLabels[o.id] ? "#22c55e" : "var(--text-secondary)", transition: "all 0.2s" }} title="Upload vendor barcode/QR code label">
+                              <QrCode size={14} />
+                              <input
+                                type="file"
+                                accept="image/*"
+                                style={{ display: "none" }}
+                                onChange={(e) => {
+                                  const file = e.target.files[0];
+                                  if (file) {
+                                    const reader = new FileReader();
+                                    reader.onload = (uploadEvent) => {
+                                      setTrackingLabels({ ...trackingLabels, [o.id]: uploadEvent.target.result });
+                                    };
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                              />
+                            </label>
+
+                            <button onClick={() => handleShipOrder(o.id)} className="btn btn-success" style={{ padding: "0.4rem 0.75rem", fontSize: "0.78rem", whiteSpace: "nowrap" }}>
+                              <Truck size={13} /> Ship
+                            </button>
+                          </div>
+                          {trackingLabels[o.id] && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.68rem", color: "#22c55e" }}>
+                              <span>✓ Label attached</span>
+                              <button onClick={() => setTrackingLabels({ ...trackingLabels, [o.id]: null })} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", fontSize: "0.65rem", padding: 0 }}>Remove</button>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                          {o.tracking_code ? `Code: ${o.tracking_code}` : "Done"}
-                        </span>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                          <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
+                            {o.tracking_code ? `Code: ${o.tracking_code}` : "Done"}
+                          </span>
+                          {o.tracking_label && (
+                            <span style={{ fontSize: "0.68rem", color: "var(--brand)" }}>
+                              🖼️ Label Uploaded
+                            </span>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -978,6 +1159,168 @@ export default function AdminView({ onLogout, dbMode }) {
       )}
 
 
+      {/* ══════════ PRODUCT REVIEWS MODERATION ══════════ */}
+      {activeTab === "reviews" && (
+        <div className="animate-fade-in">
+          <div style={{ marginBottom: "1.25rem" }}>
+            <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1.1rem", margin: 0 }}>Customer Reviews Moderation</h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.78rem", margin: "0.2rem 0 0" }}>
+              Monitor and moderate customer reviews submitted for catalog food products.
+            </p>
+          </div>
+
+          {reviewsLoading ? (
+            <div style={{ textAlign: "center", padding: "4rem 0" }}>
+              <RefreshCw className="animate-spin" size={28} style={{ color: "var(--text-muted)" }} />
+              <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>Loading reviews...</p>
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>Customer</th>
+                    <th>Rating</th>
+                    <th>Comment</th>
+                    <th>Submitted Date</th>
+                    <th style={{ textAlign: "right" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reviews.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "3rem 1rem" }}>
+                        No product reviews found.
+                      </td>
+                    </tr>
+                  ) : (
+                    reviews.map(r => (
+                      <tr key={r.id}>
+                        <td><strong>{r.menu_item_name}</strong></td>
+                        <td>{r.customer_name}</td>
+                        <td>
+                          <div style={{ display: "flex", gap: "0.1rem" }}>
+                            {[1, 2, 3, 4, 5].map(star => (
+                              <Star
+                                key={star}
+                                size={11}
+                                fill={r.rating >= star ? "var(--warning-color)" : "transparent"}
+                                color={r.rating >= star ? "var(--warning-color)" : "var(--border-dark)"}
+                              />
+                            ))}
+                          </div>
+                        </td>
+                        <td style={{ fontSize: "0.82rem", color: "var(--text-secondary)", maxWidth: "350px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "normal" }}>
+                          {r.comment}
+                        </td>
+                        <td style={{ color: "var(--text-muted)", fontSize: "0.78rem" }}>
+                          {new Date(r.created_at).toLocaleString()}
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <button
+                            onClick={() => handleDeleteReview(r.id)}
+                            className="btn btn-secondary"
+                            style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", color: "#ef4444" }}
+                          >
+                            Delete Review
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════ DISCOUNT COUPONS ══════════ */}
+      {activeTab === "coupons" && (
+        <div className="animate-fade-in">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+            <div>
+              <h2 style={{ fontSize: "1.1rem", fontWeight: "800", margin: 0 }}>Discount Coupons</h2>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", margin: "0.15rem 0 0" }}>Create and manage B2C & POS active coupon offers</p>
+            </div>
+            <button className="btn btn-primary" onClick={() => setShowAddCoupon(true)}>
+              <Plus size={14} /> Create Coupon
+            </button>
+          </div>
+
+          {couponsLoading ? (
+            <div style={{ textAlign: "center", padding: "3rem" }}>
+              <RefreshCw className="animate-spin" size={24} style={{ color: "var(--brand)" }} />
+              <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "0.5rem" }}>Loading coupons list...</p>
+            </div>
+          ) : (
+            <div className="table-responsive">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Coupon Code</th>
+                    <th>Discount (%)</th>
+                    <th>Status</th>
+                    <th>Created At</th>
+                    <th style={{ textAlign: "right" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {coupons.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", padding: "3rem", color: "var(--text-muted)", fontSize: "0.82rem" }}>
+                        No discount coupons registered. Click "Create Coupon" to seed one.
+                      </td>
+                    </tr>
+                  ) : (
+                    coupons.map(coupon => (
+                      <tr key={coupon.id}>
+                        <td>
+                          <span style={{ fontFamily: "monospace", fontSize: "0.95rem", fontWeight: "700", background: "var(--bg-elevated)", padding: "0.25rem 0.5rem", borderRadius: "4px", border: "1px solid var(--border-light)" }}>
+                            {coupon.code}
+                          </span>
+                        </td>
+                        <td style={{ fontWeight: "700", fontSize: "0.9rem" }}>
+                          {coupon.discount_pct}% Off
+                        </td>
+                        <td>
+                          <span className={`status-pill ${coupon.is_active ? "status-shipped" : "status-cancelled"}`} style={{ display: "inline-block", fontSize: "0.75rem", padding: "0.2rem 0.5rem", borderRadius: "100px", fontWeight: "700" }}>
+                            {coupon.is_active ? "Active" : "Inactive"}
+                          </span>
+                        </td>
+                        <td style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>
+                          {coupon.created_at ? new Date(coupon.created_at).toLocaleString() : "System Seeded"}
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() => handleToggleCoupon(coupon)}
+                              className="btn btn-secondary"
+                              style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                            >
+                              {coupon.is_active ? "Deactivate" : "Activate"}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteCoupon(coupon.id)}
+                              className="btn btn-secondary"
+                              style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", color: "#ef4444" }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+
       {/* ══════════ MODALS ══════════ */}
 
       {/* Add Product */}
@@ -1067,11 +1410,18 @@ export default function AdminView({ onLogout, dbMode }) {
       </Modal>
 
       {/* Add Staff */}
-      <Modal open={showAddStaff} onClose={() => setShowAddStaff(false)} title="Create Staff Account">
+      <Modal open={showAddStaff} onClose={() => setShowAddStaff(false)} title="Create Team Account">
         <form onSubmit={handleAddStaff} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Role</label>
+            <select className="form-select" value={staffRole} onChange={e => setStaffRole(e.target.value)}>
+              <option value="staff">Outlet Cashier (Staff)</option>
+              <option value="admin">Administrator (Admin)</option>
+            </select>
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Email</label>
-            <input type="email" required className="form-input" placeholder="staff@brand.com" value={staffEmail} onChange={e => setStaffEmail(e.target.value)} />
+            <input type="email" required className="form-input" placeholder="team@brand.com" value={staffEmail} onChange={e => setStaffEmail(e.target.value)} />
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Password</label>
@@ -1091,15 +1441,64 @@ export default function AdminView({ onLogout, dbMode }) {
             <label className="form-label">Phone</label>
             <input type="text" className="form-input" placeholder="98480xxxxx" value={staffPhone} onChange={e => setStaffPhone(e.target.value)} />
           </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">Assign to Outlet</label>
-            <select className="form-select" value={staffOutletId} onChange={e => setStaffOutletId(e.target.value)}>
-              {outlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
-          </div>
+          {staffRole === "staff" && (
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Assign to Outlet</label>
+              <select className="form-select" value={staffOutletId} onChange={e => setStaffOutletId(e.target.value)}>
+                {outlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
+          )}
           <div style={{ display: "flex", gap: "0.75rem" }}>
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Users size={15} /> Create Account</button>
             <button type="button" onClick={() => setShowAddStaff(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add Coupon Modal */}
+      <Modal open={showAddCoupon} onClose={() => setShowAddCoupon(false)} title="Create Coupon Offer">
+        <form onSubmit={handleCreateCoupon} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Coupon Code</label>
+            <input
+              type="text"
+              required
+              className="form-input"
+              placeholder="e.g. FESTIVE20"
+              style={{ textTransform: "uppercase" }}
+              value={couponCode}
+              onChange={e => setCouponCode(e.target.value)}
+            />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Discount Percentage (%)</label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              required
+              className="form-input"
+              placeholder="e.g. 20"
+              value={couponDiscount}
+              onChange={e => setCouponDiscount(e.target.value)}
+            />
+          </div>
+          <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
+            <input
+              type="checkbox"
+              id="couponActive"
+              checked={couponIsActive}
+              onChange={e => setCouponIsActive(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            <label htmlFor="couponActive" className="form-label" style={{ margin: 0, cursor: "pointer" }}>
+              Active and ready for validation
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Tag size={15} /> Create Coupon</button>
+            <button type="button" onClick={() => setShowAddCoupon(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
           </div>
         </form>
       </Modal>

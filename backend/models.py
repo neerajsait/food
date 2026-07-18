@@ -135,6 +135,16 @@ class MenuItem(db.Model):
         self.image_url = image_url
         self.is_active = is_active
 
+    @property
+    def average_rating(self):
+        if not self.reviews:
+            return 0.0
+        return round(sum(r.rating for r in self.reviews) / len(self.reviews), 1)
+
+    @property
+    def reviews_count(self):
+        return len(self.reviews)
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -144,7 +154,9 @@ class MenuItem(db.Model):
             "business_type": self.business_type,
             "category": self.category,
             "image_url": self.image_url,
-            "is_active": self.is_active
+            "is_active": self.is_active,
+            "average_rating": self.average_rating,
+            "reviews_count": self.reviews_count
         }
 
 
@@ -385,6 +397,7 @@ class Order(db.Model):
     status = Column(String(20), nullable=False, default='pending')
     total_price = Column(Numeric(10, 2), nullable=False, default=0.00)
     tracking_code = Column(String(100), nullable=True)
+    tracking_label = Column(Text, nullable=True)
     is_received = Column(Boolean, default=False)
     cancel_reason = Column(String(255), nullable=True)
     delivery_address = Column(String(500), nullable=True)
@@ -413,6 +426,7 @@ class Order(db.Model):
             "status": self.status,
             "total_price": float(self.total_price),
             "tracking_code": self.tracking_code,
+            "tracking_label": self.tracking_label,
             "is_received": self.is_received,
             "cancel_reason": self.cancel_reason,
             "delivery_address": self.delivery_address,
@@ -488,6 +502,42 @@ class Feedback(db.Model):
 
 
 # ---------------------------------------------------------------------------
+# MenuItemReview — B2C product review
+# ---------------------------------------------------------------------------
+class MenuItemReview(db.Model):
+    __tablename__ = 'menu_item_reviews'
+
+    id = Column(Integer, primary_key=True)
+    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
+    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    rating = Column(Integer, nullable=False)
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    customer = relationship('User', backref='menu_item_reviews')
+    menu_item = relationship('MenuItem', backref='reviews')
+
+    def __init__(self, menu_item_id, customer_id, rating, comment=None):
+        self.menu_item_id = menu_item_id
+        self.customer_id = customer_id
+        self.rating = rating
+        self.comment = comment
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "menu_item_id": self.menu_item_id,
+            "menu_item_name": self.menu_item.name if self.menu_item else None,
+            "customer_id": self.customer_id,
+            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() or self.customer.email,
+            "rating": self.rating,
+            "comment": self.comment,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+
+# ---------------------------------------------------------------------------
 # POSSale — B2B2C cashier sales at outlet
 # ---------------------------------------------------------------------------
 class POSSale(db.Model):
@@ -554,4 +604,31 @@ class POSSaleItem(db.Model):
             "menu_item_name": self.menu_item.name if self.menu_item else None,
             "quantity": self.quantity,
             "price": float(self.price)
+        }
+
+
+# ---------------------------------------------------------------------------
+# Coupon — B2C & POS Discount Coupon
+# ---------------------------------------------------------------------------
+class Coupon(db.Model):
+    __tablename__ = 'coupons'
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)
+    discount_pct = Column(Integer, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __init__(self, code, discount_pct, is_active=True):
+        self.code = code.upper().strip()
+        self.discount_pct = int(discount_pct)
+        self.is_active = is_active
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "code": self.code,
+            "discount_pct": self.discount_pct,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None
         }

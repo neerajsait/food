@@ -17,6 +17,11 @@ export default function StaffPOS({ onLogout, dbMode }) {
   const [successMsg, setSuccessMsg] = useState("");
   const [alertMsg, setAlertMsg] = useState("");
 
+  // Coupon states
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponError, setCouponError] = useState("");
+
   // Shift & POS history states
   const [salesHistory, setSalesHistory] = useState([]);
   const [showShiftReport, setShowShiftReport] = useState(false);
@@ -162,6 +167,23 @@ export default function StaffPOS({ onLogout, dbMode }) {
     }, 0);
   };
 
+  const discountAmount = appliedCoupon ? (getSaleTotalAmount() * appliedCoupon.discount_pct / 100) : 0;
+  const finalTotalAmount = getSaleTotalAmount() - discountAmount;
+
+  const handleApplyCoupon = async () => {
+    if (!couponCodeInput.trim()) return;
+    setCouponError("");
+    try {
+      const coupon = await api.validateCoupon(couponCodeInput.trim());
+      setAppliedCoupon(coupon);
+      setCouponCodeInput("");
+      alert(`Coupon "${coupon.code}" applied! (${coupon.discount_pct}% off)`);
+    } catch (err) {
+      setCouponError(err.message || "Invalid coupon code");
+      setAppliedCoupon(null);
+    }
+  };
+
   const handleCompleteSale = async (forceComplete = false) => {
     const totalQty = getSaleTotalQty();
     if (totalQty === 0) return;
@@ -189,8 +211,8 @@ export default function StaffPOS({ onLogout, dbMode }) {
     }));
 
     try {
-      const res = await api.posSell(items, paymentMethod);
-      alert(`POS Transaction successful! Total: ₹${getSaleTotalAmount().toFixed(2)}`);
+      const res = await api.posSell(items, paymentMethod, appliedCoupon ? appliedCoupon.code : null);
+      alert(`POS Transaction successful! Total: ₹${finalTotalAmount.toFixed(2)}`);
       setActiveSale({});
       setShowUPIScanModal(false);
       
@@ -198,7 +220,7 @@ export default function StaffPOS({ onLogout, dbMode }) {
       const newSaleEntry = {
         id: Date.now(),
         created_at: new Date().toISOString(),
-        total_amount: getSaleTotalAmount(),
+        total_amount: finalTotalAmount,
         payment_method: paymentMethod,
         items: items.map(it => {
           const mItem = menu.find(m => m.id === it.menu_item_id);
@@ -210,6 +232,8 @@ export default function StaffPOS({ onLogout, dbMode }) {
         })
       };
       setSalesHistory(prev => [newSaleEntry, ...prev]);
+      setAppliedCoupon(null);
+      setCouponCodeInput("");
 
       setOutlet(prev => ({
         ...prev,
@@ -548,19 +572,61 @@ export default function StaffPOS({ onLogout, dbMode }) {
                     </div>
                   </div>
 
+                  {/* Discount Coupon */}
+                  <div style={{ marginBottom: "1rem" }}>
+                    <span className="form-label" style={{ marginBottom: "0.35rem", display: "block" }}>Discount Coupon</span>
+                    <div style={{ display: "flex", gap: "0.4rem" }}>
+                      <input
+                        type="text"
+                        className="form-input"
+                        placeholder="Enter code (e.g. WELCOME10)"
+                        style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", textTransform: "uppercase", height: "auto" }}
+                        value={couponCodeInput}
+                        onChange={e => setCouponCodeInput(e.target.value)}
+                      />
+                      <button type="button" onClick={handleApplyCoupon} className="btn btn-secondary" style={{ padding: "0.4rem 0.85rem", fontSize: "0.8rem", height: "auto" }}>
+                        Apply
+                      </button>
+                    </div>
+                    {couponError && (
+                      <div style={{ fontSize: "0.72rem", color: "#ef4444", marginTop: "0.25rem", fontWeight: "600" }}>
+                        ❌ {couponError}
+                      </div>
+                    )}
+                    {appliedCoupon && (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "6px", padding: "0.35rem 0.5rem", marginTop: "0.4rem" }}>
+                        <span style={{ fontSize: "0.75rem", color: "var(--success)", fontWeight: "700" }}>
+                          ✓ "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setAppliedCoupon(null)}
+                          style={{ background: "none", border: "none", color: "#ef4444", fontSize: "0.7rem", cursor: "pointer", fontWeight: "700" }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Totals */}
                   <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "0.875rem", marginBottom: "1rem" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
                       <span>Items</span><span>{getSaleTotalQty()} units</span>
                     </div>
+                    {appliedCoupon && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--success)", marginBottom: "0.35rem", fontWeight: "600" }}>
+                        <span>Discount ({appliedCoupon.code})</span><span>-₹{discountAmount.toFixed(0)}</span>
+                      </div>
+                    )}
                     <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--font-heading)", fontSize: "1.3rem", fontWeight: 800 }}>
                       <span>Total</span>
-                      <span style={{ color: "var(--brand)" }}>₹{getSaleTotalAmount().toFixed(0)}</span>
+                      <span style={{ color: "var(--brand)" }}>₹{finalTotalAmount.toFixed(0)}</span>
                     </div>
                   </div>
 
                   <button onClick={handleCompleteSale} disabled={getSaleTotalQty() === 0 || loading} className="btn btn-primary" style={{ width: "100%", padding: "0.875rem", fontSize: "0.95rem" }}>
-                    {loading ? "Processing…" : "Complete Sale"}
+                    {loading ? "Processing…" : `Complete Sale · ₹${finalTotalAmount.toFixed(0)}`}
                   </button>
                 </div>
               </div>
