@@ -10,7 +10,13 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || (
 // Helper to retrieve auth tokens
 function getAuthHeader() {
   const token = localStorage.getItem("token");
-  return token ? { "Authorization": `Bearer ${token}` } : {};
+  const headers = {
+    "ngrok-skip-browser-warning": "69420"
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 // Check if backend is alive (cached for 10 seconds to resolve UI lag)
@@ -28,7 +34,12 @@ async function checkBackendAlive(bypassThrow = false) {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+    const response = await fetch(`${API_BASE_URL}/health`, { 
+  signal: controller.signal,
+  headers: {
+    "ngrok-skip-browser-warning": "69420"
+  }
+});
     clearTimeout(timeoutId);
     cachedLive = response.ok;
   } catch (e) {
@@ -772,7 +783,9 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "69420",
+       },
       body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null })
     });
     const data = await res.json();
@@ -791,7 +804,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json","ngrok-skip-browser-warning": "69420", },
       body: JSON.stringify({ email, password })
     });
     const data = await res.json();
@@ -818,7 +831,9 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return mockApi.getFoodsMenu();
 
-    const res = await fetch(`${API_BASE_URL}/foods/menu`);
+    const res = await fetch(`${API_BASE_URL}/foods/menu`, {
+      headers: { "ngrok-skip-browser-warning": "69420" }
+    });
     if (!res.ok) throw new Error("Failed to load menu");
     return res.json();
   },
@@ -1265,7 +1280,9 @@ export const api = {
   async validateCoupon(code) {
     const live = await checkBackendAlive();
     if (!live) return mockApi.validateCoupon(code);
-    const res = await fetch(`${API_BASE_URL}/coupons/${code}`);
+    const res = await fetch(`${API_BASE_URL}/coupons/${code}`, {
+      headers: { "ngrok-skip-browser-warning": "69420" }
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || "Invalid coupon");
     return data;
@@ -1321,10 +1338,12 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return mockApi.getMenuItemReviews(itemId);
 
-    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`);
+    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
+      headers: { "ngrok-skip-browser-warning": "69420" }
+    });
     if (!res.ok) throw new Error("Failed to load reviews");
     return res.json();
-  },
+  },  
 
   async submitMenuItemReview(itemId, rating, comment) {
     const live = await checkBackendAlive();

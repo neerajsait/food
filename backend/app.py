@@ -18,6 +18,8 @@ from flask_mail import Mail, Message
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
+from flask import Flask
+from flask_cors import CORS
 
 from models import (
     db, User, Outlet, MenuItem, OutletStock,
@@ -2166,3 +2168,4 @@ if __name__ == "__main__":
     app = create_app()
     debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
     app.run(debug=debug_mode, port=5000)
+    CORS(app, resources={r"/*": {"origins": "https://foodsk.netlify.app"}})
