@@ -73,7 +73,11 @@ def department_required(*departments):
                 return fn(*args, **kwargs)
                 
             user_dept = claims.get("admin_department")
-            if not user_dept or user_dept == "SuperAdmin":
+            if user_dept == "SuperAdmin":
+                return fn(*args, **kwargs)
+            if not user_dept:
+                if departments:
+                    return jsonify({"error": "Forbidden", "message": "No department assigned. Please contact SuperAdmin."}), 403
                 return fn(*args, **kwargs)
                 
             if departments and user_dept not in departments:
@@ -737,6 +741,20 @@ FlavorFlow Team
             discount_pct = min(100, discount_pct)
             total = total * Decimal(str((100 - discount_pct) / 100))
 
+        redeem_points = int(data.get("redeem_loyalty_points", 0))
+        if redeem_points > 0:
+            if not customer:
+                return jsonify({"error": "Bad Request", "message": "Loyalty points can only be used by registered customers"}), 400
+            if customer.loyalty_points < redeem_points:
+                return jsonify({"error": "Bad Request", "message": "Insufficient loyalty points"}), 400
+            
+            # $1 (or Rs. 1) off for every 100 points
+            points_discount = Decimal(str(redeem_points)) / Decimal('100.0')
+            customer.loyalty_points -= redeem_points
+            total = total - points_discount
+            if total < 0:
+                total = Decimal("0.00")
+
         order = Order(
             customer_id=customer_id, 
             total_price=total, 
@@ -1230,8 +1248,11 @@ FlavorFlow Team
                 return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
 
         if role == "admin":
+            dept = data.get("admin_department")
+            if not dept or dept not in ["Finance", "Operations", "HR"]:
+                return jsonify({"error": "Bad Request", "message": "admin_department is required and must be Finance, Operations, or HR"}), 400
             user = Admin(email=email, first_name=first_name, last_name=last_name, phone=phone)
-            user.admin_department = data.get("admin_department") if data.get("admin_department") else None
+            user.admin_department = dept
         elif role == "staff":
             user = Staff(email=email, first_name=first_name, last_name=last_name, phone=phone, outlet_id=outlet_id)
         elif role == "outlet_owner":
@@ -1834,13 +1855,19 @@ FlavorFlow Team
                     )
                     if admin_count >= 3:
                         return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
+                    dept = data.get("admin_department") or getattr(user, 'admin_department', None)
+                    if not dept or dept not in ["Finance", "Operations", "HR"]:
+                        return jsonify({"error": "Bad Request", "message": "admin_department is required for admin role"}), 400
                 user.role = new_role
         if "outlet_id" in data:
             oid = data["outlet_id"]
             user.outlet_id = int(oid) if oid is not None else None
             
         if "admin_department" in data:
-            user.admin_department = data["admin_department"] if data["admin_department"] else None
+            dept = data["admin_department"]
+            if dept and dept not in ["Finance", "Operations", "HR"]:
+                return jsonify({"error": "Bad Request", "message": "admin_department must be Finance, Operations, or HR"}), 400
+            user.admin_department = dept if dept else None
         
         password_changed = False
         import re
@@ -2588,7 +2615,8 @@ def _seed_admin(app):
         # 1. Seed Admin
         admin = db.session.scalars(select(User).where(User.email == "admin")).first()
         if not admin:
-            admin = User(email="admin", role="admin", first_name="System", last_name="Admin")
+            admin = Admin(email="admin", first_name="System", last_name="Admin")
+            admin.is_superadmin = True
             admin.set_password("admin", bcrypt)
             admin.is_first_login = True
             db.session.add(admin)

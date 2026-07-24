@@ -46,10 +46,12 @@ class BackendTestCase(unittest.TestCase):
 
         # Create admin, customer, and staff users
         self.admin = Admin(email="admin@brand.com")
+        self.admin.is_superadmin = True
         self.admin.set_password("adminpass", bcrypt)
 
         self.customer = Customer(email="customer@gmail.com")
-        self.customer.set_password("custpass", bcrypt)
+        self.customer.is_email_verified = True
+        self.customer.set_password("custpass1", bcrypt)
 
         self.staff = Staff(email="staff@brand.com", outlet_id=self.outlet.id)
         self.staff.set_password("staffpass", bcrypt)
@@ -81,7 +83,7 @@ class BackendTestCase(unittest.TestCase):
 
     def test_rbac_access_control(self):
         # Obtain tokens
-        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass")
+        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass1")
         staff_headers = self.get_jwt_headers("staff@brand.com", "staffpass")
         admin_headers = self.get_jwt_headers("admin@brand.com", "adminpass")
 
@@ -103,7 +105,7 @@ class BackendTestCase(unittest.TestCase):
         self.assertEqual(len(resp.json), 1)
 
     def test_b2c_home_foods_order_and_feedback_flow(self):
-        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass")
+        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass1")
         admin_headers = self.get_jwt_headers("admin@brand.com", "adminpass")
 
         # 1. Customer places order
@@ -201,12 +203,12 @@ class BackendTestCase(unittest.TestCase):
         self.assertIn("Insufficient stock", resp.json["message"])
     def test_staff_registration_restrictions(self):
         admin_headers = self.get_jwt_headers("admin@brand.com", "adminpass")
-        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass")
+        customer_headers = self.get_jwt_headers("customer@gmail.com", "custpass1")
 
         # 1. Self-registration must lock the role to "customer" and ignore other role specs
         register_payload = {
             "email": "new_staff_try@brand.com",
-            "password": "somepassword",
+            "password": "somepassword1",
             "role": "staff",
             "outlet_id": self.outlet.id
         }
