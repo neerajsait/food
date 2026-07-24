@@ -51,6 +51,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [outlets, setOutlets] = useState([]);
   const [menu, setMenu] = useState([]);
   const [analytics, setAnalytics] = useState(null);
+  const [revenueShare, setRevenueShare] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [batches, setBatches] = useState([]);
   const [suppliers, _setSuppliers] = useState(INITIAL_SUPPLIERS);
@@ -154,6 +155,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [staffPhone, setStaffPhone] = useState("");
   const [staffOutletId, setStaffOutletId] = useState("");
   const [staffRole, setStaffRole] = useState("staff");
+  const [staffDepartment, setStaffDepartment] = useState("");
 
   const loadData = async () => {
     setLoading(true); setError("");
@@ -353,7 +355,13 @@ export default function AdminView({ onLogout, dbMode }) {
     try {
       const latVal = outletLatitude ? parseFloat(outletLatitude) : null;
       const lonVal = outletLongitude ? parseFloat(outletLongitude) : null;
-      const data = { name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal };
+      const data = { 
+        name: outletName, 
+        address: outletAddress, 
+        latitude: latVal, 
+        longitude: lonVal, 
+        revenue_share_percentage: parseFloat(outletRevenueShare) || 0
+      };
       
       if (editingOutletId) {
         await api.adminUpdateOutlet(editingOutletId, data);
@@ -365,7 +373,7 @@ export default function AdminView({ onLogout, dbMode }) {
           const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
         } else {
           const list = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
-          list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [] });
+          list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [], revenue_share_percentage: parseFloat(outletRevenueShare) || 0 });
           localStorage.setItem("mock_outlets", JSON.stringify(list));
         }
         alert("Outlet added!");
@@ -434,7 +442,8 @@ export default function AdminView({ onLogout, dbMode }) {
         last_name: staffLastName,
         phone: staffPhone,
         outlet_id: (staffRole === "staff" || staffRole === "outlet_owner" || staffRole === "kitchen") && staffOutletId ? parseInt(staffOutletId) : null,
-        role: staffRole
+        role: staffRole,
+        admin_department: staffRole === "admin" ? staffDepartment : null
       };
       if (staffPassword) payload.password = staffPassword;
       if (staffPin) payload.pin = staffPin;
@@ -465,7 +474,7 @@ export default function AdminView({ onLogout, dbMode }) {
         alert(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`);
       }
       setShowAddStaff(false); setEditingUserId(null);
-      setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff");
+      setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment("");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
   };
@@ -562,20 +571,30 @@ export default function AdminView({ onLogout, dbMode }) {
   const pendingOrders = orders.filter(o => o.status === "pending" || o.status === "processing").length;
   const lowStockOutlets = outlets.filter(o => (o.items || []).some(i => i.needs_restock)).length;
 
-  const TABS = [
-    { id: "overview",   label: "Overview",        icon: BarChart3 },
-    { id: "catalog",    label: "Master Catalog",  icon: ShoppingBag },
-    { id: "foods",      label: "Outlet Stations", icon: Package },
-    { id: "analytics",  label: "Sales Analytics", icon: TrendingUp },
-    { id: "users",      label: "User Accounts",    icon: Users },
-    { id: "timesheets", label: "Timesheets",       icon: Clock },
-    { id: "batches",    label: "Expiry & Spoilage",icon: Calendar },
-    { id: "suppliers",  label: "B2B Suppliers",   icon: Truck },
-    { id: "reviews",    label: "Product Reviews", icon: MessageSquare },
-    { id: "logs",       label: "Audit Logs",       icon: FileText },
-    { id: "qr",         label: "QR Dispatch",      icon: QrCode },
-    { id: "coupons",    label: "Discount Coupons", icon: Tag },
+    const currentUser = React.useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("user") || "{}"); }
+    catch(e) { return {}; }
+  }, []);
+  const userDept = currentUser.admin_department || "SuperAdmin";
+
+  const ALL_TABS = [
+    { id: "overview",   label: "Overview",        icon: BarChart3, depts: ["SuperAdmin", "Operations", "HR", "Finance"] },
+    { id: "catalog",    label: "Master Catalog",  icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
+    { id: "foods",      label: "Outlet Stations", icon: Package, depts: ["SuperAdmin", "Operations"] },
+    { id: "finance",    label: "Revenue Share",   icon: FileText, depts: ["SuperAdmin", "Finance"] },
+    { id: "analytics",  label: "Sales Analytics", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
+    { id: "users",      label: "User Accounts",    icon: Users, depts: ["SuperAdmin", "HR"] },
+    { id: "timesheets", label: "Timesheets",       icon: Clock, depts: ["SuperAdmin", "HR"] },
+    { id: "batches",    label: "Expiry & Spoilage",icon: Calendar, depts: ["SuperAdmin", "Operations"] },
+    { id: "suppliers",  label: "B2B Suppliers",   icon: Truck, depts: ["SuperAdmin", "Operations"] },
+    { id: "reviews",    label: "Product Reviews", icon: MessageSquare, depts: ["SuperAdmin", "Operations"] },
+    { id: "logs",       label: "Audit Logs",       icon: FileText, depts: ["SuperAdmin"] },
+    { id: "qr",         label: "QR Dispatch",      icon: QrCode, depts: ["SuperAdmin", "Operations"] },
+    { id: "coupons",    label: "Discount Coupons", icon: Tag, depts: ["SuperAdmin", "Finance"] },
   ];
+  
+  const TABS = ALL_TABS.filter(t => t.depts.includes(userDept));
+
 
   const filteredUsers = useMemo(() => {
     return users.filter(user => {
@@ -991,6 +1010,47 @@ export default function AdminView({ onLogout, dbMode }) {
       )}
 
       {/* ══════════ ANALYTICS ══════════ */}
+      
+      {activeTab === "finance" && (
+        <div className="dashboard-content">
+          <header className="content-header">
+            <div>
+              <h1 className="content-title">Revenue Share Report</h1>
+              <p className="content-subtitle">Brand cut from completed orders per outlet.</p>
+            </div>
+            <button className="btn btn-secondary" onClick={fetchRevenueShare}><RefreshCw size={15} /> Refresh</button>
+          </header>
+          <div className="card">
+            <div className="table-responsive">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Outlet Name</th>
+                    <th>Total Sales</th>
+                    <th>Revenue Share %</th>
+                    <th>Brand Cut / Payout</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {revenueShare.length === 0 ? (
+                    <tr><td colSpan="4" style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No revenue share data found.</td></tr>
+                  ) : (
+                    revenueShare.map(r => (
+                      <tr key={r.outlet_id}>
+                        <td style={{ fontWeight: 600 }}>{r.outlet_name}</td>
+                        <td>₹{r.total_sales.toFixed(2)}</td>
+                        <td>{r.revenue_share_percentage}%</td>
+                        <td style={{ color: "var(--success)" }}>₹{r.brand_cut.toFixed(2)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === "analytics" && (
         <div className="animate-fade-in">
           {!analytics ? (
@@ -1796,7 +1856,7 @@ export default function AdminView({ onLogout, dbMode }) {
       </Modal>
 
       {/* Add/Edit Staff */}
-      <Modal open={showAddStaff} onClose={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); }} title={editingUserId ? "Edit Team Account" : "Create Team Account"}>
+      <Modal open={showAddStaff} onClose={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); }} title={editingUserId ? "Edit Team Account" : "Create Team Account"}>
         <form onSubmit={handleAddStaff} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Role</label>
@@ -1859,7 +1919,7 @@ export default function AdminView({ onLogout, dbMode }) {
           )}
           <div style={{ display: "flex", gap: "0.75rem" }}>
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Users size={15} /> {editingUserId ? "Save Changes" : "Create Account"}</button>
-            <button type="button" onClick={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); }} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+            <button type="button" onClick={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); }} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
           </div>
         </form>
       </Modal>

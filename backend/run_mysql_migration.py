@@ -7,7 +7,7 @@ conn = pymysql.connect(
     host=os.getenv('MYSQL_HOST', 'localhost'),
     user=os.getenv('MYSQL_USER', 'root'),
     password=os.getenv('MYSQL_PASSWORD', 'root'),
-    database=os.getenv('MYSQL_DATABASE', 'food'),
+    database=os.getenv('MYSQL_DB', 'food'),
     charset='utf8mb4'
 )
 c = conn.cursor()

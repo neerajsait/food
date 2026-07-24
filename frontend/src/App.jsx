@@ -172,7 +172,7 @@ export default function App() {
                   type="password"
                   required
                   className="form-input"
-                  placeholder="At least 5 characters"
+                  placeholder="Min 8 chars, letters & numbers"
                   value={newPassword}
                   onChange={e => setNewPassword(e.target.value)}
                 />

@@ -57,6 +57,33 @@ def role_required(*roles):
         return wrapper
     return decorator
 
+
+def department_required(*departments):
+    """Decorator: JWT required + admin role + department check."""
+    def decorator(fn):
+        @wraps(fn)
+        @jwt_required()
+        def wrapper(*args, **kwargs):
+            claims = get_jwt()
+            if claims.get("role") != "admin":
+                return jsonify({"error": "Forbidden", "message": "Admin access required"}), 403
+            
+            # Superadmin or unspecified department has full access
+            if claims.get("is_superadmin"):
+                return fn(*args, **kwargs)
+                
+            user_dept = claims.get("admin_department")
+            if not user_dept or user_dept == "SuperAdmin":
+                return fn(*args, **kwargs)
+                
+            if departments and user_dept not in departments:
+                return jsonify({"error": "Forbidden", "message": f"Access restricted to departments: {', '.join(departments)}"}), 403
+                
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 def sanitize_input(data, skip_keys=None):
     if skip_keys is None:
         skip_keys = ["password", "new_password", "old_password"]
@@ -360,7 +387,9 @@ def create_app(config_override=None):
         additional_claims = {
             "role": user.role,
             "outlet_id": user.outlet_id,
-            "user_id": user.id
+            "user_id": user.id,
+            "admin_department": getattr(user, 'admin_department', None),
+            "is_superadmin": getattr(user, 'is_superadmin', False)
         }
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
         return jsonify({"access_token": token, "user": user.to_dict()}), 200
@@ -821,13 +850,13 @@ FlavorFlow Team
 
     # --- Menu Items ---
     @app.route("/api/admin/menu", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_menu():
         items = db.session.scalars(select(MenuItem).where(MenuItem.is_active == True).order_by(MenuItem.business_type, MenuItem.name)).all()
         return jsonify([i.to_dict() for i in items]), 200
 
     @app.route("/api/admin/menu", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_menu():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
@@ -876,7 +905,7 @@ FlavorFlow Team
         return jsonify({"message": "Item created", "item": item.to_dict()}), 201
 
     @app.route("/api/admin/menu/<int:item_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_menu(item_id):
         item = db.session.get(MenuItem, item_id)
         if not item:
@@ -895,7 +924,7 @@ FlavorFlow Team
         return jsonify({"message": "Updated", "item": item.to_dict()}), 200
 
     @app.route("/api/admin/menu/<int:item_id>", methods=["DELETE", "POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_menu(item_id):
         item = db.session.get(MenuItem, item_id)
         if not item:
@@ -909,13 +938,13 @@ FlavorFlow Team
 
     # --- Outlets ---
     @app.route("/api/admin/outlets", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_outlets():
         outlets = db.session.scalars(select(Outlet).order_by(Outlet.name)).all()
         return jsonify([o.to_dict() for o in outlets]), 200
 
     @app.route("/api/admin/outlets", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
@@ -924,7 +953,8 @@ FlavorFlow Team
             return jsonify({"error": "Bad Request", "message": "name and address required"}), 400
         outlet = Outlet(name=name, address=address,
                         latitude=data.get("latitude"), longitude=data.get("longitude"),
-                        owner_id=data.get("owner_id"))
+                        owner_id=data.get("owner_id"),
+                        revenue_share_percentage=data.get("revenue_share_percentage", 0.00))
         db.session.add(outlet)
         db.session.flush()
 
@@ -945,20 +975,20 @@ FlavorFlow Team
         return jsonify({"message": "Outlet created", "outlet": outlet.to_dict()}), 201
 
     @app.route("/api/admin/outlets/<int:outlet_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_outlet(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        for field in ("name", "address", "latitude", "longitude", "owner_id"):
+        for field in ("name", "address", "latitude", "longitude", "owner_id", "revenue_share_percentage"):
             if field in data:
                 setattr(outlet, field, data[field])
         db.session.commit()
         return jsonify({"message": "Updated", "outlet": outlet.to_dict()}), 200
 
     @app.route("/api/admin/outlets/<int:outlet_id>", methods=["DELETE", "POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_outlet(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
@@ -971,7 +1001,7 @@ FlavorFlow Team
 
     # --- Outlet Stock Management ---
     @app.route("/api/admin/outlets/<int:outlet_id>/stock", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet_stock(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
@@ -999,7 +1029,7 @@ FlavorFlow Team
 
     # FIX: Added /items alias route to match frontend call
     @app.route("/api/admin/outlets/<int:outlet_id>/items", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet_item(outlet_id):
         """Alias for /stock endpoint — used by the frontend assign-item-to-outlet flow."""
         outlet = db.session.get(Outlet, outlet_id)
@@ -1041,7 +1071,7 @@ FlavorFlow Team
 
     # FIX: Added DELETE /items/<menu_item_id> route for frontend remove functionality
     @app.route("/api/admin/outlets/<int:outlet_id>/items/<int:menu_item_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_remove_outlet_item(outlet_id, menu_item_id):
         """Remove a specific item from an outlet's stock."""
         stock = db.session.scalars(
@@ -1054,7 +1084,7 @@ FlavorFlow Team
         return jsonify({"message": "Item removed from outlet"}), 200
 
     @app.route("/api/admin/outlets/<int:outlet_id>/restock", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_restock_outlet(outlet_id):
         claims = get_jwt()
         admin_id = claims.get("user_id")
@@ -1077,9 +1107,31 @@ FlavorFlow Team
         db.session.commit()
         return jsonify({"message": f"+{qty} stocked", "new_stock": stock.current_stock}), 200
 
+    @app.route("/api/admin/revenue-share", methods=["GET"])
+    @department_required("Finance")
+    def admin_revenue_share():
+        outlets = db.session.scalars(select(Outlet)).all()
+        results = []
+        for o in outlets:
+            total_sales = db.session.scalar(
+                select(func.sum(Order.total_price))
+                .where(Order.outlet_id == o.id)
+                .where(Order.status == 'completed')
+            ) or Decimal('0.00')
+            share_pct = o.revenue_share_percentage or Decimal('0.00')
+            brand_cut = Decimal(total_sales) * (Decimal(share_pct) / Decimal('100.0'))
+            results.append({
+                "outlet_id": o.id,
+                "outlet_name": o.name,
+                "total_sales": float(total_sales),
+                "revenue_share_percentage": float(share_pct),
+                "brand_cut": round(float(brand_cut), 2)
+            })
+        return jsonify(results), 200
+
     # --- Orders (admin) ---
     @app.route("/api/admin/orders", methods=["GET"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_get_orders():
         orders = db.session.scalars(
             select(Order).order_by(Order.created_at.desc()).limit(200)
@@ -1087,7 +1139,7 @@ FlavorFlow Team
         return jsonify([o.to_dict() for o in orders]), 200
 
     @app.route("/api/admin/orders/<int:order_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_update_order(order_id):
         order = db.session.get(Order, order_id)
         if not order:
@@ -1112,7 +1164,7 @@ FlavorFlow Team
         return jsonify({"message": "Updated", "order": order.to_dict()}), 200
 
     @app.route("/api/admin/orders/<int:order_id>/ship", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_ship_order(order_id):
         """Mark order as shipped with a tracking code and optional label upload."""
         order = db.session.get(Order, order_id)
@@ -1141,7 +1193,7 @@ FlavorFlow Team
 
     # --- Staff Management ---
     @app.route("/api/admin/staff", methods=["GET"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_get_staff():
         staff = db.session.scalars(
             select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen"])).order_by(User.created_at.desc())
@@ -1149,7 +1201,7 @@ FlavorFlow Team
         return jsonify([u.to_dict() for u in staff]), 200
 
     @app.route("/api/admin/staff", methods=["POST"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_create_staff():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -1179,6 +1231,7 @@ FlavorFlow Team
 
         if role == "admin":
             user = Admin(email=email, first_name=first_name, last_name=last_name, phone=phone)
+            user.admin_department = data.get("admin_department") if data.get("admin_department") else None
         elif role == "staff":
             user = Staff(email=email, first_name=first_name, last_name=last_name, phone=phone, outlet_id=outlet_id)
         elif role == "outlet_owner":
@@ -1209,7 +1262,7 @@ FlavorFlow Team
         return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_edit_staff(user_id):
         user = db.session.get(User, user_id)
         if not user or user.role not in ("staff", "admin", "outlet_owner"):
@@ -1255,7 +1308,7 @@ FlavorFlow Team
         return jsonify({"message": "Updated", "user": user.to_dict()}), 200
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["DELETE", "POST"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_delete_staff(user_id):
         user = db.session.get(User, user_id)
         if not user:
@@ -1281,7 +1334,7 @@ FlavorFlow Team
         return jsonify([c.to_dict() for c in coupons]), 200
 
     @app.route("/api/admin/coupons", methods=["POST"])
-    @role_required("admin")
+    @department_required("Finance")
     def admin_add_coupon():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         code = (data.get("code") or "").strip()
@@ -1299,7 +1352,7 @@ FlavorFlow Team
         return jsonify({"message": "Coupon created", "coupon": coupon.to_dict()}), 201
 
     @app.route("/api/admin/coupons/<int:id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Finance")
     def admin_edit_coupon(id):
         coupon = db.session.get(Coupon, id)
         if not coupon:
@@ -1320,7 +1373,7 @@ FlavorFlow Team
         return jsonify({"message": "Coupon updated", "coupon": coupon.to_dict()}), 200
 
     @app.route("/api/admin/coupons/<int:id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Finance")
     def admin_delete_coupon(id):
         coupon = db.session.get(Coupon, id)
         if not coupon:
@@ -1331,13 +1384,13 @@ FlavorFlow Team
 
     # --- Suppliers ---
     @app.route("/api/admin/suppliers", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_suppliers():
         suppliers = db.session.scalars(select(Supplier).order_by(Supplier.name)).all()
         return jsonify([s.to_dict() for s in suppliers]), 200
 
     @app.route("/api/admin/suppliers", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_supplier():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
@@ -1354,7 +1407,7 @@ FlavorFlow Team
         return jsonify({"message": "Supplier created", "supplier": s.to_dict()}), 201
 
     @app.route("/api/admin/suppliers/<int:sid>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_supplier(sid):
         s = db.session.get(Supplier, sid)
         if not s:
@@ -1372,7 +1425,7 @@ FlavorFlow Team
         return jsonify({"message": "Updated", "supplier": s.to_dict()}), 200
 
     @app.route("/api/admin/suppliers/<int:sid>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_supplier(sid):
         s = db.session.get(Supplier, sid)
         if not s:
@@ -1382,7 +1435,7 @@ FlavorFlow Team
         return jsonify({"message": "Supplier deleted"}), 200
 
     @app.route("/api/admin/suppliers/<int:sid>/items", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_link_supplier_item(sid):
         s = db.session.get(Supplier, sid)
         if not s:
@@ -1654,7 +1707,7 @@ FlavorFlow Team
 
     # --- Stock Audit Log ---
     @app.route("/api/admin/audit-log", methods=["GET"])
-    @role_required("admin")
+    @department_required()
     def admin_audit_log():
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 50))
@@ -1668,7 +1721,7 @@ FlavorFlow Team
 
     # --- Demand Forecast ---
     @app.route("/api/admin/forecast", methods=["GET"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_forecast():
         since = datetime.now(timezone.utc) - timedelta(days=30)
         results = []
@@ -1703,7 +1756,7 @@ FlavorFlow Team
 
     # --- Product Batches ---
     @app.route("/api/admin/batches", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_batches():
         batches = db.session.scalars(
             select(ProductBatch).order_by(ProductBatch.expiry_date.is_(None), ProductBatch.expiry_date.asc())
@@ -1712,7 +1765,7 @@ FlavorFlow Team
 
     # --- QR Code ---
     @app.route("/api/admin/generate-qr", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_generate_qr():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         if not data:
@@ -1752,7 +1805,7 @@ FlavorFlow Team
 
     # --- Users list ---
     @app.route("/api/admin/users", methods=["GET"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_get_users():
         users = db.session.scalars(
             select(User).order_by(User.created_at.desc())
@@ -1760,7 +1813,7 @@ FlavorFlow Team
         return jsonify([u.to_dict() for u in users]), 200
 
     @app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_update_user(user_id):
         user = db.session.get(User, user_id)
         if not user:
@@ -1785,6 +1838,9 @@ FlavorFlow Team
         if "outlet_id" in data:
             oid = data["outlet_id"]
             user.outlet_id = int(oid) if oid is not None else None
+            
+        if "admin_department" in data:
+            user.admin_department = data["admin_department"] if data["admin_department"] else None
         
         password_changed = False
         import re
@@ -1803,7 +1859,7 @@ FlavorFlow Team
         return jsonify({"message": "User updated successfully", "user": user.to_dict()}), 200
 
     @app.route("/api/admin/users/<int:user_id>", methods=["DELETE", "POST"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_delete_user(user_id):
         user = db.session.get(User, user_id)
         if not user:
@@ -2159,7 +2215,7 @@ FlavorFlow Team
 
     # --- Admin: Staff Timesheets ---
     @app.route("/api/admin/shifts", methods=["GET"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_get_shifts():
         """Returns all staff shifts for timesheet management."""
         shifts = db.session.scalars(
@@ -2168,7 +2224,7 @@ FlavorFlow Team
         return jsonify([s.to_dict() for s in shifts]), 200
 
     @app.route("/api/admin/shifts/<int:shift_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_delete_shift(shift_id):
         shift = db.session.get(StaffShift, shift_id)
         if not shift:
@@ -2442,7 +2498,7 @@ FlavorFlow Team
         return jsonify({"message": "Review submitted successfully", "review": review.to_dict()}), 201
 
     @app.route("/api/admin/reviews", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_reviews():
         reviews = db.session.scalars(
             select(Review).order_by(Review.created_at.desc())
@@ -2450,7 +2506,7 @@ FlavorFlow Team
         return jsonify([r.to_dict() for r in reviews]), 200
 
     @app.route("/api/admin/reviews/<int:review_id>", methods=["PATCH", "PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_update_review(review_id):
         review = db.session.get(Review, review_id)
         if not review:
@@ -2466,7 +2522,7 @@ FlavorFlow Team
         return jsonify({"message": "Review updated successfully", "review": review.to_dict()}), 200
 
     @app.route("/api/admin/reviews/<int:review_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_review(review_id):
         review = db.session.get(Review, review_id)
         if not review:

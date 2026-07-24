@@ -556,6 +556,10 @@ const mockApi = {
     return { message: "Item removed from outlet" };
   },
 
+    async adminGetRevenueShare() {
+    return fetchAPI("/api/admin/revenue-share");
+  },
+
   async adminGetAnalytics() {
     const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
     const sales = JSON.parse(localStorage.getItem("mock_sales") || "[]");
@@ -1229,6 +1233,22 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Scan failed");
     return data;
+  },
+
+    async adminGetRevenueShare() {
+    const outlets = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
+    const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+    return outlets.map(o => {
+      const sales = orders.filter(or => or.outlet_id === o.id).reduce((sum, or) => sum + (or.total_price || 0), 0);
+      const pct = o.revenue_share_percentage || 0;
+      return {
+        outlet_id: o.id,
+        outlet_name: o.name,
+        total_sales: sales,
+        revenue_share_percentage: pct,
+        brand_cut: sales * (pct / 100)
+      };
+    });
   },
 
   async adminGetAnalytics() {
