@@ -3,7 +3,14 @@ import pymysql
 from dotenv import load_dotenv
 load_dotenv()
 
-conn = pymysql.connect(host='localhost', user='root', password='root', database='food', charset='utf8mb4')
+import os
+conn = pymysql.connect(
+    host=os.getenv('DB_HOST', 'localhost'),
+    user=os.getenv('DB_USER', 'root'),
+    password=os.getenv('DB_PASSWORD', 'root'),
+    database=os.getenv('DB_NAME', 'food'),
+    charset='utf8mb4'
+)
 c = conn.cursor()
 
 def table_exists(name):

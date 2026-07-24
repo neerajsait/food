@@ -694,7 +694,6 @@ const mockApi = {
       user.password_reset_token = token;
       user.password_reset_expiry = new Date(Date.now() + 3600 * 1000).toISOString();
       localStorage.setItem("mock_users", JSON.stringify(users));
-      console.log(`[MOCK MODE] PASSWORD RESET TOKEN FOR ${email}: ${token}`);
     }
     return { message: "If the email is registered, you will receive a reset token shortly." };
   },

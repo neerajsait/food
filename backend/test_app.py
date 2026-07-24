@@ -1,5 +1,4 @@
 import unittest
-import json
 from decimal import Decimal
 from app import create_app, db, bcrypt
 from models import User, Admin, Customer, Staff, Outlet, MenuItem, Order, OrderItem, Review, OutletStock

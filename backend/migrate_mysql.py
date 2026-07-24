@@ -87,6 +87,7 @@ def run_migration():
         customer_col = "customer_id," if has_customer else ""
         loyalty_col  = "loyalty_points_earned, loyalty_points_redeemed,"
 
+        # Note: The f-string below is safe because it only interpolates schema column names, not user data
         sql = f"""
             INSERT INTO orders (
                 {customer_col}

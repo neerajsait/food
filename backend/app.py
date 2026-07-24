@@ -384,9 +384,9 @@ def create_app(config_override=None):
 
         user = db.session.scalars(select(User).where(User.email == email)).first()
         if user:
-            import random
+            import secrets
             import string
-            token = ''.join(random.choices(string.digits, k=6))
+            token = ''.join(secrets.choice(string.digits) for _ in range(6))
             user.password_reset_token = token
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
@@ -2488,8 +2488,8 @@ FlavorFlow Team
             token = request.args.get("hub.verify_token")
             challenge = request.args.get("hub.challenge")
             
-            # Replace 'YOUR_VERIFY_TOKEN' with the actual token you set in Meta Dashboard
-            if mode == "subscribe" and token == "YOUR_VERIFY_TOKEN":
+            # Verify against token in Meta Dashboard (via env vars)
+            if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
                 return challenge, 200
             else:
                 return "Forbidden", 403
