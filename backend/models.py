@@ -1,9 +1,7 @@
 from datetime import datetime, timezone
-from decimal import Decimal
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Numeric, Boolean, Float, Date
 from sqlalchemy.orm import relationship
-from sqlalchemy.ext.hybrid import hybrid_property
 
 db = SQLAlchemy()
 

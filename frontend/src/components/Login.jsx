@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import { api } from "../utils/api";
 import {
-  Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag, Shield,
-  Store, Zap, BarChart3, Package, Star
+  Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag,
+  Store, BarChart3, Package
 } from "lucide-react";
 
 const FEATURES = [

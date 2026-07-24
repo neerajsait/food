@@ -121,7 +121,7 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   // Profile Modal
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [profileForm, setProfileForm] = useState({ first_name: "", last_name: "", phone: "", address: "" });
+  const [profileForm, setProfileForm] = useState({ first_name: "", last_name: "", phone: "", address: "", password: "" });
   const [profileUpdating, setProfileUpdating] = useState(false);
 
   // Load reviews when selectedItem changes
@@ -487,10 +487,11 @@ export default function CustomerView({ onLogout, dbMode }) {
     const user = api.getCurrentUser();
     if (user) {
       setProfileForm({
-        first_name: user.first_name || "",
-        last_name: user.last_name || "",
-        phone: user.phone || "",
-        address: user.address || ""
+        first_name: user?.first_name || "",
+        last_name: user?.last_name || "",
+        phone: user?.phone || "",
+        address: user?.address || "",
+        password: ""
       });
       setShowProfileModal(true);
     }
@@ -1700,6 +1701,11 @@ export default function CustomerView({ onLogout, dbMode }) {
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Default Address</label>
                 <textarea className="form-input" rows="3" value={profileForm.address} onChange={e => setProfileForm({ ...profileForm, address: e.target.value })} placeholder="Your primary delivery address..." />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">New Password</label>
+                <input type="password" minLength={8} className="form-input" value={profileForm.password || ""} onChange={e => setProfileForm({ ...profileForm, password: e.target.value })} placeholder="Leave blank to keep current password" />
+                <small style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>Must be at least 8 characters with letters and numbers.</small>
               </div>
               <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
                 {profileUpdating ? "Saving..." : "Save Changes"}

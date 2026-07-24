@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../utils/api";
-import {
   Package, AlertTriangle, Plus, Store, MapPin, 
   Globe, 
   RefreshCw, 
-  Edit3, X, LogOut
+  Edit3, X, LogOut, User
 } from "lucide-react";
 
 /* ── Modal Wrapper ── */
@@ -37,6 +36,39 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  // Profile Modal
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileForm, setProfileForm] = useState({ first_name: "", last_name: "", phone: "", address: "", password: "" });
+  const [profileUpdating, setProfileUpdating] = useState(false);
+
+  const openProfileModal = () => {
+    const user = api.getCurrentUser();
+    if (user) {
+      setProfileForm({
+        first_name: user?.first_name || "",
+        last_name: user?.last_name || "",
+        phone: user?.phone || "",
+        address: user?.address || "",
+        password: ""
+      });
+      setShowProfileModal(true);
+    }
+  };
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    setProfileUpdating(true);
+    try {
+      await api.updateProfile(profileForm);
+      alert("Profile updated successfully!");
+      setShowProfileModal(false);
+    } catch (err) {
+      alert("Failed to update profile: " + err.message);
+    } finally {
+      setProfileUpdating(false);
+    }
+  };
 
   // const [activeTab, setActiveTab] = useState("outlets");
   const [outlets, setOutlets] = useState([]);
@@ -212,6 +244,9 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
           </button>
           <button className="btn btn-primary" onClick={() => setShowAddOutlet(true)}>
             <Plus size={15} /> Register Outlet
+          </button>
+          <button className="btn btn-secondary" onClick={openProfileModal}>
+            <User size={15} /> My Profile
           </button>
           <button className="btn btn-secondary" onClick={onLogout}>
             <LogOut size={15} /> Sign Out
@@ -450,6 +485,33 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Save Changes</button>
             <button type="button" onClick={() => setShowEditOutlet(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
           </div>
+        </form>
+      </Modal>
+
+      <Modal open={showProfileModal} onClose={() => setShowProfileModal(false)} title="My Profile">
+        <form onSubmit={handleUpdateProfile} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">First Name</label>
+              <input type="text" className="form-input" value={profileForm.first_name} onChange={e => setProfileForm({ ...profileForm, first_name: e.target.value })} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Last Name</label>
+              <input type="text" className="form-input" value={profileForm.last_name} onChange={e => setProfileForm({ ...profileForm, last_name: e.target.value })} />
+            </div>
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Phone Number</label>
+            <input type="tel" maxLength={10} className="form-input" pattern="\d{10}" placeholder="9876543210" value={profileForm.phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setProfileForm({ ...profileForm, phone: val }); }} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">New Password</label>
+            <input type="password" minLength={8} className="form-input" value={profileForm.password || ""} onChange={e => setProfileForm({ ...profileForm, password: e.target.value })} placeholder="Leave blank to keep current password" />
+            <small style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>Must be at least 8 characters with letters and numbers.</small>
+          </div>
+          <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
+            {profileUpdating ? "Saving..." : "Save Changes"}
+          </button>
         </form>
       </Modal>
 

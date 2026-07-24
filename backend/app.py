@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from decimal import Decimal
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func
 from flask import Flask, request, jsonify, Request
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
@@ -101,7 +101,6 @@ def log_stock_change(db_session, outlet_id, menu_item_id, change_qty, change_typ
 
 def log_admin_action(db_session, admin_id, action, target_entity=None, target_id=None, details=None):
     """Helper to write an AdminAuditLog entry."""
-    from models import AdminAuditLog
     entry = AdminAuditLog(
         admin_id=admin_id,
         action=action,
@@ -193,8 +192,17 @@ def create_app(config_override=None):
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_recycle": 280, "pool_pre_ping": True}
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", os.urandom(24).hex())
-    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", os.urandom(24).hex())
+    
+    secret_key = os.getenv("SECRET_KEY")
+    jwt_secret_key = os.getenv("JWT_SECRET_KEY")
+    if os.getenv("FLASK_ENV") == "production":
+        if not secret_key:
+            raise RuntimeError("SECRET_KEY must be set in production")
+        if not jwt_secret_key:
+            raise RuntimeError("JWT_SECRET_KEY must be set in production")
+            
+    app.config["SECRET_KEY"] = secret_key or os.urandom(24).hex()
+    app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
 
     # Mail config
@@ -369,7 +377,6 @@ def create_app(config_override=None):
     @app.route("/api/auth/forgot-password", methods=["POST"])
     @limiter.limit("5 per minute")
     def forgot_password():
-        import secrets
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
         if not email:
@@ -488,6 +495,13 @@ FlavorFlow Team
         if "address" in data:
             user.address = data["address"]
             
+        import re
+        if "password" in data:
+            if len(data["password"]) >= 8 and re.search(r'[A-Za-z]', data["password"]) and re.search(r'[0-9]', data["password"]):
+                user.set_password(data["password"], bcrypt)
+            else:
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
+
         db.session.commit()
         return jsonify({"message": "Profile updated successfully", "user": user.to_dict()}), 200
 
@@ -1007,6 +1021,10 @@ FlavorFlow Team
             if "restock_limit" in data:
                 exists.restock_limit = int(data["restock_limit"])
             db.session.commit()
+            log_stock_change(db.session, outlet_id=outlet_id, menu_item_id=mid,
+                             change_qty=exists.current_stock - before, change_type="edit",
+                             stock_before=before, stock_after=exists.current_stock,
+                             notes="Admin edited stock via UI")
             return jsonify({"message": "Stock updated", "stock": exists.to_dict()}), 200
 
         stock = OutletStock(outlet_id=outlet_id, menu_item_id=mid,
@@ -1221,9 +1239,13 @@ FlavorFlow Team
                 # Empty string = remove PIN
                 user.pin_hash = None
         password_changed = False
-        if "password" in data and len(data["password"]) >= 4:
-            user.set_password(data["password"], bcrypt)
-            password_changed = True
+        import re
+        if "password" in data:
+            if len(data["password"]) >= 8 and re.search(r'[A-Za-z]', data["password"]) and re.search(r'[0-9]', data["password"]):
+                user.set_password(data["password"], bcrypt)
+                password_changed = True
+            else:
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
             
         db.session.commit()
 
@@ -1765,9 +1787,13 @@ FlavorFlow Team
             user.outlet_id = int(oid) if oid is not None else None
         
         password_changed = False
-        if "password" in data and len(data["password"]) >= 4:
-            user.set_password(data["password"], bcrypt)
-            password_changed = True
+        import re
+        if "password" in data:
+            if len(data["password"]) >= 8 and re.search(r'[A-Za-z]', data["password"]) and re.search(r'[0-9]', data["password"]):
+                user.set_password(data["password"], bcrypt)
+                password_changed = True
+            else:
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
 
         db.session.commit()
 
@@ -2852,7 +2878,7 @@ def _send_order_placed_email(app, order, customer):
 def _send_order_shipped_email(app, order, customer, tracking_code):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
-        msg = Message(subject=f"Your FlavorFlow Box is on its way! 🚚", sender=sender, recipients=[customer.email])
+        msg = Message(subject="Your FlavorFlow Box is on its way! 🚚", sender=sender, recipients=[customer.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Your food is on the way! 🚚</h2>
         <p>Hi {customer.first_name or 'there'}, your order #{order.id} has been packed, handed over to our delivery partner, and is officially en route!</p>
