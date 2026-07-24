@@ -54,8 +54,8 @@ export default function App() {
   const handleForcePasswordChangeSubmit = async (e) => {
     e.preventDefault();
     setForceChangeError("");
-    if (newPassword.length < 5) {
-      setForceChangeError("Password must be at least 5 characters long.");
+    if (newPassword.length < 8 || !/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setForceChangeError("Password must be at least 8 characters and contain both letters and numbers.");
       return;
     }
     if (newPassword !== confirmPassword) {

@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import { AlertTriangle, RefreshCw, Home } from "lucide-react";
 
 export default class ErrorBoundary extends React.Component {
@@ -36,7 +36,7 @@ export default class ErrorBoundary extends React.Component {
           </div>
           <h1 style={{ fontSize: "1.75rem", fontWeight: 800, color: "#f0f6fc", margin: "0 0 0.5rem" }}>Something went wrong</h1>
           <p style={{ color: "#8b949e", fontSize: "0.95rem", lineHeight: 1.6, margin: "0 0 0.5rem" }}>This is an internal server error, not something you did wrong.</p>
-          <p style={{ color: "#6e7681", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 2rem" }}>Our team has been notified. Please try refreshing the page or go back to home.</p>
+          <p style={{ color: "#6e7681", fontSize: "0.85rem", lineHeight: 1.6, margin: "0 0 2rem" }}>If this persists, please contact support. You can try refreshing the page or going back to home.</p>
           <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center" }}>
             <button onClick={this.handleReload} style={{ padding: "0.75rem 1.5rem", background: "#f97316", color: "#fff", border: "none", borderRadius: "0.75rem", cursor: "pointer" }}><RefreshCw size={16} /> Reload Page</button>
             <button onClick={this.handleGoHome} style={{ padding: "0.75rem 1.5rem", background: "transparent", color: "#8b949e", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.75rem", cursor: "pointer" }}><Home size={16} /> Go to Login</button>
