@@ -18,17 +18,27 @@ export default function QRScanner({ onStockUpdated }) {
     setResult(null);
 
     try {
-      // Validate it's a JSON QR before sending
-      JSON.parse(rawValue); // will throw if invalid
-      const data = await api.posScanArrival(rawValue);
-      setResult({ success: true, message: data.message, data });
-      if (onStockUpdated) onStockUpdated();
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        setResult({ success: false, message: "Invalid QR code — not a dispatch label.", data: null });
-      } else {
-        setResult({ success: false, message: err.message || "Scan failed", data: null });
+      // Validate it's a JSON QR before sending for dispatch
+      // If it fails JSON parsing, assume it's a product code
+      let isJson = false;
+      try {
+        JSON.parse(rawValue);
+        isJson = true;
+      } catch (err) {
+        // Not a JSON, treat as product code
       }
+
+      if (isJson) {
+        const data = await api.posScanArrival(rawValue);
+        setResult({ success: true, message: data.message, data });
+        if (onStockUpdated) onStockUpdated(rawValue);
+      } else {
+        // Treat as product code
+        setResult({ success: true, message: `Scanned code: ${rawValue}`, data: { code: rawValue } });
+        if (onStockUpdated) onStockUpdated(rawValue);
+      }
+    } catch (err) {
+      setResult({ success: false, message: err.message || "Scan failed", data: null });
     } finally {
       setLoading(false);
     }

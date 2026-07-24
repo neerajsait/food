@@ -2,10 +2,10 @@ import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { api, API_BASE_URL } from "../utils/api";
 import {
-  Package, AlertTriangle, Plus, Store, Users, MapPin, Activity,
-  Globe, QrCode, TrendingUp, ShieldAlert, Award, FileText, ShoppingBag,
-  Truck, ArrowRight, Clock, Trash2, Calendar, RefreshCw, BarChart3,
-  ChevronRight, Zap, X, LogOut, MessageSquare, Star, Tag
+  Package, AlertTriangle, Plus, Store, Users, MapPin,
+  Globe, QrCode, TrendingUp, FileText, ShoppingBag,
+  Truck, Clock, Trash2, Calendar, RefreshCw, BarChart3,
+  X, LogOut, MessageSquare, Star, Tag, ArrowRight
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
 
@@ -53,7 +53,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [analytics, setAnalytics] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [suppliers, setSuppliers] = useState(INITIAL_SUPPLIERS);
+  const [suppliers, _setSuppliers] = useState(INITIAL_SUPPLIERS);
   
   // Product Reviews moderation states
   const [reviews, setReviews] = useState([]);
@@ -84,17 +84,23 @@ export default function AdminView({ onLogout, dbMode }) {
   const [error, setError] = useState("");
   const [trackingCodes, setTrackingCodes] = useState({});
   const [trackingLabels, setTrackingLabels] = useState({});
+  const [trackingLinks, setTrackingLinks] = useState({});
 
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [menuName, setMenuName] = useState("");
+  const [menuCode, setMenuCode] = useState("");
   const [menuPrice, setMenuPrice] = useState("");
   const [menuOriginalPrice, setMenuOriginalPrice] = useState("");
-  const [menuCategory, setMenuCategory] = useState("Spice Powders");
+  const [menuCategory, setMenuCategory] = useState("Pickles");
   const [menuType, setMenuType] = useState("home_foods");
   const [menuDesc, setMenuDesc] = useState("");
   const [menuImageUrl, setMenuImageUrl] = useState("");
+  const [menuGlobalStock, setMenuGlobalStock] = useState("");
+  const [showEditMenu, setShowEditMenu] = useState(false);
+  const [editMenuId, setEditMenuId] = useState(null);
 
   const [showAddOutlet, setShowAddOutlet] = useState(false);
+  const [editingOutletId, setEditingOutletId] = useState(null);
   const [outletName, setOutletName] = useState("");
   const [outletAddress, setOutletAddress] = useState("");
   const [outletLatitude, setOutletLatitude] = useState("");
@@ -102,13 +108,14 @@ export default function AdminView({ onLogout, dbMode }) {
   const [geocodingLoading, setGeocodingLoading] = useState(false);
   const [geocodingMsg, setGeocodingMsg] = useState("");
 
-  const [selectedMenuItemId, setSelectedMenuItemId] = useState("");
-  const [assignStock, setAssignStock] = useState("20");
-  const [assignLimit, setAssignLimit] = useState("10");
+  const [assignForms, setAssignForms] = useState({}); // { [outletId]: { menuItemId: "", stock: "20", limit: "10" } }
 
   const [showAddStaff, setShowAddStaff] = useState(false);
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [reviewToDelete, setReviewToDelete] = useState(null);
   const [staffEmail, setStaffEmail] = useState("");
   const [staffPassword, setStaffPassword] = useState("");
+  const [staffPin, setStaffPin] = useState("");
   const [staffFirstName, setStaffFirstName] = useState("");
   const [staffLastName, setStaffLastName] = useState("");
   const [staffPhone, setStaffPhone] = useState("");
@@ -139,9 +146,9 @@ export default function AdminView({ onLogout, dbMode }) {
       try {
         const couponsData = await api.adminGetCoupons();
         setCoupons(couponsData);
-      } catch {}
-      try { const a = await api.adminGetAnalytics(); setAnalytics(a); } catch {}
-      try { const l = await api.adminGetAuditLogs(1, 40); setAuditLogs(l.logs || []); } catch {}
+      } catch (err) {}
+      try { const a = await api.adminGetAnalytics(); setAnalytics(a); } catch (err) {}
+      try { const l = await api.adminGetAuditLogs(1, 40); setAuditLogs(l.logs || []); } catch (err) {}
       try {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
@@ -153,13 +160,21 @@ export default function AdminView({ onLogout, dbMode }) {
             { id: 102, outlet_name: "Vashi Express Supply", menu_item_name: "Paneer Spring Rolls", qty: 22, batch_number: "PSR-12B", expiry_date: new Date(Date.now() + 86400000 * 10).toISOString().slice(0, 10), received_by: "John" }
           ]);
         }
-      } catch {}
+      } catch (err) {}
     } catch (err) { setError(err.message || "Failed to load admin data"); }
     finally { setLoading(false); }
   };
 
   useEffect(() => { loadData(); }, []);
-  useEffect(() => { if (outlets.length > 0 && !staffOutletId) setStaffOutletId(outlets[0].id.toString()); }, [outlets]);
+  useEffect(() => { if (outlets.length > 0 && !staffOutletId) setStaffOutletId(outlets[0].id.toString()); }, [outlets, staffOutletId]);
+
+  // Load timesheets when active tab changes to timesheets
+  const [timesheets, setTimesheets] = useState([]);
+  useEffect(() => {
+    if (activeTab === "timesheets") {
+      api.adminGetShifts().then(setTimesheets).catch(() => {});
+    }
+  }, [activeTab]);
 
   // Load coupons when active tab changes to coupons
   useEffect(() => {
@@ -188,21 +203,48 @@ export default function AdminView({ onLogout, dbMode }) {
     }
   }, [activeTab]);
 
-  const handleDeleteReview = async (reviewId) => {
-    if (!confirm("Are you sure you want to delete this review?")) return;
+  const handleDeleteReview = (reviewId) => {
+    setReviewToDelete(reviewId);
+  };
+
+  const confirmDeleteReview = async () => {
+    if (!reviewToDelete) return;
     try {
-      await api.adminDeleteReview(reviewId);
+      await api.adminDeleteReview(reviewToDelete);
       alert("Review deleted successfully!");
       const data = await api.adminGetReviews();
       setReviews(data);
     } catch (err) {
       alert("Failed to delete review: " + err.message);
+    } finally {
+      setReviewToDelete(null);
     }
   };
 
-  const openAddMenuModal = () => { loadData(); setShowAddMenu(true); };
+  const handleReplyReview = async (review) => {
+    const reply = window.prompt("Enter admin reply:", review.admin_reply || "");
+    if (reply !== null) {
+      try {
+        await api.adminUpdateReview(review.id, { admin_reply: reply });
+        alert("Reply updated!");
+        const data = await api.adminGetReviews();
+        setReviews(data);
+      } catch (err) { alert("Failed: " + err.message); }
+    }
+  };
+
+  const handleToggleReviewVisibility = async (review) => {
+    try {
+      await api.adminUpdateReview(review.id, { is_hidden: !review.is_hidden });
+      alert(`Review ${!review.is_hidden ? "hidden" : "made visible"}.`);
+      const data = await api.adminGetReviews();
+      setReviews(data);
+    } catch (err) { alert("Failed: " + err.message); }
+  };
+
+  const _openAddMenuModal = () => { loadData(); setShowAddMenu(true); };
   const openAddOutletModal = () => { loadData(); setShowAddOutlet(true); };
-  const openAddStaffModal = () => { loadData(); setShowAddStaff(true); };
+  const _openAddStaffModal = () => { loadData(); setShowAddStaff(true); };
 
   const lookupCoordinates = async () => {
     if (!outletAddress.trim()) { alert("Please enter an address first"); return; }
@@ -215,7 +257,7 @@ export default function AdminView({ onLogout, dbMode }) {
         setOutletLongitude(parseFloat(data[0].lon).toFixed(6));
         setGeocodingMsg("✓ Coordinates fetched!");
       } else setGeocodingMsg("Address not found.");
-    } catch { setGeocodingMsg("Lookup failed."); }
+    } catch (err) { setGeocodingMsg("Lookup failed."); }
     finally { setGeocodingLoading(false); }
   };
 
@@ -223,7 +265,7 @@ export default function AdminView({ onLogout, dbMode }) {
     const code = trackingCodes[orderId];
     if (!code?.trim()) { alert("Enter a tracking code first"); return; }
     try {
-      await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null);
+      await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null, trackingLinks[orderId] || null);
       alert("Marked as shipped!");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
@@ -232,11 +274,45 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleAddMenuItem = async (e) => {
     e.preventDefault();
     try {
-      await api.adminAddMenuItem({ name: menuName, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null });
+      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null });
       alert("Menu item created!"); setShowAddMenu(false);
-      setMenuName(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Spice Powders"); setMenuDesc(""); setMenuImageUrl("");
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock("");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
+  };
+
+  const openEditMenuItem = (item) => {
+    setEditMenuId(item.id);
+    setMenuName(item.name || "");
+    setMenuCode(item.code || "");
+    setMenuPrice(item.price || "");
+    setMenuOriginalPrice(item.original_price || "");
+    setMenuCategory(item.category || "Pickles");
+    setMenuType(item.business_type || "home_foods");
+    setMenuDesc(item.description || "");
+    setMenuImageUrl(item.image_url || "");
+    setMenuGlobalStock(item.global_stock || "");
+    setShowEditMenu(true);
+  };
+
+  const handleUpdateMenuItem = async (e) => {
+    e.preventDefault();
+    try {
+      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null });
+      alert("Menu item updated!"); 
+      setShowEditMenu(false);
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock("");
+      loadData();
+    } catch (err) { alert("Failed to update: " + err.message); }
+  };
+
+  const handleDeleteMenuItem = async (id) => {
+    if (!confirm("Are you sure you want to delete this menu item?")) return;
+    try {
+      await api.adminDeleteMenuItem(id);
+      alert("Menu item deleted!");
+      loadData();
+    } catch (err) { alert("Failed to delete: " + err.message); }
   };
 
   const handleAddOutlet = async (e) => {
@@ -244,24 +320,67 @@ export default function AdminView({ onLogout, dbMode }) {
     try {
       const latVal = outletLatitude ? parseFloat(outletLatitude) : null;
       const lonVal = outletLongitude ? parseFloat(outletLongitude) : null;
-      const live = (await api.getMode()) === "Live Backend";
-      if (live) {
-        const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify({ name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal }) });
-        const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
+      const data = { name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal };
+      
+      if (editingOutletId) {
+        await api.adminUpdateOutlet(editingOutletId, data);
+        alert("Outlet updated successfully!");
       } else {
-        const list = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
-        list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [] });
-        localStorage.setItem("mock_outlets", JSON.stringify(list));
+        const live = (await api.getMode()) === "Live Backend";
+        if (live) {
+          const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify(data) });
+          const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
+        } else {
+          const list = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
+          list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [] });
+          localStorage.setItem("mock_outlets", JSON.stringify(list));
+        }
+        alert("Outlet added!");
       }
-      alert("Outlet created!"); setShowAddOutlet(false);
-      setOutletName(""); setOutletAddress(""); setOutletLatitude(""); setOutletLongitude(""); setGeocodingMsg("");
+      setShowAddOutlet(false); setEditingOutletId(null);
+      setOutletName(""); setOutletAddress(""); setOutletLatitude(""); setOutletLongitude("");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
   };
 
+  const openEditOutlet = (outlet) => {
+    setEditingOutletId(outlet.id);
+    setOutletName(outlet.name);
+    setOutletAddress(outlet.address || "");
+    setOutletLatitude(outlet.latitude || "");
+    setOutletLongitude(outlet.longitude || "");
+    setShowAddOutlet(true);
+  };
+
+  const handleDeleteOutlet = async (outletId) => {
+    if (!confirm("Are you sure you want to delete this outlet?")) return;
+    try {
+      await api.adminDeleteOutlet(outletId);
+      alert("Outlet deleted!");
+      loadData();
+    } catch (err) {
+      alert("Failed to delete: " + err.message);
+    }
+  };
+
+  const handleAssignFormChange = (outletId, field, value) => {
+    setAssignForms(prev => ({
+      ...prev,
+      [outletId]: {
+        ...(prev[outletId] || { menuItemId: "", stock: "20", limit: "10" }),
+        [field]: value
+      }
+    }));
+  };
+
   const handleAssignItemToOutlet = async (outletId) => {
-    if (!selectedMenuItemId) { alert("Select a food item first"); return; }
-    try { await api.adminAssignItemToOutlet(outletId, selectedMenuItemId, assignStock, assignLimit); alert("Item assigned!"); loadData(); }
+    const form = assignForms[outletId] || {};
+    if (!form.menuItemId) { alert("Select a food item first"); return; }
+    try { 
+      await api.adminAssignItemToOutlet(outletId, form.menuItemId, form.stock || "20", form.limit || "10"); 
+      alert("Item assigned!"); 
+      loadData(); 
+    }
     catch (err) { alert("Failed: " + err.message); }
   };
 
@@ -275,48 +394,69 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       const live = (await api.getMode()) === "Live Backend";
-      if (live) {
-        const res = await fetch(`${API_BASE_URL}/admin/staff`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
-          body: JSON.stringify({
-            email: staffEmail,
-            password: staffPassword,
-            first_name: staffFirstName,
-            last_name: staffLastName,
-            phone: staffPhone,
-            outlet_id: staffRole === "staff" && staffOutletId ? parseInt(staffOutletId) : null,
-            role: staffRole
-          })
-        });
-        const d = await res.json();
-        if (!res.ok) throw new Error(d.message || "Failed to create account");
+      
+      const payload = {
+        email: staffEmail,
+        first_name: staffFirstName,
+        last_name: staffLastName,
+        phone: staffPhone,
+        outlet_id: (staffRole === "staff" || staffRole === "outlet_owner" || staffRole === "kitchen") && staffOutletId ? parseInt(staffOutletId) : null,
+        role: staffRole
+      };
+      if (staffPassword) payload.password = staffPassword;
+      if (staffPin) payload.pin = staffPin;
+
+      if (editingUserId) {
+        // Updating user
+        await api.adminUpdateUser(editingUserId, payload);
+        alert("Account updated successfully!");
       } else {
-        const list = JSON.parse(localStorage.getItem("mock_users") || "[]");
-        if (list.find(u => u.email === staffEmail)) throw new Error("Email already registered");
-        if (staffRole === "admin") {
-          const admins = list.filter(u => u.role === "admin");
-          if (admins.length >= 3) {
+        if (!staffPassword) throw new Error("Password is required for new accounts");
+        if (live) {
+          const res = await fetch(`${API_BASE_URL}/admin/staff`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
+            body: JSON.stringify(payload)
+          });
+          const d = await res.json();
+          if (!res.ok) throw new Error(d.message || "Failed to create account");
+        } else {
+          const list = JSON.parse(localStorage.getItem("mock_users") || "[]");
+          if (list.find(u => u.email === staffEmail)) throw new Error("Email already registered");
+          if (staffRole === "admin" && list.filter(u => u.role === "admin").length >= 3) {
             throw new Error("Maximum of 3 admin accounts allowed.");
           }
+          list.push({ ...payload, id: Date.now() });
+          localStorage.setItem("mock_users", JSON.stringify(list));
         }
-        list.push({
-          id: Date.now(),
-          email: staffEmail,
-          password: staffPassword,
-          role: staffRole,
-          first_name: staffFirstName,
-          last_name: staffLastName,
-          phone: staffPhone,
-          outlet_id: staffRole === "staff" && staffOutletId ? parseInt(staffOutletId) : null
-        });
-        localStorage.setItem("mock_users", JSON.stringify(list));
+        alert(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`);
       }
-      alert(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`);
-      setShowAddStaff(false);
-      setStaffEmail(""); setStaffPassword(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff");
+      setShowAddStaff(false); setEditingUserId(null);
+      setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff");
       loadData();
     } catch (err) { alert("Failed: " + err.message); }
+  };
+
+  const openEditStaff = (user) => {
+    setEditingUserId(user.id);
+    setStaffEmail(user.email);
+    setStaffRole(user.role || "staff");
+    setStaffFirstName(user.first_name || "");
+    setStaffLastName(user.last_name || "");
+    setStaffPhone(user.phone || "");
+    setStaffOutletId(user.outlet_id || "");
+    setStaffPassword("");
+    setStaffPin("");
+    setShowAddStaff(true);
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (!confirm("Are you sure you want to delete this user?")) return;
+    try {
+      await api.adminDeleteUser(userId);
+      alert("User deleted!");
+      loadData();
+    } catch (err) { alert("Failed to delete user: " + err.message); }
   };
 
   const handleCreateCoupon = async (e) => {
@@ -391,9 +531,11 @@ export default function AdminView({ onLogout, dbMode }) {
 
   const TABS = [
     { id: "overview",   label: "Overview",        icon: BarChart3 },
-    { id: "foods",      label: "Catalog & Outlets",icon: Package },
+    { id: "catalog",    label: "Master Catalog",  icon: ShoppingBag },
+    { id: "foods",      label: "Outlet Stations", icon: Package },
     { id: "analytics",  label: "Sales Analytics", icon: TrendingUp },
     { id: "users",      label: "User Accounts",    icon: Users },
+    { id: "timesheets", label: "Timesheets",       icon: Clock },
     { id: "batches",    label: "Expiry & Spoilage",icon: Calendar },
     { id: "suppliers",  label: "B2B Suppliers",   icon: Truck },
     { id: "reviews",    label: "Product Reviews", icon: MessageSquare },
@@ -597,14 +739,60 @@ export default function AdminView({ onLogout, dbMode }) {
         </div>
       )}
 
-      {/* ══════════ CATALOG & OUTLETS ══════════ */}
+      {/* ══════════ MASTER CATALOG ══════════ */}
+      {activeTab === "catalog" && (
+        <div className="animate-fade-in">
+          {/* Action Row */}
+          <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.75rem", flexWrap: "wrap" }}>
+            <button onClick={() => setShowAddMenu(true)} className="btn btn-primary"><Plus size={15} /> Add Product</button>
+          </div>
+
+          {/* Master Catalog */}
+          <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1rem", marginTop: "1rem" }}>
+            Master Food Catalog <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— all food items</span>
+          </h3>
+          <div className="table-container" style={{ marginBottom: "2.5rem" }}>
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Category</th>
+                  <th>Price</th>
+                  <th>Type</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {menu.length === 0 && (
+                  <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No items in catalog.</td></tr>
+                )}
+                {menu.map(item => (
+                  <tr key={item.id}>
+                    <td><strong>{item.name}</strong></td>
+                    <td>{item.category}</td>
+                    <td>₹{item.price}</td>
+                    <td><span className={`badge-status status-${item.business_type === 'snack_supply' ? 'delivered' : 'pending'}`}>{item.business_type}</span></td>
+                    <td>
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button className="btn btn-secondary" style={{ padding: "0.3rem 0.5rem", fontSize: "0.75rem" }} onClick={() => openEditMenuItem(item)}>Edit</button>
+                        <button className="btn btn-secondary" style={{ padding: "0.3rem 0.5rem", fontSize: "0.75rem", color: "var(--error)", borderColor: "var(--error)" }} onClick={() => handleDeleteMenuItem(item.id)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════ OUTLET STATIONS ══════════ */}
       {activeTab === "foods" && (
         <div className="animate-fade-in">
           {/* Action Row */}
           <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.75rem", flexWrap: "wrap" }}>
-            <button onClick={openAddMenuModal} className="btn btn-primary"><Plus size={15} /> Add Product</button>
-            <button onClick={openAddOutletModal} className="btn btn-secondary"><Store size={15} /> Register Outlet</button>
-            <button onClick={openAddStaffModal} className="btn btn-secondary"><Users size={15} /> Add Staff</button>
+            <button onClick={() => setShowAddOutlet(true)} className="btn btn-primary"><Store size={15} /> Register Outlet</button>
+            <button onClick={() => setShowAddStaff(true)} className="btn btn-secondary"><Users size={15} /> Add Staff</button>
           </div>
 
           {/* Outlets Grid */}
@@ -618,7 +806,15 @@ export default function AdminView({ onLogout, dbMode }) {
                 <div key={outlet.id} className="glass-card" style={{ borderLeft: `3px solid ${isAlert ? "var(--error)" : "var(--brand)"}`, padding: "1.25rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "0.75rem" }}>
                     <div>
-                      <h3 style={{ fontSize: "1rem", fontWeight: 800, margin: 0 }}>{outlet.name}</h3>
+                      <h3 style={{ fontSize: "1rem", fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        {outlet.name}
+                        <button onClick={() => openEditOutlet(outlet)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)" }} title="Edit Outlet">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                        </button>
+                        <button onClick={() => handleDeleteOutlet(outlet.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--error)" }} title="Delete Outlet">
+                          <Trash2 size={14} />
+                        </button>
+                      </h3>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.2rem" }}>
                         <MapPin size={11} /> {outlet.address}
                       </div>
@@ -653,14 +849,14 @@ export default function AdminView({ onLogout, dbMode }) {
                   <div style={{ background: "rgba(249,115,22,0.05)", borderRadius: "var(--r-md)", padding: "0.75rem", border: "1px solid var(--border-brand)" }}>
                     <span style={{ fontWeight: 700, fontSize: "0.7rem", color: "var(--brand)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: "0.5rem" }}>Assign Item</span>
                     <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0.4rem", marginBottom: "0.4rem" }}>
-                      <select className="form-select" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} onChange={e => setSelectedMenuItemId(e.target.value)} value={selectedMenuItemId}>
+                      <select className="form-select" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} onChange={e => handleAssignFormChange(outlet.id, 'menuItemId', e.target.value)} value={assignForms[outlet.id]?.menuItemId || ""}>
                         <option value="">-- Select --</option>
                         {menu.filter(i => i.business_type === "snack_supply" || i.business_type === "both").map(i => (
                           <option key={i.id} value={i.id}>{i.name}</option>
                         ))}
                       </select>
-                      <input type="number" placeholder="Qty" className="form-input" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} value={assignStock} onChange={e => setAssignStock(e.target.value)} />
-                      <input type="number" placeholder="Limit" className="form-input" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} value={assignLimit} onChange={e => setAssignLimit(e.target.value)} />
+                      <input type="number" placeholder="Qty" className="form-input" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} value={assignForms[outlet.id]?.stock !== undefined ? assignForms[outlet.id].stock : "20"} onChange={e => handleAssignFormChange(outlet.id, 'stock', e.target.value)} />
+                      <input type="number" placeholder="Limit" className="form-input" style={{ padding: "0.35rem 0.5rem", fontSize: "0.75rem" }} value={assignForms[outlet.id]?.limit !== undefined ? assignForms[outlet.id].limit : "10"} onChange={e => handleAssignFormChange(outlet.id, 'limit', e.target.value)} />
                     </div>
                     <button onClick={() => handleAssignItemToOutlet(outlet.id)} className="btn btn-primary" style={{ width: "100%", padding: "0.45rem", fontSize: "0.78rem" }}>
                       <Plus size={13} /> Assign
@@ -726,6 +922,9 @@ export default function AdminView({ onLogout, dbMode }) {
                             <button onClick={() => handleShipOrder(o.id)} className="btn btn-success" style={{ padding: "0.4rem 0.75rem", fontSize: "0.78rem", whiteSpace: "nowrap" }}>
                               <Truck size={13} /> Ship
                             </button>
+                          </div>
+                          <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.3rem" }}>
+                            <input type="text" placeholder="Tracking Link (URL)" className="form-input" style={{ padding: "0.4rem 0.6rem", fontSize: "0.75rem", flex: 1, height: "auto" }} value={trackingLinks[o.id] || ""} onChange={e => setTrackingLinks({ ...trackingLinks, [o.id]: e.target.value })} />
                           </div>
                           {trackingLabels[o.id] && (
                             <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.68rem", color: "#22c55e" }}>
@@ -840,6 +1039,64 @@ export default function AdminView({ onLogout, dbMode }) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ══ TIMESHEETS ══ */}
+      {activeTab === "timesheets" && (
+        <div className="animate-fade-in">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+            <div>
+              <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.5rem", fontWeight: 900, color: "var(--text-primary)", margin: 0 }}>
+                Staff Timesheets & Shifts
+              </h2>
+              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", margin: "0.2rem 0 0" }}>
+                Monitor staff clock-in/out times, hours worked, and cash drawer discrepancies.
+              </p>
+            </div>
+            <button className="btn btn-secondary" onClick={() => api.adminGetShifts().then(setTimesheets)}><RefreshCw size={14} /> Refresh</button>
+          </div>
+
+          <div className="glass-panel" style={{ overflowX: "auto" }}>
+            <table className="data-table" style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid var(--border-light)" }}>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Staff ID</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Outlet</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Clock In</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Clock Out</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Duration</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Expected Cash</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Actual Cash</th>
+                  <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Discrepancy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {timesheets.length === 0 ? (
+                  <tr><td colSpan="8" style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>No timesheet records found.</td></tr>
+                ) : (
+                  timesheets.map(ts => {
+                    const discrepancyColor = ts.cash_discrepancy < 0 ? "var(--error)" : ts.cash_discrepancy > 0 ? "var(--success)" : "var(--text-secondary)";
+                    const outOutlet = outlets.find(o => o.id === ts.outlet_id);
+                    return (
+                      <tr key={ts.id} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                        <td style={{ padding: "1rem", fontWeight: 600 }}>Staff #{ts.staff_id}</td>
+                        <td style={{ padding: "1rem" }}>{outOutlet ? outOutlet.name : `Outlet #${ts.outlet_id}`}</td>
+                        <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{new Date(ts.clock_in_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
+                        <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{ts.clock_out_time ? new Date(ts.clock_out_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : <span style={{ color: "var(--warning-color)", fontWeight: 700 }}>Active</span>}</td>
+                        <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.duration_hours ? `${ts.duration_hours}h` : "—"}</td>
+                        <td style={{ padding: "1rem", color: "var(--text-secondary)" }}>{ts.expected_cash !== null ? `₹${ts.expected_cash.toFixed(2)}` : "—"}</td>
+                        <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.actual_cash !== null ? `₹${ts.actual_cash.toFixed(2)}` : "—"}</td>
+                        <td style={{ padding: "1rem", fontWeight: 800, color: discrepancyColor }}>
+                          {ts.cash_discrepancy !== null ? `${ts.cash_discrepancy > 0 ? '+' : ''}₹${ts.cash_discrepancy.toFixed(2)}` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -1055,6 +1312,7 @@ export default function AdminView({ onLogout, dbMode }) {
                 <option value="all">All Roles</option>
                 <option value="customer">Customers</option>
                 <option value="staff">Staff</option>
+                <option value="kitchen">Kitchen</option>
                 <option value="outlet_owner">Outlet Owners</option>
               </select>
             </div>
@@ -1103,14 +1361,14 @@ export default function AdminView({ onLogout, dbMode }) {
                           <span style={{
                             textTransform: "uppercase", fontSize: "0.72rem", fontWeight: 800,
                             padding: "0.2rem 0.5rem", borderRadius: "4px",
-                            background: user.role === "outlet_owner" ? "rgba(139,92,246,0.15)" : user.role === "staff" ? "rgba(249,115,22,0.15)" : "rgba(59,130,246,0.15)",
-                            color: user.role === "outlet_owner" ? "var(--brand)" : user.role === "staff" ? "var(--brand)" : "var(--info)"
+                            background: user.role === "outlet_owner" ? "rgba(139,92,246,0.15)" : user.role === "staff" ? "rgba(249,115,22,0.15)" : user.role === "kitchen" ? "rgba(234,179,8,0.15)" : "rgba(59,130,246,0.15)",
+                            color: user.role === "outlet_owner" ? "var(--brand)" : user.role === "staff" ? "var(--brand)" : user.role === "kitchen" ? "#854d0e" : "var(--info)"
                           }}>
                             {user.role?.replace("_", " ")}
                           </span>
                         </td>
                         <td>
-                          {user.role === "staff" ? (
+                          {user.role === "staff" || user.role === "outlet_owner" || user.role === "kitchen" ? (
                             <select
                               className="form-select"
                               style={{ padding: "0.2rem 0.4rem", fontSize: "0.78rem", minWidth: "150px" }}
@@ -1140,13 +1398,21 @@ export default function AdminView({ onLogout, dbMode }) {
                           </span>
                         </td>
                         <td style={{ textAlign: "right" }}>
-                          <button
-                            onClick={() => handleToggleUserActive(user)}
-                            className={`btn ${user.is_active !== false ? "btn-secondary" : "btn-primary"}`}
-                            style={{ padding: "0.3rem 0.75rem", fontSize: "0.78rem" }}
-                          >
-                            {user.is_active !== false ? "Deactivate" : "Activate"}
-                          </button>
+                          <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                            <button onClick={() => openEditStaff(user)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)" }} title="Edit User">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                            </button>
+                            <button onClick={() => handleDeleteUser(user.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--error)" }} title="Delete User">
+                              <Trash2 size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleToggleUserActive(user)}
+                              className={`btn ${user.is_active !== false ? "btn-secondary" : "btn-primary"}`}
+                              style={{ padding: "0.3rem 0.75rem", fontSize: "0.78rem" }}
+                            >
+                              {user.is_active !== false ? "Deactivate" : "Activate"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1183,6 +1449,7 @@ export default function AdminView({ onLogout, dbMode }) {
                     <th>Customer</th>
                     <th>Rating</th>
                     <th>Comment</th>
+                    <th>Status</th>
                     <th>Submitted Date</th>
                     <th style={{ textAlign: "right" }}>Actions</th>
                   </tr>
@@ -1213,17 +1480,41 @@ export default function AdminView({ onLogout, dbMode }) {
                         </td>
                         <td style={{ fontSize: "0.82rem", color: "var(--text-secondary)", maxWidth: "350px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "normal" }}>
                           {r.comment}
+                          {r.admin_reply && (
+                            <div style={{ marginTop: "0.5rem", padding: "0.4rem", background: "rgba(249,115,22,0.1)", borderLeft: "2px solid var(--brand)", fontSize: "0.75rem", color: "var(--text-primary)" }}>
+                              <strong>Admin Reply:</strong> {r.admin_reply}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`status-pill ${r.is_hidden ? "status-cancelled" : "status-shipped"}`} style={{ display: "inline-block", fontSize: "0.7rem", padding: "0.2rem 0.4rem", borderRadius: "100px", fontWeight: "700" }}>
+                            {r.is_hidden ? "Hidden" : "Visible"}
+                          </span>
                         </td>
                         <td style={{ color: "var(--text-muted)", fontSize: "0.78rem" }}>
                           {new Date(r.created_at).toLocaleString()}
                         </td>
-                        <td style={{ textAlign: "right" }}>
+                        <td style={{ textAlign: "right", display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
+                          <button
+                            onClick={() => handleToggleReviewVisibility(r)}
+                            className="btn btn-secondary"
+                            style={{ padding: "0.3rem 0.5rem", fontSize: "0.75rem" }}
+                          >
+                            {r.is_hidden ? "Show" : "Hide"}
+                          </button>
+                          <button
+                            onClick={() => handleReplyReview(r)}
+                            className="btn btn-primary"
+                            style={{ padding: "0.3rem 0.5rem", fontSize: "0.75rem" }}
+                          >
+                            Reply
+                          </button>
                           <button
                             onClick={() => handleDeleteReview(r.id)}
                             className="btn btn-secondary"
-                            style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", color: "#ef4444" }}
+                            style={{ padding: "0.3rem 0.5rem", fontSize: "0.75rem", background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", color: "#ef4444" }}
                           >
-                            Delete Review
+                            <Trash2 size={12} />
                           </button>
                         </td>
                       </tr>
@@ -1326,9 +1617,15 @@ export default function AdminView({ onLogout, dbMode }) {
       {/* Add Product */}
       <Modal open={showAddMenu} onClose={() => setShowAddMenu(false)} title="Add Catalog Product">
         <form onSubmit={handleAddMenuItem} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">Product Name</label>
-            <input type="text" required className="form-input" placeholder="e.g. Kandi Podi 250g" value={menuName} onChange={e => setMenuName(e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Product Name</label>
+              <input type="text" required className="form-input" placeholder="e.g. Kandi Podi 250g" value={menuName} onChange={e => setMenuName(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Product Code (Optional)</label>
+              <input type="text" className="form-input" placeholder="e.g. som1" value={menuCode} onChange={e => setMenuCode(e.target.value)} />
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -1344,7 +1641,7 @@ export default function AdminView({ onLogout, dbMode }) {
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Category</label>
               <select className="form-select" value={menuCategory} onChange={e => setMenuCategory(e.target.value)}>
-                {["Spice Powders", "Pickles", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"].map(c => <option key={c} value={c}>{c}</option>)}
+                {["Pickles", "Spice Powders", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"].map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div className="form-group" style={{ margin: 0 }}>
@@ -1371,8 +1668,61 @@ export default function AdminView({ onLogout, dbMode }) {
         </form>
       </Modal>
 
+      <Modal open={showEditMenu} onClose={() => setShowEditMenu(false)} title="Edit Catalog Product">
+        <form onSubmit={handleUpdateMenuItem} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Product Name</label>
+              <input type="text" required className="form-input" placeholder="e.g. Kandi Podi 250g" value={menuName} onChange={e => setMenuName(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Product Code (Optional)</label>
+              <input type="text" className="form-input" placeholder="e.g. som1" value={menuCode} onChange={e => setMenuCode(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Price (₹)</label>
+              <input type="number" step="0.01" required className="form-input" placeholder="179.00" value={menuPrice} onChange={e => setMenuPrice(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Original Price (₹)</label>
+              <input type="number" step="0.01" className="form-input" placeholder="220.00" value={menuOriginalPrice} onChange={e => setMenuOriginalPrice(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Category</label>
+              <select className="form-select" value={menuCategory} onChange={e => setMenuCategory(e.target.value)}>
+                {["Pickles", "Spice Powders", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"].map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Business Segment</label>
+              <select className="form-select" value={menuType} onChange={e => setMenuType(e.target.value)}>
+                <option value="home_foods">Home Foods (B2C)</option>
+                <option value="snack_supply">Snack Supply (B2B2C)</option>
+                <option value="both">Both Segments</option>
+              </select>
+            </div>
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Image URL</label>
+            <input type="text" className="form-input" placeholder="https://images.unsplash.com/..." value={menuImageUrl} onChange={e => setMenuImageUrl(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Description</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Ingredients, freshness, etc." value={menuDesc} onChange={e => setMenuDesc(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem" }}>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Update Product</button>
+            <button type="button" onClick={() => setShowEditMenu(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+          </div>
+        </form>
+      </Modal>
+
       {/* Add Outlet */}
-      <Modal open={showAddOutlet} onClose={() => setShowAddOutlet(false)} title="Register Outlet" width={520}>
+      <Modal open={showAddOutlet} onClose={() => { setShowAddOutlet(false); setEditingOutletId(null); setOutletName(""); setOutletAddress(""); setOutletLatitude(""); setOutletLongitude(""); }} title={editingOutletId ? "Edit Outlet" : "Register Outlet"} width={520}>
         <form onSubmit={handleAddOutlet} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Outlet Name</label>
@@ -1387,12 +1737,12 @@ export default function AdminView({ onLogout, dbMode }) {
               </button>
             </div>
             {geocodingMsg && (
-              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: geocodingMsg.includes("✓") ? "var(--success)" : "var(--error)" }}>
+              <div style={{ marginTop: "0.3rem", fontSize: "0.75rem", color: geocodingMsg.includes("Failed") ? "var(--error)" : "var(--success)" }}>
                 {geocodingMsg}
               </div>
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Latitude</label>
               <input type="number" step="any" className="form-input" placeholder="28.6315" value={outletLatitude} onChange={e => setOutletLatitude(e.target.value)} />
@@ -1409,13 +1759,16 @@ export default function AdminView({ onLogout, dbMode }) {
         </form>
       </Modal>
 
-      {/* Add Staff */}
-      <Modal open={showAddStaff} onClose={() => setShowAddStaff(false)} title="Create Team Account">
+      {/* Add/Edit Staff */}
+      <Modal open={showAddStaff} onClose={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); }} title={editingUserId ? "Edit Team Account" : "Create Team Account"}>
         <form onSubmit={handleAddStaff} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Role</label>
             <select className="form-select" value={staffRole} onChange={e => setStaffRole(e.target.value)}>
+              <option value="customer">Customer</option>
               <option value="staff">Outlet Cashier (Staff)</option>
+              <option value="kitchen">Kitchen Staff</option>
+              <option value="outlet_owner">Outlet Owner</option>
               <option value="admin">Administrator (Admin)</option>
             </select>
           </div>
@@ -1423,9 +1776,27 @@ export default function AdminView({ onLogout, dbMode }) {
             <label className="form-label">Email</label>
             <input type="email" required className="form-input" placeholder="team@brand.com" value={staffEmail} onChange={e => setStaffEmail(e.target.value)} />
           </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">Password</label>
-            <input type="password" required className="form-input" placeholder="••••••••" value={staffPassword} onChange={e => setStaffPassword(e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Password {editingUserId && "(Leave blank to keep)"}</label>
+              <input type="password" required={!editingUserId} className="form-input" placeholder="••••••••" value={staffPassword} onChange={e => setStaffPassword(e.target.value)} />
+            </div>
+            {staffRole === "staff" && (
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">4-Digit PIN {editingUserId && "(Leave blank to keep)"}</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="\d{4}"
+                  required={!editingUserId}
+                  className="form-input"
+                  placeholder="● ● ● ●"
+                  value={staffPin}
+                  onChange={e => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                />
+              </div>
+            )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -1439,21 +1810,35 @@ export default function AdminView({ onLogout, dbMode }) {
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Phone</label>
-            <input type="text" className="form-input" placeholder="98480xxxxx" value={staffPhone} onChange={e => setStaffPhone(e.target.value)} />
+            <input type="tel" maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={staffPhone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setStaffPhone(val); }} />
           </div>
-          {staffRole === "staff" && (
+          {(staffRole === "staff" || staffRole === "outlet_owner" || staffRole === "kitchen") && (
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Assign to Outlet</label>
               <select className="form-select" value={staffOutletId} onChange={e => setStaffOutletId(e.target.value)}>
+                <option value="">-- No specific outlet --</option>
                 {outlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
             </div>
           )}
           <div style={{ display: "flex", gap: "0.75rem" }}>
-            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Users size={15} /> Create Account</button>
-            <button type="button" onClick={() => setShowAddStaff(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Users size={15} /> {editingUserId ? "Save Changes" : "Create Account"}</button>
+            <button type="button" onClick={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); }} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
           </div>
         </form>
+      </Modal>
+
+      {/* Confirm Review Delete Modal */}
+      <Modal open={!!reviewToDelete} onClose={() => setReviewToDelete(null)} title="Delete Review" width={400}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", padding: "0.5rem 0" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "0.9rem", lineHeight: "1.5" }}>
+            Are you sure you want to delete this review? This action cannot be undone.
+          </p>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+            <button className="btn btn-secondary" onClick={() => setReviewToDelete(null)}>Cancel</button>
+            <button className="btn" style={{ background: "var(--error)", color: "#fff", border: "none" }} onClick={confirmDeleteReview}>Delete Review</button>
+          </div>
+        </div>
       </Modal>
 
       {/* Add Coupon Modal */}

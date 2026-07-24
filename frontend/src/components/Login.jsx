@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { api } from "../utils/api";
 import {
   Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag, Shield,
-  Store, Zap, BarChart3, Package, Star, Truck
+  Store, Zap, BarChart3, Package, Star
 } from "lucide-react";
 
 const FEATURES = [
@@ -273,7 +273,7 @@ export default function Login({ onLoginSuccess }) {
                 </div>
                 <div className="form-group" style={{ margin: 0 }}>
                   <label className="form-label">Phone Number</label>
-                  <input type="tel" required className="form-input" placeholder="+91 98765 43210" value={phone} onChange={e => setPhone(e.target.value)} />
+                  <input type="tel" required maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setPhone(val); }} />
                 </div>
               </div>
             )}

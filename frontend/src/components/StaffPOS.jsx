@@ -2,12 +2,13 @@ import React, { useState, useEffect, useMemo } from "react";
 import { api, API_BASE_URL } from "../utils/api";
 import {
   Plus, Minus, IndianRupee, QrCode, ShoppingCart, RefreshCw,
-  AlertCircle, CheckCircle, Store, Trash2, Calendar, FileText,
-  Volume2, VolumeX, HelpCircle, X, LogOut
+  AlertCircle, CheckCircle, Store, Trash2, FileText,
+  Volume2, VolumeX, X, LogOut, User, Clock, ShieldAlert,
+  KeyRound, Gift, Search
 } from "lucide-react";
 import QRScanner from "./QRScanner";
 
-export default function StaffPOS({ onLogout, dbMode }) {
+export default function StaffPOS({ onLogout, _dbMode }) {
   const [outlet, setOutlet] = useState(null);
   const [menu, setMenu] = useState([]);
   const [activeSale, setActiveSale] = useState({}); // { itemId: quantity }
@@ -39,6 +40,32 @@ export default function StaffPOS({ onLogout, dbMode }) {
   // Audio configuration
   const [soundEnabled, setSoundEnabled] = useState(true);
 
+  // ---- NEW: Shift Management ----
+  const [activeShift, setActiveShift] = useState(null);
+  const [shiftChecked, setShiftChecked] = useState(false); // has the shift check completed?
+  const [clockInEmail, setClockInEmail] = useState("");
+  const [clockInPin, setClockInPin] = useState("");
+  const [clockInLoading, setClockInLoading] = useState(false);
+  const [clockInError, setClockInError] = useState("");
+
+  // ---- NEW: Clock-Out ----
+  const [showClockOutModal, setShowClockOutModal] = useState(false);
+  const [actualCashInput, setActualCashInput] = useState("");
+  const [clockOutLoading, setClockOutLoading] = useState(false);
+  const [clockOutResult, setClockOutResult] = useState(null);
+
+  // ---- NEW: CRM / Loyalty ----
+  const [crmEmail, setCrmEmail] = useState("");
+  const [crmResult, setCrmResult] = useState(null); // { customer, top_items }
+  const [crmLoading, setCrmLoading] = useState(false);
+  const [crmError, setCrmError] = useState("");
+  const [redeemPoints, setRedeemPoints] = useState(false); // toggle
+
+  // ---- NEW: Product Code Scanning ----
+  const [productCodeInput, setProductCodeInput] = useState("");
+  const [scanError, setScanError] = useState("");
+  const [isScanning, setIsScanning] = useState(false);
+
   const [toast, setToast] = useState(null);
   const alert = (msg) => {
     setToast({ message: msg, type: msg.toLowerCase().includes("failed") || msg.toLowerCase().includes("error") ? "error" : "success" });
@@ -50,6 +77,105 @@ export default function StaffPOS({ onLogout, dbMode }) {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  // ---- Check active shift on mount ----
+  useEffect(() => {
+    api.posGetActiveShift().then(res => {
+      setActiveShift(res.shift || null);
+    }).catch(() => {
+      setActiveShift(null);
+    }).finally(() => {
+      setShiftChecked(true);
+    });
+    // Pre-fill the email from logged-in user
+    const user = api.getCurrentUser();
+    if (user && user.email) setClockInEmail(user.email);
+  }, []);
+
+  // ---- Clock-In Handler ----
+  const handleClockIn = async (e) => {
+    e.preventDefault();
+    setClockInError("");
+    if (!clockInEmail.trim()) { setClockInError("Email is required"); return; }
+    if (!/^\d{4}$/.test(clockInPin)) { setClockInError("PIN must be exactly 4 digits"); return; }
+    setClockInLoading(true);
+    try {
+      const res = await api.posClockIn(clockInEmail.trim().toLowerCase(), clockInPin);
+      setActiveShift(res.shift);
+      setClockInPin("");
+      alert("Shift started! You are now clocked in.");
+    } catch (err) {
+      setClockInError(err.message || "Clock-in failed");
+    } finally {
+      setClockInLoading(false);
+    }
+  };
+
+  // ---- Clock-Out Handler ----
+  const handleClockOut = async (e) => {
+    e.preventDefault();
+    const cashVal = parseFloat(actualCashInput);
+    if (isNaN(cashVal) || cashVal < 0) {
+      alert("Please enter a valid non-negative cash amount");
+      return;
+    }
+    setClockOutLoading(true);
+    try {
+      const res = await api.posClockOut(cashVal);
+      setClockOutResult(res.shift);
+      setActiveShift(null);
+      setActualCashInput("");
+    } catch (err) {
+      alert("Clock-out failed: " + err.message);
+    } finally {
+      setClockOutLoading(false);
+    }
+  };
+
+  // ---- CRM Customer Lookup ----
+  const handleCrmLookup = async (e) => {
+    e.preventDefault();
+    if (!crmEmail.trim()) return;
+    setCrmError("");
+    setCrmResult(null);
+    setCrmLoading(true);
+    try {
+      const res = await api.posLookupCustomer(crmEmail.trim().toLowerCase());
+      setCrmResult(res);
+      setRedeemPoints(false);
+    } catch (err) {
+      setCrmError(err.message || "Customer not found");
+    } finally {
+      setCrmLoading(false);
+    }
+  };
+
+  const clearCrm = () => {
+    setCrmEmail("");
+    setCrmResult(null);
+    setCrmError("");
+    setRedeemPoints(false);
+  };
+
+  // ---- Product Code Entry Handler ----
+  const handleProductCodeEntry = async (e) => {
+    e.preventDefault();
+    if (!productCodeInput.trim()) return;
+    setScanError("");
+    try {
+      const product = await api.getFoodByCode(productCodeInput.trim().toLowerCase());
+      // Check if product is in this outlet's menu
+      const itemInMenu = menu.find(m => m.id === product.id);
+      if (!itemInMenu) {
+        throw new Error("Item not available in this outlet");
+      }
+      handleSelectItem(itemInMenu.id);
+      setProductCodeInput("");
+    } catch (err) {
+      setScanError(err.message || "Product code not found");
+    }
+  };
+
 
   // Audio generator function using browser's AudioContext
   const playAlertSound = () => {
@@ -67,8 +193,8 @@ export default function StaffPOS({ onLogout, dbMode }) {
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.15); // short beep
-    } catch (e) {
-      console.log("AudioContext blocked or unavailable:", e);
+    } catch (err) {
+      console.log("AudioContext blocked or unavailable:", err);
     }
   };
 
@@ -117,6 +243,7 @@ export default function StaffPOS({ onLogout, dbMode }) {
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSelectItem = (itemId) => {
@@ -210,11 +337,33 @@ export default function StaffPOS({ onLogout, dbMode }) {
       quantity: qty
     }));
 
+    // Determine loyalty redemption
+    const pointsToRedeem = (redeemPoints && crmResult?.customer?.loyalty_points > 0)
+      ? Math.min(crmResult.customer.loyalty_points, Math.floor(finalTotalAmount))
+      : 0;
+
     try {
-      const res = await api.posSell(items, paymentMethod, appliedCoupon ? appliedCoupon.code : null);
-      alert(`POS Transaction successful! Total: ₹${finalTotalAmount.toFixed(2)}`);
+      const res = await api.posSellWithCRM(
+        items,
+        paymentMethod,
+        appliedCoupon ? appliedCoupon.code : null,
+        crmResult?.customer?.email || null,
+        pointsToRedeem
+      );
+      alert(`POS Transaction successful! Total: ₹${finalTotalAmount.toFixed(2)}${
+        res.loyalty_points_earned > 0 ? ` | +${res.loyalty_points_earned} loyalty pts` : ""
+      }`);
       setActiveSale({});
       setShowUPIScanModal(false);
+
+      // Update CRM balance after sale
+      if (crmResult && res.customer_loyalty_balance !== undefined) {
+        setCrmResult(prev => ({
+          ...prev,
+          customer: { ...prev.customer, loyalty_points: res.customer_loyalty_balance }
+        }));
+      }
+      setRedeemPoints(false);
       
       // Update shift sales locally for instant update
       const newSaleEntry = {
@@ -273,38 +422,92 @@ export default function StaffPOS({ onLogout, dbMode }) {
 
   const handleDownloadPOSReceipt = (sale) => {
     try {
-      const lineSeparator = "========================================\n";
-      let text = "";
-      text += "             FLAVORFLOW ERP             \n";
-      text += `          Outlet: ${outlet ? outlet.name : "Retail Station"}         \n`;
-      text += `          Address: ${outlet ? outlet.address : "Location"}        \n`;
-      text += lineSeparator;
-      text += "             POS SALES RECEIPT          \n";
-      text += lineSeparator;
-      text += `Receipt ID: #POS-${sale.id}\n`;
-      text += `Date: ${new Date(sale.created_at).toLocaleString()}\n`;
-      text += `Cashier: Alex (Staff)\n`;
-      text += `Payment: ${sale.payment_method.toUpperCase()}\n`;
-      text += lineSeparator;
-      text += "Items Sold:\n";
-      sale.items.forEach(it => {
-        const itemTotal = (it.price * it.quantity).toFixed(2);
-        text += `- ${it.menu_item_name}\n  Qty: ${it.quantity} @ ₹${parseFloat(it.price).toFixed(2)} = ₹${itemTotal}\n`;
+      const doc = new jsPDF({
+        unit: "mm",
+        format: [80, 200]
       });
-      text += lineSeparator;
-      text += `Grand Total: ₹${parseFloat(sale.total_amount).toFixed(2)}\n`;
-      text += lineSeparator;
-      text += "      Thank you for shopping!           \n";
 
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `POS_Receipt_${sale.id}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      let yPos = 10;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(14);
+      doc.text("FLAVORFLOW ERP", 40, yPos, { align: "center" });
+      
+      yPos += 6;
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Outlet: ${outlet ? outlet.name : "Retail Station"}`, 40, yPos, { align: "center" });
+      
+      yPos += 5;
+      doc.text(`Address: ${outlet ? outlet.address : "Location"}`, 40, yPos, { align: "center" });
+      
+      yPos += 5;
+      doc.text("-----------------------------------------", 40, yPos, { align: "center" });
+      
+      yPos += 6;
+      doc.setFont("helvetica", "bold");
+      doc.text("POS SALES RECEIPT", 40, yPos, { align: "center" });
+      
+      yPos += 5;
+      doc.setFont("helvetica", "normal");
+      doc.text("-----------------------------------------", 40, yPos, { align: "center" });
+      
+      yPos += 6;
+      doc.text(`Receipt ID: #POS-${sale.id}`, 5, yPos);
+      
+      yPos += 5;
+      doc.text(`Date: ${new Date(sale.created_at).toLocaleString()}`, 5, yPos);
+      
+      yPos += 5;
+      doc.text(`Cashier: Alex (Staff)`, 5, yPos);
+      
+      yPos += 5;
+      doc.text(`Payment: ${sale.payment_method.toUpperCase()}`, 5, yPos);
+      
+      yPos += 5;
+      doc.text("-----------------------------------------", 40, yPos, { align: "center" });
+      
+      yPos += 6;
+      doc.setFont("helvetica", "bold");
+      doc.text("Items Sold", 5, yPos);
+      doc.setFont("helvetica", "normal");
+      
+      yPos += 5;
+      let subtotal = 0;
+      sale.items.forEach(it => {
+        const itemTotal = (it.price * it.quantity);
+        subtotal += itemTotal;
+        doc.text(`- ${it.menu_item_name}`, 5, yPos);
+        yPos += 4;
+        doc.text(`  Qty: ${it.quantity} @ Rs.${parseFloat(it.price).toFixed(2)}`, 5, yPos);
+        doc.text(`Rs.${itemTotal.toFixed(2)}`, 75, yPos, { align: "right" });
+        yPos += 5;
+      });
+      
+      doc.text("-----------------------------------------", 40, yPos, { align: "center" });
+      
+      const grandTotal = parseFloat(sale.total_amount);
+      if (subtotal > grandTotal && (subtotal - grandTotal) > 0.01) {
+          yPos += 5;
+          doc.text("Subtotal:", 5, yPos);
+          doc.text(`Rs.${subtotal.toFixed(2)}`, 75, yPos, { align: "right" });
+          yPos += 5;
+          doc.text("Discount applied:", 5, yPos);
+          doc.text(`-Rs.${(subtotal - grandTotal).toFixed(2)}`, 75, yPos, { align: "right" });
+      }
+
+      yPos += 6;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.text(`Grand Total:`, 5, yPos);
+      doc.text(`Rs.${grandTotal.toFixed(2)}`, 75, yPos, { align: "right" });
+      
+      yPos += 8;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text("Thank you for shopping!", 40, yPos, { align: "center" });
+
+      doc.save(`POS_Receipt_${sale.id}.pdf`);
+      alert("Receipt PDF downloaded successfully!");
     } catch (err) {
       alert("Failed to download POS receipt: " + err.message);
     }
@@ -331,7 +534,7 @@ export default function StaffPOS({ onLogout, dbMode }) {
     }
   };
 
-  const getStockColor = () => {
+  const _getStockColor = () => {
     if (!outlet) return "var(--text-muted)";
     if (outlet.needs_restock) return "var(--alert-color)";
     return "var(--success-color)";
@@ -351,8 +554,206 @@ export default function StaffPOS({ onLogout, dbMode }) {
 
   return (
     <div className="animate-fade-in" style={{ width: "100%" }}>
-      
-      {/* Top Controls Bar */}
+
+      {/* ================================================================
+          CLOCK-IN GATE: Block POS until staff starts their shift
+      ================================================================ */}
+      {shiftChecked && !activeShift && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(13, 17, 23, 0.97)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 9998, backdropFilter: "blur(16px)"
+        }}>
+          <div style={{
+            background: "rgba(18,22,28,0.98)",
+            border: "1px solid var(--brand)",
+            boxShadow: "0 0 60px rgba(249,115,22,0.12)",
+            borderRadius: "1.5rem", padding: "2.75rem 2.5rem",
+            width: "100%", maxWidth: 460, textAlign: "center"
+          }}>
+            <div style={{
+              width: 72, height: 72,
+              background: "rgba(249,115,22,0.1)", borderRadius: "50%",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              margin: "0 auto 1.5rem", color: "var(--brand)"
+            }}>
+              <KeyRound size={32} />
+            </div>
+            <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.6rem", fontWeight: 900, color: "var(--text-primary)", marginBottom: "0.4rem" }}>
+              Start Your Shift
+            </h2>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem", lineHeight: 1.6, marginBottom: "1.75rem" }}>
+              Enter your email and 4-digit PIN to clock in and access the POS terminal.
+            </p>
+
+            {clockInError && (
+              <div className="alert alert-error" style={{ marginBottom: "1rem", textAlign: "left" }}>
+                <ShieldAlert size={15} style={{ flexShrink: 0 }} /> {clockInError}
+              </div>
+            )}
+
+            <form onSubmit={handleClockIn} style={{ display: "flex", flexDirection: "column", gap: "1rem", textAlign: "left" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Email Address</label>
+                <input
+                  id="clock-in-email"
+                  type="email"
+                  required
+                  className="form-input"
+                  placeholder="your@email.com"
+                  value={clockInEmail}
+                  onChange={e => setClockInEmail(e.target.value)}
+                  autoComplete="email"
+                />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">4-Digit PIN</label>
+                <input
+                  id="clock-in-pin"
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="\d{4}"
+                  required
+                  className="form-input"
+                  placeholder="● ● ● ●"
+                  value={clockInPin}
+                  onChange={e => setClockInPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  autoComplete="off"
+                  style={{ letterSpacing: "0.3em", fontSize: "1.2rem", textAlign: "center" }}
+                />
+              </div>
+              <button
+                id="clock-in-submit-btn"
+                type="submit"
+                disabled={clockInLoading}
+                className="btn btn-primary"
+                style={{ width: "100%", padding: "0.9rem", marginTop: "0.5rem", fontSize: "1rem", fontWeight: 700 }}
+              >
+                {clockInLoading ? "Clocking In…" : "Clock In & Start Shift"}
+              </button>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="btn btn-secondary"
+                style={{ width: "100%", padding: "0.75rem", fontSize: "0.875rem" }}
+              >
+                <LogOut size={15} /> Sign Out
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================
+          CLOCK-OUT RESULT MODAL (shown after successful clock-out)
+      ================================================================ */}
+      {clockOutResult && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(13,17,23,0.9)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 9997, backdropFilter: "blur(8px)"
+        }}>
+          <div style={{
+            background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
+            borderRadius: "1.25rem", padding: "2.5rem", maxWidth: 480, width: "100%", textAlign: "center"
+          }}>
+            <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🕐</div>
+            <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 800, marginBottom: "1rem" }}>Shift Closed</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1.5rem" }}>
+              {[
+                ["Duration", `${clockOutResult.duration_hours ?? "—"} hrs`],
+                ["Expected Cash", `₹${(clockOutResult.expected_cash ?? 0).toFixed(2)}`],
+                ["Actual Cash", `₹${(clockOutResult.actual_cash ?? 0).toFixed(2)}`],
+                ["Discrepancy", `₹${(clockOutResult.cash_discrepancy ?? 0).toFixed(2)}`,
+                  (clockOutResult.cash_discrepancy ?? 0) < 0 ? "#ef4444" :
+                  (clockOutResult.cash_discrepancy ?? 0) > 0 ? "#22c55e" : "var(--text-primary)"]
+              ].map(([label, val, color]) => (
+                <div key={label} style={{ background: "var(--bg-hover)", borderRadius: "0.75rem", padding: "0.875rem" }}>
+                  <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", marginBottom: "0.25rem" }}>{label}</div>
+                  <div style={{ fontSize: "1.1rem", fontWeight: 800, color: color || "var(--text-primary)" }}>{val}</div>
+                </div>
+              ))}
+            </div>
+            {(clockOutResult.cash_discrepancy ?? 0) < 0 && (
+              <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
+                ⚠️ Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
+              </div>
+            )}
+            <button
+              id="clock-out-done-btn"
+              className="btn btn-primary"
+              style={{ width: "100%", padding: "0.875rem", marginBottom: "0.75rem" }}
+              onClick={() => { setClockOutResult(null); }}
+            >
+              Done
+            </button>
+            <button className="btn btn-secondary" style={{ width: "100%" }} onClick={onLogout}>
+              <LogOut size={14} /> Sign Out
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================
+          CLOCK-OUT MODAL
+      ================================================================ */}
+      {showClockOutModal && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(13,17,23,0.85)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 9996, backdropFilter: "blur(6px)"
+        }}>
+          <div style={{
+            background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
+            borderRadius: "1.25rem", padding: "2rem", maxWidth: 420, width: "100%"
+          }}>
+            <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, marginBottom: "0.5rem" }}>Clock Out</h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1.5rem" }}>
+              Enter the actual cash amount counted in the drawer to close your shift.
+            </p>
+            <form onSubmit={handleClockOut} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Actual Cash in Drawer (₹)</label>
+                <input
+                  id="clock-out-cash-input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  required
+                  className="form-input"
+                  placeholder="0.00"
+                  value={actualCashInput}
+                  onChange={e => setActualCashInput(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div style={{ display: "flex", gap: "0.75rem" }}>
+                <button
+                  id="clock-out-submit-btn"
+                  type="submit"
+                  disabled={clockOutLoading}
+                  className="btn btn-primary"
+                  style={{ flex: 1, padding: "0.8rem" }}
+                >
+                  {clockOutLoading ? "Closing Shift…" : "Confirm Clock Out"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "0.8rem 1rem" }}
+                  onClick={() => setShowClockOutModal(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", background: "var(--bg-card)", padding: "0.875rem 1.25rem", borderRadius: "var(--r-lg)", border: "1px solid var(--border-subtle)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
           <div style={{ width: 36, height: 36, background: "var(--brand-dim)", borderRadius: "var(--r-md)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--brand)" }}>
@@ -360,10 +761,29 @@ export default function StaffPOS({ onLogout, dbMode }) {
           </div>
           <div>
             <div style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700 }}>Cashier Terminal</div>
-            <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)" }}>{outlet ? outlet.name : "Loading…"}</div>
+            <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)" }}>
+              {outlet ? outlet.name : "Loading…"}
+              {activeShift && (
+                <span style={{ marginLeft: "0.5rem", color: "#22c55e", fontWeight: 600 }}>
+                  ● Shift Active since {new Date(activeShift.clock_in_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         <div style={{ display: "flex", gap: "0.5rem" }}>
+          {activeShift && (
+            <button
+              id="clock-out-btn"
+              onClick={() => setShowClockOutModal(true)}
+              className="btn btn-secondary"
+              style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem", color: "#22c55e", borderColor: "#22c55e33" }}
+              title="Clock out and close shift"
+            >
+              <Clock size={14} /> Clock Out
+            </button>
+          )}
+
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="btn btn-secondary"
@@ -474,8 +894,8 @@ export default function StaffPOS({ onLogout, dbMode }) {
               </div>
             </div>
 
-            {/* ── POS TICKET ── */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {/* ── POS TICKET & TOOLS ── */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem", height: "100%", overflowY: "auto", paddingRight: "4px" }}>
 
               {/* Outlet Status */}
               <div className="glass-panel" style={{ padding: "1.1rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", textAlign: "center" }}>
@@ -491,8 +911,137 @@ export default function StaffPOS({ onLogout, dbMode }) {
                 </div>
               </div>
 
+              {/* Product Code Scanner Panel */}
+              <div style={{
+                background: "var(--bg-hover)", borderRadius: "0.875rem",
+                padding: "0.875rem", marginBottom: "0.75rem",
+                border: "1px solid var(--border-subtle)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <QrCode size={14} style={{ color: "var(--brand)" }} />
+                    <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Scan Product</span>
+                  </div>
+                  <button onClick={() => setIsScanning(!isScanning)} className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem" }}>
+                    {isScanning ? "Close Camera" : "Open Camera"}
+                  </button>
+                </div>
+                
+                {isScanning && (
+                  <div style={{ marginBottom: "0.75rem" }}>
+                    <QRScanner onStockUpdated={async (code) => { 
+                      setIsScanning(false);
+                      if (code) {
+                        try {
+                          const product = await api.getFoodByCode(code.trim().toLowerCase());
+                          const itemInMenu = menu.find(m => m.id === product.id);
+                          if (!itemInMenu) throw new Error("Item not available in this outlet");
+                          handleSelectItem(itemInMenu.id);
+                        } catch (err) {
+                          setScanError(err.message || "Product code not found");
+                        }
+                      }
+                    }} />
+                  </div>
+                )}
+                
+                <form onSubmit={handleProductCodeEntry} style={{ display: "flex", gap: "0.5rem" }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Enter Product Code (e.g. som1)"
+                    value={productCodeInput}
+                    onChange={e => setProductCodeInput(e.target.value)}
+                    style={{ flex: 1, fontSize: "0.8rem", padding: "0.5rem 0.75rem" }}
+                  />
+                  <button
+                    type="submit"
+                    className="btn btn-secondary"
+                    style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem", flexShrink: 0 }}
+                  >
+                    Add
+                  </button>
+                </form>
+                {scanError && <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.4rem", margin: 0 }}>{scanError}</p>}
+              </div>
+
+              {/* Customer CRM Panel */}
+              <div style={{
+                background: "var(--bg-hover)", borderRadius: "0.875rem",
+                padding: "0.875rem", marginBottom: "0.75rem",
+                border: "1px solid var(--border-subtle)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                  <User size={14} style={{ color: "var(--brand)" }} />
+                  <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Customer CRM</span>
+                </div>
+                {!crmResult ? (
+                  <form onSubmit={handleCrmLookup} style={{ display: "flex", gap: "0.5rem" }}>
+                    <input
+                      id="crm-email-input"
+                      type="email"
+                      className="form-input"
+                      placeholder="customer@email.com"
+                      value={crmEmail}
+                      onChange={e => setCrmEmail(e.target.value)}
+                      style={{ flex: 1, fontSize: "0.8rem", padding: "0.5rem 0.75rem" }}
+                    />
+                    <button
+                      id="crm-lookup-btn"
+                      type="submit"
+                      className="btn btn-secondary"
+                      style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem", flexShrink: 0 }}
+                      disabled={crmLoading}
+                    >
+                      {crmLoading ? <RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={13} />}
+                    </button>
+                  </form>
+                ) : (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: "0.875rem", color: "var(--text-primary)" }}>{crmResult.customer.name}</div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{crmResult.customer.email}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", marginTop: "0.3rem" }}>
+                          <Gift size={12} style={{ color: "#f59e0b" }} />
+                          <span style={{ fontSize: "0.8rem", color: "#f59e0b", fontWeight: 700 }}>
+                            {crmResult.customer.loyalty_points} loyalty pts
+                          </span>
+                        </div>
+                      </div>
+                      <button onClick={clearCrm} className="btn-icon"><X size={13} /></button>
+                    </div>
+                    {crmResult.top_items && crmResult.top_items.length > 0 && (
+                      <div style={{ marginTop: "0.5rem" }}>
+                        <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", marginBottom: "0.3rem" }}>Upsell: Frequently Buys</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+                          {crmResult.top_items.map((item, i) => (
+                            <span key={i} style={{ background: "var(--brand-dim)", color: "var(--brand)", fontSize: "0.7rem", padding: "0.2rem 0.5rem", borderRadius: "999px", fontWeight: 600 }}>
+                              {item.name} ×{item.total_ordered}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {crmResult.customer.loyalty_points > 0 && (
+                      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.6rem", cursor: "pointer", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                        <input
+                          id="redeem-points-toggle"
+                          type="checkbox"
+                          checked={redeemPoints}
+                          onChange={e => setRedeemPoints(e.target.checked)}
+                          style={{ accentColor: "var(--brand)" }}
+                        />
+                        Redeem {Math.min(crmResult.customer.loyalty_points, Math.floor(finalTotalAmount))} pts (₹{Math.min(crmResult.customer.loyalty_points, Math.floor(finalTotalAmount))} off)
+                      </label>
+                    )}
+                  </div>
+                )}
+                {crmError && <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.4rem", margin: 0 }}>{crmError}</p>}
+              </div>
+
               {/* Ticket */}
-              <div className="pos-ticket">
+              <div className="pos-ticket" style={{ position: "relative", top: "auto", height: "auto", flex: 1, minHeight: "350px" }}>
                 <div className="pos-ticket-header">
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                     <ShoppingCart size={16} style={{ color: "var(--brand)" }} />
@@ -635,10 +1184,6 @@ export default function StaffPOS({ onLogout, dbMode }) {
 
           </div>{/* end pos-grid */}
 
-          {/* QR Scanner (full width below) */}
-          <div style={{ marginTop: "1.5rem" }}>
-            <QRScanner onStockUpdated={loadData} />
-          </div>
         </>
       ) : (
         !loading && (

@@ -2,7 +2,7 @@ import unittest
 import json
 from decimal import Decimal
 from app import create_app, db, bcrypt
-from models import User, Outlet, MenuItem, Order, OrderItem, Feedback, POSSale, POSSaleItem, OutletStock
+from models import User, Admin, Customer, Staff, Outlet, MenuItem, Order, OrderItem, Review, OutletStock
 
 class BackendTestCase(unittest.TestCase):
     def setUp(self):
@@ -31,11 +31,9 @@ class BackendTestCase(unittest.TestCase):
 
     def setup_initial_data(self):
         # Clear any auto-seeded records to ensure test isolation
-        db.session.query(Feedback).delete()
+        db.session.query(Review).delete()
         db.session.query(OrderItem).delete()
         db.session.query(Order).delete()
-        db.session.query(POSSaleItem).delete()
-        db.session.query(POSSale).delete()
         db.session.query(OutletStock).delete()
         db.session.query(MenuItem).delete()
         db.session.query(Outlet).delete()
@@ -48,13 +46,13 @@ class BackendTestCase(unittest.TestCase):
         db.session.commit()  # commit to get the outlet ID
 
         # Create admin, customer, and staff users
-        self.admin = User(email="admin@brand.com", role="admin")
+        self.admin = Admin(email="admin@brand.com")
         self.admin.set_password("adminpass", bcrypt)
 
-        self.customer = User(email="customer@gmail.com", role="customer")
+        self.customer = Customer(email="customer@gmail.com")
         self.customer.set_password("custpass", bcrypt)
 
-        self.staff = User(email="staff@brand.com", role="staff", outlet_id=self.outlet.id)
+        self.staff = Staff(email="staff@brand.com", outlet_id=self.outlet.id)
         self.staff.set_password("staffpass", bcrypt)
 
         # Create menu items

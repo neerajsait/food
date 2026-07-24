@@ -2,10 +2,10 @@ import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../utils/api";
 import {
-  Package, AlertTriangle, Plus, Store, Users, MapPin, Activity,
-  Globe, QrCode, TrendingUp, ShieldAlert, Award, FileText, ShoppingBag,
-  Truck, ArrowRight, Clock, Trash2, Calendar, RefreshCw, BarChart3,
-  ChevronRight, Zap, Edit3, X, LogOut
+  Package, AlertTriangle, Plus, Store, MapPin, 
+  Globe, 
+  RefreshCw, 
+  Edit3, X, LogOut
 } from "lucide-react";
 
 /* ── Modal Wrapper ── */
@@ -38,7 +38,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
     }
   }, [toast]);
 
-  const [activeTab, setActiveTab] = useState("outlets");
+  // const [activeTab, setActiveTab] = useState("outlets");
   const [outlets, setOutlets] = useState([]);
   const [selectedOutlet, setSelectedOutlet] = useState(null);
   
@@ -83,6 +83,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const lookupCoordinates = async (address, type) => {
@@ -103,7 +104,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         } else {
           setGeocodingMsg("Address not found.");
         }
-      } catch {
+      } catch (err) {
         setGeocodingMsg("Lookup failed.");
       } finally {
         setGeocodingLoading(false);
@@ -121,7 +122,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         } else {
           setEditGeocodingMsg("Address not found.");
         }
-      } catch {
+      } catch (err) {
         setEditGeocodingMsg("Lookup failed.");
       } finally {
         setEditGeocodingLoading(false);

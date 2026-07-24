@@ -2,7 +2,7 @@
 // Implements a Mock Fallback Mode using localStorage if the backend is unreachable.
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || (
-  (window.location.port === "5173" || window.location.port === "5174" || window.location.port === "3000")
+  ["5173", "5174", "3000", "4173", "8080"].includes(window.location.port)
     ? `${window.location.protocol}//${window.location.hostname}:5000/api`
     : `${window.location.protocol}//${window.location.host}/api`
 );
@@ -10,13 +10,25 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || (
 // Helper to retrieve auth tokens
 function getAuthHeader() {
   const token = localStorage.getItem("token");
-  const headers = {
-    "ngrok-skip-browser-warning": "69420"
-  };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  return token ? { "Authorization": `Bearer ${token}` } : {};
+}
+
+// Safe JSON parser — never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
+async function safeJson(res) {
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    // const text = await res.text();
+    // Backend returned HTML — means server is down or misconfigured
+    // Reset live cache so next call retries
+    cachedLive = null;
+    lastCheckTime = 0;
+    throw new Error(
+      res.status === 404
+        ? "API endpoint not found (404). Please restart the backend."
+        : `Server returned non-JSON response (status ${res.status}). Make sure the backend is running on port 5000.`
+    );
   }
-  return headers;
+  return res.json();
 }
 
 // Check if backend is alive (cached for 10 seconds to resolve UI lag)
@@ -34,15 +46,11 @@ async function checkBackendAlive(bypassThrow = false) {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${API_BASE_URL}/health`, { 
-  signal: controller.signal,
-  headers: {
-    "ngrok-skip-browser-warning": "69420"
-  }
-});
+    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
     clearTimeout(timeoutId);
-    cachedLive = response.ok;
-  } catch (e) {
+    const isJson = response.headers.get("content-type")?.includes("application/json");
+    cachedLive = response.ok && isJson;
+  } catch (err) {
     cachedLive = false;
   }
   lastCheckTime = Date.now();
@@ -100,59 +108,59 @@ const INITIAL_OUTLETS = [
 
 const INITIAL_MENU_ITEMS = [
   // --- Spice Powders (Podis) ---
-  { id: 1, name: "Kobbari Karam 250g", description: "Homemade Kobbari Karam — rich coconut spice powder made from fresh coconut and red chillies.", price: 200.00, original_price: 220.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
-  { id: 2, name: "Pappula Podi 250g", description: "Homemade Pappula Podi — traditional lentil spice powder for rice and idli.", price: 159.00, original_price: 179.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=200&q=80" },
-  { id: 3, name: "Karvepaku Karram 250g", description: "Karivepaku Karam — authentic curry leaf spice powder with a pungent aroma.", price: 159.00, original_price: 179.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1599909613253-f3b3a5f7b33f?w=200&q=80" },
-  { id: 4, name: "Nuvvula Podi 250g", description: "Nuvvula Podi (Roasted Sesame Powder) — nutrient-rich sesame spice blend.", price: 169.00, original_price: 185.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1612929633738-8fe44f7ec841?w=200&q=80" },
-  { id: 5, name: "Munagaku Podi 250g", description: "Suggula's Kitchen Munagaku Podi — drumstick leaves powder packed with nutrients.", price: 160.00, original_price: 180.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1583394293214-0b3f8ed6e0ab?w=200&q=80" },
-  { id: 6, name: "Kandi Podi 250g", description: "సాంప్రదాయ రుచికి అసలైన కందిపప్పు పొడి — traditional toor dal spice powder.", price: 179.00, original_price: 199.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
-  { id: 7, name: "Curry Leaves Herbal Powder 250g", description: "Curry Leaves Herbal Powder — natural health supplement and flavour enhancer.", price: 289.00, original_price: 320.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1591189824344-d7e6c2440e4a?w=200&q=80" },
-  { id: 8, name: "Andhra Nallakaram Podi 250g", description: "Experience the authentic Andhra Nallakaram podi — fiery and aromatic.", price: 140.00, original_price: 160.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
-  { id: 9, name: "Andhra Koora Karam 250g", description: "అమ్మ చేతి కూర కారం — the special Andhra vegetable spice blend.", price: 120.00, original_price: 140.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=200&q=80" },
-  { id: 10, name: "Pallila Karam 250g", description: "నాన్నేమైన వేరుసేనగలు, సం... — peanut-based Andhra spice powder.", price: 180.00, original_price: 200.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1599909613253-f3b3a5f7b33f?w=200&q=80" },
+  { id: 1, name: "Kobbari Karam 250g", description: "Homemade Kobbari Karam â€” rich coconut spice powder made from fresh coconut and red chillies.", price: 200.00, original_price: 220.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
+  { id: 2, name: "Pappula Podi 250g", description: "Homemade Pappula Podi â€” traditional lentil spice powder for rice and idli.", price: 159.00, original_price: 179.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=200&q=80" },
+  { id: 3, name: "Karvepaku Karram 250g", description: "Karivepaku Karam â€” authentic curry leaf spice powder with a pungent aroma.", price: 159.00, original_price: 179.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1599909613253-f3b3a5f7b33f?w=200&q=80" },
+  { id: 4, name: "Nuvvula Podi 250g", description: "Nuvvula Podi (Roasted Sesame Powder) â€” nutrient-rich sesame spice blend.", price: 169.00, original_price: 185.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1612929633738-8fe44f7ec841?w=200&q=80" },
+  { id: 5, name: "Munagaku Podi 250g", description: "Suggula's Kitchen Munagaku Podi â€” drumstick leaves powder packed with nutrients.", price: 160.00, original_price: 180.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1583394293214-0b3f8ed6e0ab?w=200&q=80" },
+  { id: 6, name: "Kandi Podi 250g", description: "à°¸à°¾à°‚à°ªà±à°°à°¦à°¾à°¯ à°°à±à°šà°¿à°•à°¿ à°…à°¸à°²à±ˆà°¨ à°•à°‚à°¦à°¿à°ªà°ªà±à°ªà± à°ªà±Šà°¡à°¿ â€” traditional toor dal spice powder.", price: 179.00, original_price: 199.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
+  { id: 7, name: "Curry Leaves Herbal Powder 250g", description: "Curry Leaves Herbal Powder â€” natural health supplement and flavour enhancer.", price: 289.00, original_price: 320.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1591189824344-d7e6c2440e4a?w=200&q=80" },
+  { id: 8, name: "Andhra Nallakaram Podi 250g", description: "Experience the authentic Andhra Nallakaram podi â€” fiery and aromatic.", price: 140.00, original_price: 160.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=80" },
+  { id: 9, name: "Andhra Koora Karam 250g", description: "à°…à°®à±à°® à°šà±‡à°¤à°¿ à°•à±‚à°° à°•à°¾à°°à°‚ â€” the special Andhra vegetable spice blend.", price: 120.00, original_price: 140.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=200&q=80" },
+  { id: 10, name: "Pallila Karam 250g", description: "à°¨à°¾à°¨à±à°¨à±‡à°®à±ˆà°¨ à°µà±‡à°°à±à°¸à±‡à°¨à°—à°²à±, à°¸à°‚... â€” peanut-based Andhra spice powder.", price: 180.00, original_price: 200.00, category: "Spice Powders", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1599909613253-f3b3a5f7b33f?w=200&q=80" },
 
   // --- Pickles (Pachallu) ---
-  { id: 11, name: "Pandu Mirchi Gongura 250g", description: "Traditional Andhra Pandu Mirchi Gongura pickle — tangy red chilli sorrel blend.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
-  { id: 12, name: "Pandumirchi Tamota Pickle 250g", description: "Traditional Andhra Pandumirchi Tomato pickle — a classic tangy combination.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
-  { id: 13, name: "Allam Pandumirchi Pickle 250g", description: "Traditional Andhra Allam Chilli pickle — spicy ginger and chilli blend.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1589916836867-5208c1f74e23?w=200&q=80" },
-  { id: 14, name: "Pandu Mirchi Pickle 250g", description: "పండిన ఎర్ర మిర్చితో, నాన్చు... — slow-fermented red chilli pickle.", price: 229.00, original_price: 245.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
-  { id: 15, name: "Kothimera Pickle 250g", description: "తాజా కొత్తిమేర సువాస... — fresh coriander leaves pickle.", price: 189.00, original_price: 199.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1589916836867-5208c1f74e23?w=200&q=80" },
-  { id: 16, name: "Classic Avakaya 250g", description: "అసలైన ఆంధ్ర ఆవకాయ... — the king of Andhra pickles, raw mango.", price: 299.00, original_price: 320.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
+  { id: 11, name: "Pandu Mirchi Gongura 250g", description: "Traditional Andhra Pandu Mirchi Gongura pickle â€” tangy red chilli sorrel blend.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
+  { id: 12, name: "Pandumirchi Tamota Pickle 250g", description: "Traditional Andhra Pandumirchi Tomato pickle â€” a classic tangy combination.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
+  { id: 13, name: "Allam Pandumirchi Pickle 250g", description: "Traditional Andhra Allam Chilli pickle â€” spicy ginger and chilli blend.", price: 199.00, original_price: 220.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1589916836867-5208c1f74e23?w=200&q=80" },
+  { id: 14, name: "Pandu Mirchi Pickle 250g", description: "à°ªà°‚à°¡à°¿à°¨ à°Žà°°à±à°° à°®à°¿à°°à±à°šà°¿à°¤à±‹, à°¨à°¾à°¨à±à°šà±... â€” slow-fermented red chilli pickle.", price: 229.00, original_price: 245.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
+  { id: 15, name: "Kothimera Pickle 250g", description: "à°¤à°¾à°œà°¾ à°•à±Šà°¤à±à°¤à°¿à°®à±‡à°° à°¸à±à°µà°¾à°¸... â€” fresh coriander leaves pickle.", price: 189.00, original_price: 199.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1589916836867-5208c1f74e23?w=200&q=80" },
+  { id: 16, name: "Classic Avakaya 250g", description: "à°…à°¸à°²à±ˆà°¨ à°†à°‚à°§à±à°° à°†à°µà°•à°¾à°¯... â€” the king of Andhra pickles, raw mango.", price: 299.00, original_price: 320.00, category: "Pickles", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1567982047351-76b6f93e38ee?w=200&q=80" },
 
   // --- Snacks & Savories ---
-  { id: 17, name: "Challa Chakralu 250g", description: "Traditional Challa Chakralu — crispy butter rice rings, a timeless Andhra snack.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
-  { id: 18, name: "Rice Vadiyalu 250g", description: "సాంప్రదాయ ఆంధ్ర రుచితో... — traditional sun-dried rice crackers.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
-  { id: 19, name: "Chekkarala Vadiyalu 250g", description: "అమ్మ చేతి రుచితో, సాంప్రదా... — handmade chekkarala vadiyalu.", price: 150.00, original_price: 160.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
-  { id: 20, name: "Sagubiyam Vadiyalu 250g", description: "ఎండలో సహజంగా ఆరబెట్టి... — sago sun-dried crackers.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
-  { id: 21, name: "Bellam Gavvalu 250g", description: "Fresh & Crunchy Bellam Gavvalu — sweet jaggery shells, a traditional treat.", price: 195.00, original_price: 220.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
-  { id: 22, name: "Karram Gavvalu 250g", description: "Karam Gavvalu — spicy shell-shaped crispy snack from Andhra.", price: 159.00, original_price: 180.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 17, name: "Challa Chakralu 250g", description: "Traditional Challa Chakralu â€” crispy butter rice rings, a timeless Andhra snack.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 18, name: "Rice Vadiyalu 250g", description: "à°¸à°¾à°‚à°ªà±à°°à°¦à°¾à°¯ à°†à°‚à°§à±à°° à°°à±à°šà°¿à°¤à±‹... â€” traditional sun-dried rice crackers.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 19, name: "Chekkarala Vadiyalu 250g", description: "à°…à°®à±à°® à°šà±‡à°¤à°¿ à°°à±à°šà°¿à°¤à±‹, à°¸à°¾à°‚à°ªà±à°°à°¦à°¾... â€” handmade chekkarala vadiyalu.", price: 150.00, original_price: 160.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 20, name: "Sagubiyam Vadiyalu 250g", description: "à°Žà°‚à°¡à°²à±‹ à°¸à°¹à°œà°‚à°—à°¾ à°†à°°à°¬à±†à°Ÿà±à°Ÿà°¿... â€” sago sun-dried crackers.", price: 120.00, original_price: 140.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 21, name: "Bellam Gavvalu 250g", description: "Fresh & Crunchy Bellam Gavvalu â€” sweet jaggery shells, a traditional treat.", price: 195.00, original_price: 220.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 22, name: "Karram Gavvalu 250g", description: "Karam Gavvalu â€” spicy shell-shaped crispy snack from Andhra.", price: 159.00, original_price: 180.00, category: "Snacks & Savories", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
 
   // --- Sweets & Treats ---
-  { id: 23, name: "Palli Patti 250g", description: "Peanut Chikki / Palli Patti — crunchy peanut brittle with jaggery.", price: 169.00, original_price: 189.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
-  { id: 24, name: "Pala Penilu 250g", description: "Experience the authentic taste of Pala Penilu — milk-based traditional sweet.", price: 249.00, original_price: 269.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
-  { id: 25, name: "Royal Honey Cashew 250g", description: "Every bite is rich, crunchy, and coated in pure honey — premium cashew delight.", price: 319.00, original_price: 340.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1558961363-fa8fdf82db35?w=200&q=80" },
-  { id: 26, name: "Gondhu Laddu 250g", description: "ఈ గొంధు (కృఫ్ల్) నెయ్యిలో... — traditional Gondhu Laddu with pure ghee.", price: 319.00, original_price: 340.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
-  { id: 27, name: "Suggula's Kitchen Sweet 250g", description: "Suggula's Kitchen Sweet & Special — traditional handmade sweet boxes.", price: 369.00, original_price: 408.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
+  { id: 23, name: "Palli Patti 250g", description: "Peanut Chikki / Palli Patti â€” crunchy peanut brittle with jaggery.", price: 169.00, original_price: 189.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
+  { id: 24, name: "Pala Penilu 250g", description: "Experience the authentic taste of Pala Penilu â€” milk-based traditional sweet.", price: 249.00, original_price: 269.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
+  { id: 25, name: "Royal Honey Cashew 250g", description: "Every bite is rich, crunchy, and coated in pure honey â€” premium cashew delight.", price: 319.00, original_price: 340.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1558961363-fa8fdf82db35?w=200&q=80" },
+  { id: 26, name: "Gondhu Laddu 250g", description: "à°ˆ à°—à±Šà°‚à°§à± (à°•à±ƒà°«à±à°²à±) à°¨à±†à°¯à±à°¯à°¿à°²à±‹... â€” traditional Gondhu Laddu with pure ghee.", price: 319.00, original_price: 340.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
+  { id: 27, name: "Suggula's Kitchen Sweet 250g", description: "Suggula's Kitchen Sweet & Special â€” traditional handmade sweet boxes.", price: 369.00, original_price: 408.00, category: "Sweets & Treats", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=200&q=80" },
 
   // --- Mixes & Instant ---
-  { id: 28, name: "Instant Rasam Mix 250g", description: "Instant Rasam Mix — Bring the warmth of homemade rasam to your table instantly.", price: 140.00, original_price: 160.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
-  { id: 29, name: "Karram Charu Mix 250g", description: "Karam Charu Mix (Instant Rasam Powder) — spicy pepper rasam mix.", price: 165.00, original_price: 195.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
-  { id: 30, name: "Chinthapandu Pulihora Mix 250g", description: "Chinthapandu Pulihora Mix — tamarind rice spice blend for perfect pulihora.", price: 165.00, original_price: 185.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
-  { id: 31, name: "Instant Gravy Mix 250g", description: "రెస్తారెంట్ స్టైల్ కర్రీ... — restaurant-style instant curry gravy mix.", price: 149.00, original_price: 199.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
+  { id: 28, name: "Instant Rasam Mix 250g", description: "Instant Rasam Mix â€” Bring the warmth of homemade rasam to your table instantly.", price: 140.00, original_price: 160.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
+  { id: 29, name: "Karram Charu Mix 250g", description: "Karam Charu Mix (Instant Rasam Powder) â€” spicy pepper rasam mix.", price: 165.00, original_price: 195.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
+  { id: 30, name: "Chinthapandu Pulihora Mix 250g", description: "Chinthapandu Pulihora Mix â€” tamarind rice spice blend for perfect pulihora.", price: 165.00, original_price: 185.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
+  { id: 31, name: "Instant Gravy Mix 250g", description: "à°°à±†à°¸à±à°¤à°¾à°°à±†à°‚à°Ÿà± à°¸à±à°Ÿà±ˆà°²à± à°•à°°à±à°°à±€... â€” restaurant-style instant curry gravy mix.", price: 149.00, original_price: 199.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
 
   // --- Special Products ---
-  { id: 32, name: "Suggula's Kitchen Traditional 250g", description: "Suggula's Kitchen Traditional — handcrafted special recipe from grandma's kitchen.", price: 349.00, original_price: 360.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
-  { id: 33, name: "Ashadam Special Neeyi Annam Podi 250g", description: "Neeyi Annam Podi Ashadam Special — pure ghee rice powder for festive occasions.", price: 449.00, original_price: 499.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
-  { id: 34, name: "Saddu Baby Bottu 5g", description: "Saddu Baby Bottu — traditional herbal bottu for infants, a heritage product.", price: 99.00, original_price: 109.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
-  { id: 35, name: "Herbal Sunnipindi 250g", description: "Sunni Pindi Herbal Bath Powder — natural herbal body cleansing powder.", price: 299.00, original_price: 320.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
-  { id: 36, name: "Snack Supply Samosa 250g", description: "Crisp pastry filled with spiced potatoes and peas — B2B2C snack supply.", price: 20.00, original_price: 25.00, category: "Snacks & Savories", business_type: "snack_supply", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
+  { id: 32, name: "Suggula's Kitchen Traditional 250g", description: "Suggula's Kitchen Traditional â€” handcrafted special recipe from grandma's kitchen.", price: 349.00, original_price: 360.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
+  { id: 33, name: "Ashadam Special Neeyi Annam Podi 250g", description: "Neeyi Annam Podi Ashadam Special â€” pure ghee rice powder for festive occasions.", price: 449.00, original_price: 499.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
+  { id: 34, name: "Saddu Baby Bottu 5g", description: "Saddu Baby Bottu â€” traditional herbal bottu for infants, a heritage product.", price: 99.00, original_price: 109.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
+  { id: 35, name: "Herbal Sunnipindi 250g", description: "Sunni Pindi Herbal Bath Powder â€” natural herbal body cleansing powder.", price: 299.00, original_price: 320.00, category: "Special Products", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1606914501449-5a96b6ce24ca?w=200&q=80" },
+  { id: 36, name: "Snack Supply Samosa 250g", description: "Crisp pastry filled with spiced potatoes and peas â€” B2B2C snack supply.", price: 20.00, original_price: 25.00, category: "Snacks & Savories", business_type: "snack_supply", is_active: true, image_url: "https://images.unsplash.com/photo-1601000157769-35ac8d01c9d0?w=200&q=80" },
 ];
 
 function initMockDB() {
   // Always reset mock_menu to ensure new catalog items are picked up
   localStorage.setItem("mock_outlets", JSON.stringify(INITIAL_OUTLETS));
   localStorage.setItem("mock_menu", JSON.stringify(INITIAL_MENU_ITEMS));
-  if (!localStorage.getItem("mock_users") || true) {
+  if (!localStorage.getItem("mock_users")) {
     localStorage.setItem("mock_users", JSON.stringify([
       { id: 1, email: "admin", role: "admin", first_name: "John", last_name: "Admin" },
       { id: 2, email: "customer@gmail.com", role: "customer", first_name: "Sarah", last_name: "Customer" },
@@ -194,6 +202,12 @@ initMockDB();
 // Mock API implementations for fallback mode
 const mockApi = {
   async register(email, password, role, first_name, last_name, phone, outlet_id) {
+    const tempDomains = ["temp-mail.org", "10minutemail.com", "guerrillamail.com", "mailinator.com"];
+    const domain = email.includes("@") ? email.split("@")[1].toLowerCase() : "";
+    if (tempDomains.includes(domain) || domain.includes("temp")) {
+      throw new Error("This was caused due to temp mail use personal mail");
+    }
+
     const users = JSON.parse(localStorage.getItem("mock_users"));
     if (users.find(u => u.email === email)) {
       throw new Error("Email already registered");
@@ -205,7 +219,7 @@ const mockApi = {
     return { message: "Registration successful", user };
   },
 
-  async login(email, password) {
+  async login(email, _password) {
     const users = JSON.parse(localStorage.getItem("mock_users"));
     const user = users.find(u => u.email === email);
     if (!user) {
@@ -240,6 +254,14 @@ const mockApi = {
     const items = itemsData.map(it => {
       const menuItem = menu.find(m => m.id === it.menu_item_id);
       if (!menuItem) throw new Error("Item not found");
+      
+      if (menuItem.global_stock !== null && menuItem.global_stock !== undefined) {
+        if (menuItem.global_stock < it.quantity) {
+          throw new Error(`Item '${menuItem.name}' is out of stock (only ${menuItem.global_stock} left)`);
+        }
+        menuItem.global_stock -= it.quantity;
+      }
+      
       total += menuItem.price * it.quantity;
       return {
         id: Math.random(),
@@ -249,12 +271,23 @@ const mockApi = {
         price: menuItem.price
       };
     });
+    
+    // Save updated menu to persist mock stock decrements
+    localStorage.setItem("mock_menu", JSON.stringify(menu));
 
     if (couponCode) {
       const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
       const coupon = coupons.find(c => c.code === couponCode.toUpperCase().trim() && c.is_active);
       if (coupon) {
+        if (coupon.expiry_date && new Date(coupon.expiry_date) < new Date()) {
+          throw new Error("Coupon has expired");
+        }
+        if (coupon.usage_limit && (coupon.usage_count || 0) >= coupon.usage_limit) {
+          throw new Error("Coupon usage limit reached");
+        }
         total = total * ((100 - coupon.discount_pct) / 100);
+        coupon.usage_count = (coupon.usage_count || 0) + 1;
+        localStorage.setItem("mock_coupons", JSON.stringify(coupons));
       }
     }
 
@@ -265,6 +298,7 @@ const mockApi = {
       status: "pending",
       total_price: total,
       tracking_code: null,
+      tracking_link: null,
       is_received: false,
       feedback_submitted: false,
       delivery_address: deliveryAddress || "",
@@ -403,7 +437,7 @@ const mockApi = {
     return JSON.parse(localStorage.getItem("mock_orders")).reverse();
   },
 
-  async adminShipOrder(orderId, trackingCode, trackingLabel = null) {
+  async adminShipOrder(orderId, trackingCode, trackingLabel = null, trackingLink = null) {
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
     const order = orders.find(o => o.id === parseInt(orderId));
     if (!order) throw new Error("Order not found");
@@ -411,6 +445,9 @@ const mockApi = {
     order.tracking_code = trackingCode.trim();
     if (trackingLabel) {
       order.tracking_label = trackingLabel;
+    }
+    if (trackingLink) {
+      order.tracking_link = trackingLink;
     }
     order.updated_at = new Date().toISOString();
     localStorage.setItem("mock_orders", JSON.stringify(orders));
@@ -435,8 +472,33 @@ const mockApi = {
 
   async adminAddMenuItem(data) {
     const menu = JSON.parse(localStorage.getItem("mock_menu"));
+
+    // Check if item with same name exists (case-insensitive)
+    const existing = menu.find(m => m.name.toLowerCase() === (data.name || "").toLowerCase());
+    if (existing) {
+      existing.price = parseFloat(data.price);
+      existing.business_type = data.business_type || existing.business_type;
+      existing.description = data.description || existing.description;
+      existing.category = data.category || existing.category;
+      existing.image_url = data.image_url || existing.image_url;
+      if (data.code) existing.code = data.code.trim();
+      existing.is_active = true;
+      localStorage.setItem("mock_menu", JSON.stringify(menu));
+      return { message: "Existing item reactivated", item: existing };
+    }
+
+    // Use provided code or generate a unique 4-digit code
+    const existingCodes = new Set(menu.map(m => m.code).filter(Boolean));
+    let code = data.code ? data.code.trim() : "";
+    if (!code) {
+      do {
+        code = String(Math.floor(1000 + Math.random() * 9000));
+      } while (existingCodes.has(code));
+    }
+
     const newItem = {
       id: Date.now(),
+      code,
       name: data.name,
       description: data.description,
       price: parseFloat(data.price),
@@ -444,7 +506,9 @@ const mockApi = {
       category: data.category || "Other",
       business_type: data.business_type,
       image_url: data.image_url || null,
-      is_active: true
+      is_active: true,
+      average_rating: 0,
+      reviews_count: 0
     };
     menu.push(newItem);
     localStorage.setItem("mock_menu", JSON.stringify(menu));
@@ -758,6 +822,16 @@ const mockApi = {
     return JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]").reverse();
   },
 
+  async adminUpdateReview(reviewId, data) {
+    const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+    const review = reviews.find(r => r.id === parseInt(reviewId));
+    if (!review) throw new Error("Review not found");
+    if (data.is_hidden !== undefined) review.is_hidden = data.is_hidden;
+    if (data.admin_reply !== undefined) review.admin_reply = data.admin_reply;
+    localStorage.setItem("mock_menu_item_reviews", JSON.stringify(reviews));
+    return { message: "Review updated", review };
+  },
+
   async adminDeleteReview(reviewId) {
     let reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
     reviews = reviews.filter(r => r.id !== parseInt(reviewId));
@@ -783,12 +857,10 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json",
-        "ngrok-skip-browser-warning": "69420",
-       },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Registration failed");
     return data;
   },
@@ -804,10 +876,10 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/json","ngrok-skip-browser-warning": "69420", },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
     localStorage.setItem("token", data.access_token);
     localStorage.setItem("user", JSON.stringify(data.user));
@@ -831,11 +903,9 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return mockApi.getFoodsMenu();
 
-    const res = await fetch(`${API_BASE_URL}/foods/menu`, {
-      headers: { "ngrok-skip-browser-warning": "69420" }
-    });
+    const res = await fetch(`${API_BASE_URL}/foods/menu`);
     if (!res.ok) throw new Error("Failed to load menu");
-    return res.json();
+    return safeJson(res);
   },
 
   async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null) {
@@ -850,7 +920,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to place order");
     return data;
   },
@@ -867,7 +937,7 @@ export const api = {
       headers: getAuthHeader()
     });
     if (!res.ok) throw new Error("Failed to load order history");
-    return res.json();
+    return safeJson(res);
   },
 
   async confirmReceipt(orderId, trackingCode) {
@@ -882,7 +952,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ tracking_code: trackingCode })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Confirmation failed");
     return data;
   },
@@ -899,7 +969,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ rating: parseInt(rating), comment })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Feedback submission failed");
     return data;
   },
@@ -917,7 +987,7 @@ export const api = {
     // FIX: Correct endpoint is /pos/menu
     const res = await fetch(`${API_BASE_URL}/pos/menu`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load POS menu");
-    return res.json();
+    return safeJson(res);
   },
 
   async posSell(items, paymentMethod, couponCode = null) {
@@ -933,7 +1003,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ items, payment_method: paymentMethod, coupon_code: couponCode })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "POS transaction failed");
     return data;
   },
@@ -947,20 +1017,20 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/orders`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to fetch order queue");
-    return res.json();
+    return safeJson(res);
   },
 
-  async adminShipOrder(orderId, trackingCode, trackingLabel = null) {
+  async adminShipOrder(orderId, trackingCode, trackingLabel = null, trackingLink = null) {
     const live = await checkBackendAlive();
-    if (!live) return mockApi.adminShipOrder(orderId, trackingCode, trackingLabel);
+    if (!live) return mockApi.adminShipOrder(orderId, trackingCode, trackingLabel, trackingLink);
 
     // FIX: Correct endpoint is /admin/orders/<id>/ship (PUT)
     const res = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/ship`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ tracking_code: trackingCode, tracking_label: trackingLabel })
+      body: JSON.stringify({ tracking_code: trackingCode, tracking_label: trackingLabel, tracking_link: trackingLink })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to update ship status");
     return data;
   },
@@ -971,7 +1041,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/outlets`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load outlets list");
-    return res.json();
+    return safeJson(res);
   },
 
   async posGetMyOutlet() {
@@ -984,7 +1054,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/pos/outlet`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load assigned outlet info");
-    return res.json();
+    return safeJson(res);
   },
 
   async adminUpdateOutlet(outletId, data) {
@@ -996,8 +1066,34 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(data)
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to update outlet");
+    return result;
+  },
+
+  async adminDeleteOutlet(outletId) {
+    const live = await checkBackendAlive();
+    if (!live) return { success: true };
+    const res = await fetch(`${API_BASE_URL}/admin/outlets/${outletId}`, {
+      method: "POST",
+      headers: getAuthHeader()
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Failed to delete outlet");
+    return result;
+  },
+
+  async getFoodByCode(code) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const item = menu.find(m => m.code === code);
+      if (!item) throw new Error("Item not found");
+      return item;
+    }
+    const res = await fetch(`${API_BASE_URL}/foods/menu/code/${encodeURIComponent(code)}`);
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || "Item not found");
     return result;
   },
 
@@ -1010,8 +1106,33 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(data)
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to add menu item");
+    return result;
+  },
+
+  async adminUpdateMenuItem(itemId, data) {
+    const live = await checkBackendAlive();
+    if (!live) return { success: true }; 
+    const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(data)
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Failed to update menu item");
+    return result;
+  },
+
+  async adminDeleteMenuItem(itemId) {
+    const live = await checkBackendAlive();
+    if (!live) return { success: true }; 
+    const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
+      method: "POST", // POST to bypass 405 Method Not Allowed proxy errors
+      headers: getAuthHeader()
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Failed to delete menu item");
     return result;
   },
 
@@ -1024,7 +1145,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/menu`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load admin menu catalog");
-    return res.json();
+    return safeJson(res);
   },
 
   async adminAssignItemToOutlet(outletId, menuItemId, currentStock, restockLimit) {
@@ -1041,7 +1162,7 @@ export const api = {
         restock_limit: parseInt(restockLimit)
       })
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to assign item");
     return result;
   },
@@ -1055,7 +1176,7 @@ export const api = {
       method: "DELETE",
       headers: { ...getAuthHeader() }
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to remove item");
     return result;
   },
@@ -1071,7 +1192,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to generate QR");
     return data;
   },
@@ -1082,8 +1203,8 @@ export const api = {
     let payload;
     try {
       payload = JSON.parse(qrData);
-    } catch (e) {
-      throw new Error("Invalid QR code — not a dispatch label.");
+    } catch (err) {
+      throw new Error("Invalid QR code â€” not a dispatch label.");
     }
 
     if (!live) {
@@ -1106,7 +1227,7 @@ export const api = {
         expiry_date: payload.expiry_date || null
       })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Scan failed");
     return data;
   },
@@ -1117,7 +1238,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/analytics`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load analytics");
-    return res.json();
+    return safeJson(res);
   },
 
   async adminGetAuditLogs(page = 1, perPage = 50) {
@@ -1126,7 +1247,7 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/audit-log?page=${page}&per_page=${perPage}`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load audit logs");
-    return res.json();
+    return safeJson(res);
   },
 
   async posLogDisposal(menuItemId, qty, reason) {
@@ -1142,7 +1263,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ menu_item_id: parseInt(menuItemId), quantity: parseInt(qty), reason })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to log disposal");
     return data;
   },
@@ -1156,7 +1277,7 @@ export const api = {
     }
     const res = await fetch(`${API_BASE_URL}/owner/dashboard`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load owner dashboard");
-    return res.json();
+    return safeJson(res);
   },
 
   async ownerCreateOutlet(payload) {
@@ -1171,7 +1292,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to create outlet");
     return data;
   },
@@ -1188,7 +1309,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to edit outlet");
     return data;
   },
@@ -1202,7 +1323,7 @@ export const api = {
     }
     const res = await fetch(`${API_BASE_URL}/owner/outlets/${outletId}/stock`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load outlet stock");
-    return res.json();
+    return safeJson(res);
   },
 
   async forgotPassword(email) {
@@ -1213,7 +1334,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email })
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Request failed");
     return result;
   },
@@ -1226,7 +1347,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, token, new_password: newPassword })
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Reset failed");
     return result;
   },
@@ -1246,7 +1367,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ new_password: newPassword })
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Change failed");
     
     if (user) {
@@ -1256,34 +1377,60 @@ export const api = {
     return result;
   },
 
+  async updateProfile(data) {
+    const live = await checkBackendAlive();
+    if (!live) return { success: true, user: data }; // Mock implementation
+    const res = await fetch(`${API_BASE_URL}/auth/profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(data)
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Profile update failed");
+    if (result.user) {
+      localStorage.setItem("user", JSON.stringify(result.user));
+    }
+    return result;
+  },
+
   async adminGetUsers() {
     const live = await checkBackendAlive();
     if (!live) return mockApi.adminGetUsers();
-    const res = await fetch(`${API_BASE_URL}/admin/users`, { headers: getAuthHeader() });
+    const res = await fetch(`${API_BASE_URL}/admin/staff`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load users");
-    return res.json();
+    return safeJson(res);
   },
 
   async adminUpdateUser(userId, data) {
     const live = await checkBackendAlive();
     if (!live) return mockApi.adminUpdateUser(userId, data);
-    const res = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+    const res = await fetch(`${API_BASE_URL}/admin/staff/${userId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(data)
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to update user");
+    return result;
+  },
+
+  async adminDeleteUser(userId) {
+    const live = await checkBackendAlive();
+    if (!live) return { success: true }; // Mock implementation
+    const res = await fetch(`${API_BASE_URL}/admin/staff/${userId}`, {
+      method: "POST",
+      headers: getAuthHeader()
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Failed to delete user");
     return result;
   },
 
   async validateCoupon(code) {
     const live = await checkBackendAlive();
     if (!live) return mockApi.validateCoupon(code);
-    const res = await fetch(`${API_BASE_URL}/coupons/${code}`, {
-      headers: { "ngrok-skip-browser-warning": "69420" }
-    });
-    const data = await res.json();
+    const res = await fetch(`${API_BASE_URL}/coupons/${code}`);
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Invalid coupon");
     return data;
   },
@@ -1293,7 +1440,7 @@ export const api = {
     if (!live) return mockApi.adminGetCoupons();
     const res = await fetch(`${API_BASE_URL}/admin/coupons`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load coupons");
-    return res.json();
+    return safeJson(res);
   },
 
   async adminAddCoupon(data) {
@@ -1304,7 +1451,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(data)
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || "Failed to create coupon");
     return result;
   },
@@ -1317,7 +1464,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify(data)
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || "Failed to update coupon");
     return result;
   },
@@ -1329,7 +1476,7 @@ export const api = {
       method: "DELETE",
       headers: getAuthHeader()
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || "Failed to delete coupon");
     return result;
   },
@@ -1338,12 +1485,10 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return mockApi.getMenuItemReviews(itemId);
 
-    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
-      headers: { "ngrok-skip-browser-warning": "69420" }
-    });
+    const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`);
     if (!res.ok) throw new Error("Failed to load reviews");
-    return res.json();
-  },  
+    return safeJson(res);
+  },
 
   async submitMenuItemReview(itemId, rating, comment) {
     const live = await checkBackendAlive();
@@ -1357,7 +1502,7 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ rating: parseInt(rating), comment })
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Review submission failed");
     return data;
   },
@@ -1368,7 +1513,21 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/reviews`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load reviews");
-    return res.json();
+    return safeJson(res);
+  },
+
+  async adminUpdateReview(reviewId, data) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.adminUpdateReview(reviewId, data);
+
+    const res = await fetch(`${API_BASE_URL}/admin/reviews/${reviewId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(data)
+    });
+    const result = await safeJson(res);
+    if (!res.ok) throw new Error(result.message || result.error || "Failed to update review");
+    return result;
   },
 
   async adminDeleteReview(reviewId) {
@@ -1379,7 +1538,7 @@ export const api = {
       method: "DELETE",
       headers: getAuthHeader()
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to delete review");
     return data;
   },
@@ -1401,8 +1560,327 @@ export const api = {
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ reason })
     });
-    const result = await res.json();
+    const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Failed to cancel order");
     return result;
+  },
+  // -------------------------------------------------------
+  // Staff Shift Management (Clock-In / Clock-Out)
+  // -------------------------------------------------------
+  async posClockIn(email, pin) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const user = users.find(u => u.email === email);
+      if (!user) throw new Error("Email does not match your account");
+      if (!user.pin) throw new Error("No PIN set. Contact your administrator.");
+      if (user.pin !== pin) throw new Error("Incorrect PIN");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (active) throw new Error("You already have an active shift. Please clock out first.");
+      const newShift = {
+        id: Date.now(), staff_id: user.id, outlet_id: user.outlet_id,
+        staff_email: user.email,
+        staff_name: ((user.first_name || "") + " " + (user.last_name || "")).trim(),
+        outlet_name: "Outlet",
+        clock_in_time: new Date().toISOString(), clock_out_time: null,
+        expected_cash: null, actual_cash: null, cash_discrepancy: null,
+        status: "active", notes: null
+      };
+      shifts.push(newShift);
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Clocked in successfully", shift: newShift };
+    }
+    const res = await fetch(`${API_BASE_URL}/pos/shift/clock-in`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ email, pin })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Clock-in failed");
+    return data;
+  },
+
+  async posGetActiveShift() {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) return { shift: null };
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      return { shift: active || null };
+    }
+    const res = await fetch(`${API_BASE_URL}/pos/shift/active`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to check active shift");
+    return safeJson(res);
+  },
+
+  async posClockOut(actualCash, notes) {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    notes = notes || "";
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const sales = JSON.parse(localStorage.getItem("mock_sales") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (!active) throw new Error("No active shift found");
+      const shiftStart = new Date(active.clock_in_time);
+      const cashSales = sales.filter(s =>
+        s.staff_id === user.id &&
+        (s.payment_method || "").toLowerCase() === "cash" &&
+        new Date(s.created_at) >= shiftStart
+      );
+      const expected = cashSales.reduce((sum, s) => sum + (s.total_amount || 0), 0);
+      active.clock_out_time = new Date().toISOString();
+      active.actual_cash = parseFloat(actualCash);
+      active.expected_cash = expected;
+      active.cash_discrepancy = parseFloat(actualCash) - expected;
+      active.status = "closed";
+      active.notes = notes || null;
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Shift closed successfully", shift: active };
+    }
+    const res = await fetch(`${API_BASE_URL}/pos/shift/clock-out`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ actual_cash: parseFloat(actualCash), notes })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Clock-out failed");
+    return data;
+  },
+
+  async posLookupCustomer(email) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const customer = users.find(u => u.email === email && u.role === "customer");
+      if (!customer) throw new Error("Customer not found");
+      return {
+        customer: {
+          id: customer.id, email: customer.email,
+          name: ((customer.first_name || "") + " " + (customer.last_name || "")).trim() || customer.email,
+          loyalty_points: customer.loyalty_points || 0
+        },
+        top_items: []
+      };
+    }
+    const res = await fetch(
+      `${API_BASE_URL}/pos/customer/lookup?email=${encodeURIComponent(email)}`,
+      { headers: getAuthHeader() }
+    );
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Customer lookup failed");
+    return data;
+  },
+
+  async posSellWithCRM(items, paymentMethod, couponCode, customerEmail, redeemLoyaltyPoints) {
+    couponCode = couponCode || null;
+    customerEmail = customerEmail || null;
+    redeemLoyaltyPoints = redeemLoyaltyPoints || 0;
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!user) throw new Error("Unauthorized");
+
+    if (!live) {
+      const result = await mockApi.posSell(user.id, user.outlet_id, items, paymentMethod, couponCode);
+      if (customerEmail) {
+        const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+        const customer = users.find(u => u.email === customerEmail && u.role === "customer");
+        if (customer) {
+          const total = (result.sale && result.sale.total_amount) ? result.sale.total_amount : 0;
+          let finalTotal = total;
+          let pointsRedeemed = 0;
+          if (redeemLoyaltyPoints > 0) {
+            const maxRedeem = Math.min(redeemLoyaltyPoints, customer.loyalty_points || 0, Math.floor(total));
+            finalTotal = total - maxRedeem;
+            customer.loyalty_points = (customer.loyalty_points || 0) - maxRedeem;
+            pointsRedeemed = maxRedeem;
+          }
+          const earned = Math.floor(finalTotal / 100);
+          customer.loyalty_points = (customer.loyalty_points || 0) + earned;
+          localStorage.setItem("mock_users", JSON.stringify(users));
+          result.loyalty_points_earned = earned;
+          result.loyalty_points_redeemed = pointsRedeemed;
+          result.customer_loyalty_balance = customer.loyalty_points;
+        }
+      }
+      return result;
+    }
+
+    const res = await fetch(`${API_BASE_URL}/pos/sell`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({
+        items, payment_method: paymentMethod, coupon_code: couponCode,
+        customer_email: customerEmail, redeem_loyalty_points: redeemLoyaltyPoints
+      })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "POS transaction failed");
+    return data;
+  },
+
+  async adminGetShifts() {
+    const live = await checkBackendAlive();
+    if (!live) return JSON.parse(localStorage.getItem("mock_shifts") || "[]").reverse();
+    const res = await fetch(`${API_BASE_URL}/admin/shifts`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load timesheets");
+    return safeJson(res);
+  },
+
+  async adminDeleteShift(shiftId) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      let shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      shifts = shifts.filter(s => s.id !== shiftId);
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Shift record deleted" };
+    }
+    const res = await fetch(`${API_BASE_URL}/admin/shifts/${shiftId}`, {
+      method: "DELETE", headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete shift");
+    return data;
+  },
+
+  // ----------------------------------------------------------------
+  // Address Book API
+  // ----------------------------------------------------------------
+  async getAddresses() {
+    const live = await checkBackendAlive();
+    if (!live) return JSON.parse(localStorage.getItem("customer_addresses") || "[]");
+    const res = await fetch(`${API_BASE_URL}/auth/addresses`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load addresses");
+    return safeJson(res);
+  },
+  async addAddress(title, address_line, is_default = false) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const addrs = JSON.parse(localStorage.getItem("customer_addresses") || "[]");
+      const newAddr = { id: Date.now(), title, address_line, is_default };
+      if (is_default) addrs.forEach(a => a.is_default = false);
+      addrs.push(newAddr);
+      localStorage.setItem("customer_addresses", JSON.stringify(addrs));
+      return { address: newAddr };
+    }
+    const res = await fetch(`${API_BASE_URL}/auth/addresses`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ title, address_line, is_default })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to add address");
+    return data;
+  },
+  async deleteAddress(id) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const addrs = JSON.parse(localStorage.getItem("customer_addresses") || "[]").filter(a => a.id !== id);
+      localStorage.setItem("customer_addresses", JSON.stringify(addrs));
+      return { message: "Address deleted" };
+    }
+    const res = await fetch(`${API_BASE_URL}/auth/addresses/${id}`, { method: "DELETE", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete address");
+    return data;
+  },
+
+  // ----------------------------------------------------------------
+  // Favorites API
+  // ----------------------------------------------------------------
+  async getFavorites() {
+    const live = await checkBackendAlive();
+    if (!live) return JSON.parse(localStorage.getItem("customer_favorites") || "[]");
+    const res = await fetch(`${API_BASE_URL}/foods/favorites`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load favorites");
+    return safeJson(res);
+  },
+  async addFavorite(menu_item_id) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const favs = JSON.parse(localStorage.getItem("customer_favorites") || "[]");
+      if (!favs.some(f => f.menu_item_id === menu_item_id)) {
+        favs.push({ id: Date.now(), menu_item_id, menu_item: { id: menu_item_id, name: "Offline Item" } });
+        localStorage.setItem("customer_favorites", JSON.stringify(favs));
+      }
+      return { message: "Added to favorites" };
+    }
+    const res = await fetch(`${API_BASE_URL}/foods/favorites`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ menu_item_id })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to add favorite");
+    return data;
+  },
+  async removeFavorite(menu_item_id) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const favs = JSON.parse(localStorage.getItem("customer_favorites") || "[]").filter(f => f.menu_item_id !== menu_item_id);
+      localStorage.setItem("customer_favorites", JSON.stringify(favs));
+      return { message: "Removed from favorites" };
+    }
+    const res = await fetch(`${API_BASE_URL}/foods/favorites/${menu_item_id}`, { method: "DELETE", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to remove favorite");
+    return data;
+  },
+
+  // ----------------------------------------------------------------
+  // Kitchen API
+  // ----------------------------------------------------------------
+  async getKitchenOrders() {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+      return orders.filter(o => o.status === "pending" || o.status === "processing").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
+    const res = await fetch(`${API_BASE_URL}/kitchen/orders`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load kitchen orders");
+    return safeJson(res);
+  },
+  async updateKitchenOrderStatus(orderId, status) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+      const order = orders.find(o => o.id === orderId);
+      if (order) {
+        order.status = status;
+        localStorage.setItem("mock_orders", JSON.stringify(orders));
+      }
+      return { message: "Mock updated", order };
+    }
+    const res = await fetch(`${API_BASE_URL}/kitchen/orders/${orderId}/status`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ status })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to update order status");
+    return data;
+  },
+  async getRestockRequests() {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const stock = JSON.parse(localStorage.getItem("mock_outlet_stock") || "[]");
+      return stock.filter(s => s.current_stock <= s.restock_limit);
+    }
+    const res = await fetch(`${API_BASE_URL}/kitchen/restock-requests`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load restock requests");
+    return safeJson(res);
+  },
+  async produceBatch(menu_item_id, quantity, expiry_date) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      return { batch: { id: Date.now(), batch_number: "MOCK-" + Date.now(), menu_item_id, quantity_produced: quantity, expiry_date, qr_code_base64: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=" } };
+    }
+    const res = await fetch(`${API_BASE_URL}/kitchen/produce`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ menu_item_id, quantity, expiry_date })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to produce batch");
+    return data;
   }
 };

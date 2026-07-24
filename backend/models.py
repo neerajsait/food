@@ -20,6 +20,7 @@ class Outlet(db.Model):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL', use_alter=True, name='fk_outlet_owner_id'), nullable=True)
+    revenue_share_percentage = Column(Numeric(5, 2), nullable=True, default=0.00)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -50,6 +51,7 @@ class Outlet(db.Model):
             "latitude": self.latitude,
             "longitude": self.longitude,
             "owner_id": self.owner_id,
+            "revenue_share_percentage": float(self.revenue_share_percentage) if self.revenue_share_percentage is not None else 0.0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "items": [s.to_dict() for s in self.stocks]
@@ -66,26 +68,46 @@ class User(db.Model):
     email = Column(String(120), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False, default='customer')
+    
+    __mapper_args__ = {
+        'polymorphic_on': role,
+        'polymorphic_identity': 'user'
+    }
+
     first_name = Column(String(50), nullable=True)
     last_name = Column(String(50), nullable=True)
     phone = Column(String(20), nullable=True)
-    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
     is_active = Column(Boolean, default=True)
     password_reset_token = Column(String(255), nullable=True)
     password_reset_expiry = Column(DateTime, nullable=True)
     is_first_login = Column(Boolean, default=False, nullable=False)
+    address = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    # --- New Security & Admin Fields ---
+    is_banned = Column(Boolean, default=False, nullable=False)
+    ban_reason = Column(Text, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+    is_email_verified = Column(Boolean, default=False, nullable=False)
+    emergency_contact = Column(String(255), nullable=True)
+    is_superadmin = Column(Boolean, default=False, nullable=False)
+    admin_department = Column(String(50), nullable=True)
+
+    # --- STI Subclass Fields ---
+    loyalty_points = Column(Integer, default=0, nullable=False)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
+    pin_hash = Column(String(255), nullable=True)
+
     outlet = relationship('Outlet', foreign_keys=[outlet_id], backref='staff')
 
-    def __init__(self, email, role='customer', first_name=None, last_name=None, phone=None, outlet_id=None):
+    def __init__(self, email, role='customer', first_name=None, last_name=None, phone=None, address=None):
         self.email = email
         self.role = role
         self.first_name = first_name
         self.last_name = last_name
         self.phone = phone
-        self.outlet_id = outlet_id
+        self.address = address
         self.is_first_login = False
 
     def set_password(self, password: str, bcrypt):
@@ -95,19 +117,85 @@ class User(db.Model):
         return bcrypt.check_password_hash(self.password_hash, password)
 
     def to_dict(self):
-        return {
+        d = {
             "id": self.id,
             "email": self.email,
             "role": self.role,
             "first_name": self.first_name,
             "last_name": self.last_name,
             "phone": self.phone,
-            "outlet_id": self.outlet_id,
-            "outlet_name": self.outlet.name if self.outlet else None,
+            "address": self.address,
             "is_active": self.is_active,
             "is_first_login": self.is_first_login,
-            "created_at": self.created_at.isoformat() if self.created_at else None
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_banned": self.is_banned,
+            "ban_reason": self.ban_reason,
+            "is_email_verified": self.is_email_verified,
+            "emergency_contact": self.emergency_contact,
+            "is_superadmin": self.is_superadmin,
+            "admin_department": self.admin_department,
+            "deleted_at": self.deleted_at.isoformat() if getattr(self, "deleted_at", None) else None
         }
+        if hasattr(self, 'outlet_id'):
+            d["outlet_id"] = self.outlet_id
+            d["outlet_name"] = self.outlet.name if getattr(self, 'outlet', None) else None
+        if hasattr(self, 'pin_hash'):
+            d["has_pin"] = self.pin_hash is not None
+        if hasattr(self, 'loyalty_points'):
+            d["loyalty_points"] = self.loyalty_points or 0
+        return d
+
+
+class Customer(User):
+    __mapper_args__ = { 'polymorphic_identity': 'customer' }
+    
+    def __init__(self, email, first_name=None, last_name=None, phone=None, address=None):
+        super().__init__(email=email, role='customer', first_name=first_name, last_name=last_name, phone=phone, address=address)
+        self.loyalty_points = 0
+
+
+class Staff(User):
+    __mapper_args__ = { 'polymorphic_identity': 'staff' }
+    
+    def __init__(self, email, first_name=None, last_name=None, phone=None, outlet_id=None, address=None):
+        super().__init__(email=email, role='staff', first_name=first_name, last_name=last_name, phone=phone, address=address)
+        self.outlet_id = outlet_id
+    
+    def set_pin(self, pin: str, bcrypt):
+        self.pin_hash = bcrypt.generate_password_hash(pin).decode('utf-8')
+
+    def check_pin(self, pin: str, bcrypt) -> bool:
+        if not self.pin_hash:
+            return False
+        return bcrypt.check_password_hash(self.pin_hash, pin)
+
+
+class Admin(User):
+    __mapper_args__ = { 'polymorphic_identity': 'admin' }
+    def __init__(self, email, first_name=None, last_name=None, phone=None, address=None):
+        super().__init__(email=email, role='admin', first_name=first_name, last_name=last_name, phone=phone, address=address)
+
+
+class OutletOwner(User):
+    __mapper_args__ = { 'polymorphic_identity': 'outlet_owner' }
+    def __init__(self, email, first_name=None, last_name=None, phone=None, outlet_id=None, address=None):
+        super().__init__(email=email, role='outlet_owner', first_name=first_name, last_name=last_name, phone=phone, address=address)
+        self.outlet_id = outlet_id
+
+class KitchenStaff(User):
+    __mapper_args__ = { 'polymorphic_identity': 'kitchen' }
+    def __init__(self, email, first_name=None, last_name=None, phone=None, outlet_id=None, address=None):
+        super().__init__(email=email, role='kitchen', first_name=first_name, last_name=last_name, phone=phone, address=address)
+        self.outlet_id = outlet_id  # Can be None if central kitchen
+        
+    def set_pin(self, pin: str, bcrypt):
+        self.pin_hash = bcrypt.generate_password_hash(pin).decode('utf-8')
+
+    def check_pin(self, pin: str, bcrypt) -> bool:
+        if not self.pin_hash:
+            return False
+        return bcrypt.check_password_hash(self.pin_hash, pin)
+
 
 
 # ---------------------------------------------------------------------------
@@ -117,22 +205,26 @@ class MenuItem(db.Model):
     __tablename__ = 'menu_items'
 
     id = Column(Integer, primary_key=True)
+    code = Column(String(20), unique=True, nullable=True)  # auto-generated 4-digit product code
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     price = Column(Numeric(10, 2), nullable=False)
     business_type = Column(String(20), nullable=False)  # 'home_foods', 'snack_supply', 'both'
     category = Column(String(50), nullable=True)
     image_url = Column(String(255), nullable=True)
+    global_stock = Column(Integer, nullable=True)  # None = unlimited
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, name, price, business_type, description=None, category=None, image_url=None, is_active=True):
+    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True):
+        self.code = code
         self.name = name
         self.price = price
         self.business_type = business_type
         self.description = description
         self.category = category
         self.image_url = image_url
+        self.global_stock = global_stock
         self.is_active = is_active
 
     @property
@@ -148,12 +240,14 @@ class MenuItem(db.Model):
     def to_dict(self):
         return {
             "id": self.id,
+            "code": self.code,
             "name": self.name,
             "description": self.description,
             "price": float(self.price),
             "business_type": self.business_type,
             "category": self.category,
             "image_url": self.image_url,
+            "global_stock": self.global_stock,
             "is_active": self.is_active,
             "average_rating": self.average_rating,
             "reviews_count": self.reviews_count
@@ -393,49 +487,80 @@ class Order(db.Model):
     __tablename__ = 'orders'
 
     id = Column(Integer, primary_key=True)
-    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    order_type = Column(String(20), nullable=False, default='online') # 'online' or 'pos'
+    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True) # Nullable for guest POS sales
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
+    staff_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
     status = Column(String(20), nullable=False, default='pending')
     total_price = Column(Numeric(10, 2), nullable=False, default=0.00)
     tracking_code = Column(String(100), nullable=True)
     tracking_label = Column(Text, nullable=True)
+    tracking_link = Column(String(500), nullable=True)  # 3rd party tracking URL
     is_received = Column(Boolean, default=False)
     cancel_reason = Column(String(255), nullable=True)
     delivery_address = Column(String(500), nullable=True)
     payment_method = Column(String(50), nullable=False, default='COD')
+    loyalty_points_earned = Column(Integer, default=0, nullable=False)
+    loyalty_points_redeemed = Column(Integer, default=0, nullable=False)
+    applied_coupon_code = Column(String(50), nullable=True)
+    qr_code_base64 = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    customer = relationship('User', backref='orders')
+    customer = relationship('User', foreign_keys=[customer_id], backref='orders')
+    outlet = relationship('Outlet', backref='orders')
+    staff = relationship('User', foreign_keys=[staff_id], backref='staff_orders')
     items = relationship('OrderItem', backref='order', cascade="all, delete-orphan", lazy='joined')
-    feedback = relationship('Feedback', backref='order', uselist=False, cascade="all, delete-orphan")
 
-    def __init__(self, customer_id, total_price=0.00, status='pending', items=None, delivery_address=None, payment_method='COD'):
+    def __init__(self, total_price=0.00, status='pending', items=None, payment_method='COD', 
+                 order_type='online', customer_id=None, outlet_id=None, staff_id=None, delivery_address=None,
+                 loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None):
+        self.order_type = order_type
         self.customer_id = customer_id
+        self.outlet_id = outlet_id
+        self.staff_id = staff_id
         self.total_price = total_price
         self.status = status
         self.delivery_address = delivery_address
         self.payment_method = payment_method
+        self.loyalty_points_earned = loyalty_points_earned
+        self.loyalty_points_redeemed = loyalty_points_redeemed
+        self.applied_coupon_code = applied_coupon_code
         if items:
             self.items = items
 
     def to_dict(self):
-        return {
+        d = {
             "id": self.id,
+            "order_type": self.order_type,
             "customer_id": self.customer_id,
             "customer_email": self.customer.email if self.customer else None,
+            "outlet_id": self.outlet_id,
+            "outlet_name": self.outlet.name if self.outlet else None,
+            "staff_id": self.staff_id,
+            "staff_email": self.staff.email if self.staff else None,
             "status": self.status,
             "total_price": float(self.total_price),
-            "tracking_code": self.tracking_code,
-            "tracking_label": self.tracking_label,
-            "is_received": self.is_received,
-            "cancel_reason": self.cancel_reason,
-            "delivery_address": self.delivery_address,
             "payment_method": self.payment_method,
-            "feedback_submitted": self.feedback is not None,
+            "loyalty_points_earned": self.loyalty_points_earned,
+            "loyalty_points_redeemed": self.loyalty_points_redeemed,
+            "qr_code_base64": self.qr_code_base64,
             "items": [item.to_dict() for item in self.items],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
+        if self.order_type == 'online':
+            d.update({
+                "tracking_code": self.tracking_code,
+                "tracking_label": self.tracking_label,
+                "tracking_link": self.tracking_link,
+                "is_received": self.is_received,
+                "cancel_reason": self.cancel_reason,
+                "delivery_address": self.delivery_address,
+                "feedback_submitted": self.review is not None
+            })
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -470,140 +595,48 @@ class OrderItem(db.Model):
 
 
 # ---------------------------------------------------------------------------
-# Feedback
+# Review — Consolidated feedback and menu item reviews
 # ---------------------------------------------------------------------------
-class Feedback(db.Model):
-    __tablename__ = 'feedbacks'
+class Review(db.Model):
+    __tablename__ = 'reviews'
 
     id = Column(Integer, primary_key=True)
-    order_id = Column(Integer, ForeignKey('orders.id', ondelete='CASCADE'), unique=True, nullable=False)
     customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    order_id = Column(Integer, ForeignKey('orders.id', ondelete='CASCADE'), nullable=True)
+    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=True)
+    
     rating = Column(Integer, nullable=False)
     comment = Column(Text, nullable=True)
+    is_hidden = Column(Boolean, default=False)
+    admin_reply = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    customer = relationship('User', backref='feedbacks')
-
-    def __init__(self, order_id, customer_id, rating, comment=None):
-        self.order_id = order_id
-        self.customer_id = customer_id
-        self.rating = rating
-        self.comment = comment
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "order_id": self.order_id,
-            "customer_id": self.customer_id,
-            "rating": self.rating,
-            "comment": self.comment,
-            "created_at": self.created_at.isoformat() if self.created_at else None
-        }
-
-
-# ---------------------------------------------------------------------------
-# MenuItemReview — B2C product review
-# ---------------------------------------------------------------------------
-class MenuItemReview(db.Model):
-    __tablename__ = 'menu_item_reviews'
-
-    id = Column(Integer, primary_key=True)
-    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
-    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    rating = Column(Integer, nullable=False)
-    comment = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    customer = relationship('User', backref='menu_item_reviews')
+    customer = relationship('User', backref='reviews')
+    order = relationship('Order', backref=db.backref('review', uselist=False))
     menu_item = relationship('MenuItem', backref='reviews')
 
-    def __init__(self, menu_item_id, customer_id, rating, comment=None):
-        self.menu_item_id = menu_item_id
+    def __init__(self, customer_id, rating, comment=None, order_id=None, menu_item_id=None, is_hidden=False, admin_reply=None):
         self.customer_id = customer_id
         self.rating = rating
         self.comment = comment
+        self.order_id = order_id
+        self.menu_item_id = menu_item_id
+        self.is_hidden = is_hidden
+        self.admin_reply = admin_reply
 
     def to_dict(self):
         return {
             "id": self.id,
-            "menu_item_id": self.menu_item_id,
-            "menu_item_name": self.menu_item.name if self.menu_item else None,
             "customer_id": self.customer_id,
             "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() or self.customer.email,
-            "rating": self.rating,
-            "comment": self.comment,
-            "created_at": self.created_at.isoformat() if self.created_at else None
-        }
-
-
-
-# ---------------------------------------------------------------------------
-# POSSale — B2B2C cashier sales at outlet
-# ---------------------------------------------------------------------------
-class POSSale(db.Model):
-    __tablename__ = 'pos_sales'
-
-    id = Column(Integer, primary_key=True)
-    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=False)
-    staff_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    total_amount = Column(Numeric(10, 2), nullable=False)
-    payment_method = Column(String(20), nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    outlet = relationship('Outlet', backref='pos_sales')
-    staff = relationship('User', backref='pos_sales')
-    items = relationship('POSSaleItem', backref='sale', cascade="all, delete-orphan", lazy='joined')
-
-    def __init__(self, outlet_id, staff_id, total_amount, payment_method, items=None):
-        self.outlet_id = outlet_id
-        self.staff_id = staff_id
-        self.total_amount = total_amount
-        self.payment_method = payment_method
-        if items:
-            self.items = items
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "outlet_id": self.outlet_id,
-            "outlet_name": self.outlet.name if self.outlet else None,
-            "staff_id": self.staff_id,
-            "staff_email": self.staff.email if self.staff else None,
-            "total_amount": float(self.total_amount),
-            "payment_method": self.payment_method,
-            "items": [item.to_dict() for item in self.items],
-            "created_at": self.created_at.isoformat() if self.created_at else None
-        }
-
-
-# ---------------------------------------------------------------------------
-# POSSaleItem
-# ---------------------------------------------------------------------------
-class POSSaleItem(db.Model):
-    __tablename__ = 'pos_sale_items'
-
-    id = Column(Integer, primary_key=True)
-    sale_id = Column(Integer, ForeignKey('pos_sales.id', ondelete='CASCADE'), nullable=False)
-    menu_item_id = Column(Integer, ForeignKey('menu_items.id'), nullable=False)
-    quantity = Column(Integer, nullable=False, default=1)
-    price = Column(Numeric(10, 2), nullable=False)
-
-    menu_item = relationship('MenuItem')
-
-    def __init__(self, menu_item_id, price, quantity=1, sale_id=None):
-        self.menu_item_id = menu_item_id
-        self.price = price
-        self.quantity = quantity
-        if sale_id:
-            self.sale_id = sale_id
-
-    def to_dict(self):
-        return {
-            "id": self.id,
+            "order_id": self.order_id,
             "menu_item_id": self.menu_item_id,
             "menu_item_name": self.menu_item.name if self.menu_item else None,
-            "quantity": self.quantity,
-            "price": float(self.price)
+            "rating": self.rating,
+            "comment": self.comment,
+            "is_hidden": self.is_hidden,
+            "admin_reply": self.admin_reply,
+            "created_at": self.created_at.isoformat() if self.created_at else None
         }
 
 
@@ -616,12 +649,18 @@ class Coupon(db.Model):
     id = Column(Integer, primary_key=True)
     code = Column(String(50), unique=True, nullable=False)
     discount_pct = Column(Integer, nullable=False)
+    expiry_date = Column(Date, nullable=True)
+    usage_limit = Column(Integer, nullable=True)
+    usage_count = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, code, discount_pct, is_active=True):
+    def __init__(self, code, discount_pct, expiry_date=None, usage_limit=None, is_active=True):
         self.code = code.upper().strip()
         self.discount_pct = int(discount_pct)
+        self.expiry_date = expiry_date
+        self.usage_limit = usage_limit
+        self.usage_count = 0
         self.is_active = is_active
 
     def to_dict(self):
@@ -629,6 +668,210 @@ class Coupon(db.Model):
             "id": self.id,
             "code": self.code,
             "discount_pct": self.discount_pct,
+            "expiry_date": self.expiry_date.isoformat() if self.expiry_date else None,
+            "usage_limit": self.usage_limit,
+            "usage_count": self.usage_count,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+# ---------------------------------------------------------------------------
+# StaffShift — clock-in / clock-out attendance tracking
+# ---------------------------------------------------------------------------
+class StaffShift(db.Model):
+    __tablename__ = 'staff_shifts'
+
+    id = Column(Integer, primary_key=True)
+    staff_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=False)
+    clock_in_time = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    clock_out_time = Column(DateTime, nullable=True)
+    # Expected cash = sum of all cash POS sales during this shift
+    expected_cash = Column(Numeric(10, 2), nullable=True)
+    # Actual cash counted by the staff at shift end
+    actual_cash = Column(Numeric(10, 2), nullable=True)
+    # cash_discrepancy = actual_cash - expected_cash (negative = short)
+    cash_discrepancy = Column(Numeric(10, 2), nullable=True)
+    status = Column(String(20), nullable=False, default='active')  # 'active', 'closed'
+    notes = Column(Text, nullable=True)
+
+    staff = relationship('User', foreign_keys=[staff_id], backref='shifts')
+    outlet = relationship('Outlet', foreign_keys=[outlet_id], backref='shifts')
+
+    def __init__(self, staff_id, outlet_id):
+        self.staff_id = staff_id
+        self.outlet_id = outlet_id
+        self.status = 'active'
+        self.clock_in_time = datetime.now(timezone.utc)
+
+    @property
+    def duration_hours(self):
+        if not self.clock_out_time:
+            return None
+        end = self.clock_out_time
+        start = self.clock_in_time
+        # Ensure both are offset-aware for comparison
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        delta = end - start
+        return round(delta.total_seconds() / 3600, 2)
+
+    def close_shift(self, actual_cash, expected_cash):
+        self.clock_out_time = datetime.now(timezone.utc)
+        self.actual_cash = actual_cash
+        self.expected_cash = expected_cash
+        self.cash_discrepancy = float(actual_cash) - float(expected_cash)
+        self.status = 'closed'
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "staff_id": self.staff_id,
+            "staff_email": self.staff.email if self.staff else None,
+            "staff_name": f"{self.staff.first_name or ''} {self.staff.last_name or ''}".strip() if self.staff else None,
+            "outlet_id": self.outlet_id,
+            "outlet_name": self.outlet.name if self.outlet else None,
+            "clock_in_time": self.clock_in_time.isoformat() if self.clock_in_time else None,
+            "clock_out_time": self.clock_out_time.isoformat() if self.clock_out_time else None,
+            "duration_hours": self.duration_hours,
+            "expected_cash": float(self.expected_cash) if self.expected_cash is not None else None,
+            "actual_cash": float(self.actual_cash) if self.actual_cash is not None else None,
+            "cash_discrepancy": float(self.cash_discrepancy) if self.cash_discrepancy is not None else None,
+            "status": self.status,
+            "notes": self.notes
+        }
+
+# ---------------------------------------------------------------------------
+# AdminAuditLog — every admin action logged
+# ---------------------------------------------------------------------------
+class AdminAuditLog(db.Model):
+    __tablename__ = 'admin_audit_logs'
+
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    action = Column(String(255), nullable=False)
+    target_entity = Column(String(100), nullable=True)
+    target_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    admin = relationship('User', foreign_keys=[admin_id])
+
+    def __init__(self, admin_id, action, target_entity=None, target_id=None, details=None):
+        self.admin_id = admin_id
+        self.action = action
+        self.target_entity = target_entity
+        self.target_id = target_id
+        self.details = details
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "admin_id": self.admin_id,
+            "admin_email": self.admin.email if self.admin else None,
+            "action": self.action,
+            "target_entity": self.target_entity,
+            "target_id": self.target_id,
+            "details": self.details,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# Address — User address book
+# ---------------------------------------------------------------------------
+class Address(db.Model):
+    __tablename__ = 'addresses'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    title = Column(String(50), nullable=False)
+    address_line = Column(String(500), nullable=False)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship('User', backref=db.backref('address_book', cascade='all, delete-orphan'))
+
+    def __init__(self, user_id, title, address_line, is_default=False):
+        self.user_id = user_id
+        self.title = title
+        self.address_line = address_line
+        self.is_default = is_default
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "title": self.title,
+            "address_line": self.address_line,
+            "is_default": self.is_default,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# Favorite — Saved menu items
+# ---------------------------------------------------------------------------
+class Favorite(db.Model):
+    __tablename__ = 'favorites'
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    customer = relationship('User', backref=db.backref('saved_favorites', cascade='all, delete-orphan'))
+    menu_item = relationship('MenuItem')
+
+    def __init__(self, customer_id, menu_item_id):
+        self.customer_id = customer_id
+        self.menu_item_id = menu_item_id
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "customer_id": self.customer_id,
+            "menu_item_id": self.menu_item_id,
+            "menu_item": self.menu_item.to_dict() if self.menu_item else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# ProductionBatch — Central kitchen production tracking
+# ---------------------------------------------------------------------------
+class ProductionBatch(db.Model):
+    __tablename__ = 'production_batches'
+    id = Column(Integer, primary_key=True)
+    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
+    batch_number = Column(String(50), unique=True, nullable=False)
+    quantity_produced = Column(Integer, nullable=False)
+    mfg_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expiry_date = Column(Date, nullable=False)
+    produced_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    status = Column(String(20), default='produced') # 'produced', 'dispatched'
+    qr_code_base64 = Column(Text, nullable=True)
+
+    menu_item = relationship('MenuItem')
+    producer = relationship('User', foreign_keys=[produced_by])
+
+    def __init__(self, menu_item_id, batch_number, quantity_produced, expiry_date, produced_by=None, qr_code_base64=None):
+        self.menu_item_id = menu_item_id
+        self.batch_number = batch_number
+        self.quantity_produced = quantity_produced
+        self.expiry_date = expiry_date
+        self.produced_by = produced_by
+        self.qr_code_base64 = qr_code_base64
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "menu_item_id": self.menu_item_id,
+            "menu_item_name": self.menu_item.name if self.menu_item else None,
+            "batch_number": self.batch_number,
+            "quantity_produced": self.quantity_produced,
+            "mfg_date": self.mfg_date.isoformat() if self.mfg_date else None,
+            "expiry_date": self.expiry_date.isoformat() if self.expiry_date else None,
+            "produced_by": self.produced_by,
+            "producer_email": self.producer.email if self.producer else None,
+            "status": self.status,
+            "has_qr": bool(self.qr_code_base64)
         }

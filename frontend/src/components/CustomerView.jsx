@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../utils/api";
+import { jsPDF } from "jspdf";
 import {
   ShoppingCart, Clock, CheckCircle, Star, MessageSquare, X, Lock,
-  Search, ChevronRight, Minus, Plus, Package, Heart, Leaf, Flame,
-  Sparkles, ArrowLeft, MapPin, Truck, RefreshCw, Home, Briefcase, PlusCircle, FileText, Trash2, ShoppingBag, LogOut
+  Search, Minus, Plus, Heart, Leaf,
+  Sparkles, MapPin, Truck, RefreshCw, Home, Briefcase, PlusCircle, FileText, Trash2, ShoppingBag, LogOut, QrCode, User
 } from "lucide-react";
+import QRScanner from "./QRScanner";
 
 // Category configuration
 const CATEGORIES = [
@@ -76,19 +78,11 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [selectedItem, setSelectedItem] = useState(null); // detail modal
   const [showCartDrawer, setShowCartDrawer] = useState(false);
 
-  // Favorites (persisted locally)
-  const [favorites, setFavorites] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("customer_favorites") || "[]");
-    } catch { return []; }
-  });
+  // Favorites (persisted via API)
+  const [favorites, setFavorites] = useState([]);
 
-  // Address Manager states
-  const [addresses, setAddresses] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("customer_addresses") || JSON.stringify(DEFAULT_ADDRESSES));
-    } catch { return DEFAULT_ADDRESSES; }
-  });
+  // Address Manager states (persisted via API)
+  const [addresses, setAddresses] = useState([]);
   const [selectedAddressId, setSelectedAddressId] = useState(1);
   const [showAddressManager, setShowAddressManager] = useState(false);
   const [newAddrLabel, setNewAddrLabel] = useState("Home");
@@ -122,6 +116,14 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [appliedCoupon, setAppliedCoupon] = useState(null);
   const [couponError, setCouponError] = useState("");
 
+  // Product Scanner state
+  const [isScanning, setIsScanning] = useState(false);
+
+  // Profile Modal
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileForm, setProfileForm] = useState({ first_name: "", last_name: "", phone: "", address: "" });
+  const [profileUpdating, setProfileUpdating] = useState(false);
+
   // Load reviews when selectedItem changes
   useEffect(() => {
     if (selectedItem?.id) {
@@ -141,22 +143,19 @@ export default function CustomerView({ onLogout, dbMode }) {
   }, [selectedItem?.id]);
 
 
-  useEffect(() => {
-    localStorage.setItem("customer_favorites", JSON.stringify(favorites));
-  }, [favorites]);
-
-  useEffect(() => {
-    localStorage.setItem("customer_addresses", JSON.stringify(addresses));
-  }, [addresses]);
-
   const loadData = async () => {
     setLoading(true);
     setError("");
     try {
       const menuData = await api.getFoodsMenu();
       const ordersData = await api.getOrderHistory();
+      const favsData = await api.getFavorites();
+      const addrData = await api.getAddresses();
+      
       setMenu(menuData);
       setOrders(ordersData);
+      setFavorites(favsData.map(f => f.menu_item_id));
+      setAddresses(addrData.length > 0 ? addrData : DEFAULT_ADDRESSES);
     } catch (err) {
       setError(err.message || "Failed to load data");
     } finally {
@@ -181,7 +180,9 @@ export default function CustomerView({ onLogout, dbMode }) {
         activeCategory === "all" ||
         (activeCategory === "favs" && favorites.includes(item.id)) ||
         item.category === activeCategory;
-      const matchesSearch = !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = !searchQuery || 
+        item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        (item.code && item.code.toLowerCase().includes(searchQuery.toLowerCase()));
       return matchesCat && matchesSearch;
     });
   }, [menu, activeCategory, searchQuery, favorites]);
@@ -208,11 +209,24 @@ export default function CustomerView({ onLogout, dbMode }) {
     return groups;
   }, [filteredMenu, activeCategory]);
 
-  const toggleFavorite = (itemId, e) => {
+  const toggleFavorite = async (itemId, e) => {
     e.stopPropagation();
-    setFavorites(prev =>
-      prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]
-    );
+    const isFav = favorites.includes(itemId);
+    
+    // Optimistic update
+    setFavorites(prev => isFav ? prev.filter(id => id !== itemId) : [...prev, itemId]);
+    
+    try {
+      if (isFav) {
+        await api.removeFavorite(itemId);
+      } else {
+        await api.addFavorite(itemId);
+      }
+    } catch (err) {
+      // Revert on error
+      setFavorites(prev => !isFav ? prev.filter(id => id !== itemId) : [...prev, itemId]);
+      alert("Failed to update favorite");
+    }
   };
 
   const handleQuickReorder = (orderItems, e) => {
@@ -298,16 +312,34 @@ export default function CustomerView({ onLogout, dbMode }) {
     }
   };
 
-  const handleAddAddress = (e) => {
+  const handleAddAddress = async (e) => {
     e.preventDefault();
     if (!newAddrVal.trim()) return;
-    const newId = Date.now();
-    const newAddr = { id: newId, label: newAddrLabel, address: newAddrVal.trim(), type: newAddrLabel.toLowerCase() === "work" ? "work" : "home" };
-    setAddresses(prev => [...prev, newAddr]);
-    setSelectedAddressId(newId);
-    setCheckoutAddress(newAddrVal.trim());
-    setNewAddrVal("");
-    setShowAddressManager(false);
+    try {
+      const res = await api.addAddress(newAddrLabel, newAddrVal.trim(), false);
+      const newAddr = res.address;
+      setAddresses(prev => [...prev, newAddr]);
+      setSelectedAddressId(newAddr.id);
+      setCheckoutAddress(newAddr.address_line || newAddr.address); // fallback for mock
+      setNewAddrVal("");
+      setShowAddressManager(false);
+      alert("Address added");
+    } catch (err) {
+      alert("Failed to add address");
+    }
+  };
+
+  const handleDeleteAddress = async (id, e) => {
+    e.stopPropagation();
+    try {
+      await api.deleteAddress(id);
+      setAddresses(prev => prev.filter(a => a.id !== id));
+      if (selectedAddressId === id) {
+        setSelectedAddressId(addresses.length > 1 ? addresses.find(a => a.id !== id).id : null);
+      }
+    } catch (err) {
+      alert("Failed to delete address");
+    }
   };
 
   const handleConfirmReceipt = async (orderId) => {
@@ -323,41 +355,87 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   const handleDownloadReceipt = (order) => {
     try {
-      const lineSeparator = "========================================\n";
-      let text = "";
-      text += "             FLAVORFLOW ERP             \n";
-      text += "          Suggula's Kitchen             \n";
-      text += lineSeparator;
-      text += `Order ID: #${order.id}\n`;
-      text += `Date: ${new Date(order.created_at).toLocaleString()}\n`;
-      text += `Status: ${order.status.toUpperCase()}\n`;
-      text += `Delivery Address:\n${order.delivery_address || "None Provided"}\n`;
-      text += lineSeparator;
-      text += "Items Ordered:\n";
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+      
+      let yPos = 20;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(22);
+      doc.setTextColor(16, 185, 129); // brand color
+      doc.text("FLAVORFLOW ERP", 20, yPos);
+      
+      doc.setFontSize(10);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Premium Kitchen & Retail", 20, yPos + 6);
+      
+      yPos += 20;
+      doc.setFontSize(16);
+      doc.setTextColor(40, 40, 40);
+      doc.text("CUSTOMER INVOICE", 20, yPos);
+      
+      yPos += 10;
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Order ID: #${order.id}`, 20, yPos);
+      doc.text(`Date: ${new Date(order.created_at).toLocaleString()}`, 120, yPos);
+      
+      yPos += 6;
+      doc.text(`Status: ${order.status.toUpperCase()}`, 20, yPos);
+      doc.text(`Payment: ${order.payment_method || "COD"}`, 120, yPos);
+      
+      yPos += 15;
+      doc.setFont("helvetica", "bold");
+      doc.text("Item Details", 20, yPos);
+      doc.text("Qty", 120, yPos);
+      doc.text("Total", 160, yPos);
+      
+      yPos += 2;
+      doc.setDrawColor(200, 200, 200);
+      doc.line(20, yPos, 190, yPos);
+      
+      yPos += 8;
+      doc.setFont("helvetica", "normal");
+      let subtotal = 0;
       order.items.forEach(it => {
-        const itemTotal = (it.price * it.quantity).toFixed(2);
-        text += `- ${it.menu_item_name}\n  Qty: ${it.quantity} @ ₹${it.price.toFixed(2)} = ₹${itemTotal}\n`;
+        const itemTotal = (it.price * it.quantity);
+        subtotal += itemTotal;
+        doc.text(`${it.menu_item_name}`, 20, yPos);
+        doc.text(`${it.quantity}`, 120, yPos);
+        doc.text(`Rs.${itemTotal.toFixed(2)}`, 160, yPos);
+        yPos += 8;
       });
-      text += lineSeparator;
-      text += `Grand Total: ₹${order.total_price.toFixed(2)}\n`;
-      text += lineSeparator;
-      text += "   Thank you for ordering with us!      \n";
-      text += "        Hope to serve you again!        \n";
+      
+      yPos += 2;
+      doc.line(20, yPos, 190, yPos);
+      
+      const grandTotal = parseFloat(order.total_price);
+      if (subtotal > grandTotal && (subtotal - grandTotal) > 0.01) {
+          yPos += 8;
+          doc.text("Subtotal:", 120, yPos);
+          doc.text(`Rs.${subtotal.toFixed(2)}`, 160, yPos);
+          yPos += 6;
+          doc.setTextColor(16, 185, 129); // green
+          doc.text("Discount applied:", 120, yPos);
+          doc.text(`-Rs.${(subtotal - grandTotal).toFixed(2)}`, 160, yPos);
+          doc.setTextColor(40, 40, 40);
+      }
 
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `FlavorFlow_Receipt_Order_${order.id}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      yPos += 8;
+      doc.setFont("helvetica", "bold");
+      doc.text("Grand Total:", 120, yPos);
+      doc.text(`Rs.${grandTotal.toFixed(2)}`, 160, yPos);
+      
+      yPos += 20;
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(10);
+      doc.setTextColor(150, 150, 150);
+      doc.text("Thank you for choosing Suggula's Kitchen!", 105, yPos, { align: "center" });
+
+      doc.save(`Invoice_${order.id}.pdf`);
+      alert("Invoice downloaded successfully!");
     } catch (err) {
-      alert("Failed to download receipt: " + err.message);
+      alert("Failed to download invoice: " + err.message);
     }
   };
-
 
   const handleSubmitFeedback = async (orderId) => {
     const rating = feedbackRatings[orderId] || 5;
@@ -405,6 +483,33 @@ export default function CustomerView({ onLogout, dbMode }) {
     return s + (item ? item.price * qty : 0);
   }, 0);
 
+  const openProfileModal = () => {
+    const user = api.getCurrentUser();
+    if (user) {
+      setProfileForm({
+        first_name: user.first_name || "",
+        last_name: user.last_name || "",
+        phone: user.phone || "",
+        address: user.address || ""
+      });
+      setShowProfileModal(true);
+    }
+  };
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    setProfileUpdating(true);
+    try {
+      await api.updateProfile(profileForm);
+      alert("Profile updated successfully!");
+      setShowProfileModal(false);
+    } catch (err) {
+      alert("Failed to update profile: " + err.message);
+    } finally {
+      setProfileUpdating(false);
+    }
+  };
+
   const getOrderStatusStage = (status) => {
     switch (status) {
       case "pending": return 1;
@@ -416,7 +521,7 @@ export default function CustomerView({ onLogout, dbMode }) {
     }
   };
 
-  const currentSelectedAddress = addresses.find(a => a.id === selectedAddressId) || addresses[0];
+  const _currentSelectedAddress = addresses.find(a => a.id === selectedAddressId) || addresses[0];
 
   const catConfig = (catId) => CATEGORIES.find(c => c.id === catId) || { emoji: "📦", color: "#6b7280", label: catId };
 
@@ -430,8 +535,8 @@ export default function CustomerView({ onLogout, dbMode }) {
       
       {/* ── Premium E-Commerce Header ── */}
       <header style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "1rem 2rem", background: "var(--bg-base)",
+        display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem",
+        padding: "1rem", background: "var(--bg-base)",
         borderBottom: "1px solid var(--border-light)", position: "sticky", top: 0, zIndex: 100,
         boxShadow: "0 2px 10px rgba(0,0,0,0.01)"
       }}>
@@ -509,6 +614,18 @@ export default function CustomerView({ onLogout, dbMode }) {
               {dbMode.includes("Live") ? "Live Backend" : "Demo Mode"}
             </div>
           )}
+          <button
+            onClick={openProfileModal}
+            style={{
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.5rem 0.85rem", border: "1px solid var(--border-light)",
+              borderRadius: "var(--r-md)", background: "var(--bg-elevated)",
+              color: "var(--text-primary)", cursor: "pointer", fontSize: "0.8rem",
+              fontWeight: 600, transition: "all 0.2s"
+            }}
+          >
+            <User size={14} /> My Profile
+          </button>
           <button
             onClick={onLogout}
             style={{
@@ -591,11 +708,29 @@ export default function CustomerView({ onLogout, dbMode }) {
               onChange={e => setSearchQuery(e.target.value)}
             />
             {searchQuery && (
-              <button onClick={() => setSearchQuery("")} style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}>
+              <button onClick={() => setSearchQuery("")} style={{ position: "absolute", right: "40px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}>
                 <X size={14} />
               </button>
             )}
+            <button 
+              onClick={() => setIsScanning(!isScanning)} 
+              title="Scan Product QR"
+              style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: isScanning ? "var(--brand)" : "var(--text-muted)", display: "flex" }}
+            >
+              <QrCode size={16} />
+            </button>
           </div>
+          
+          {isScanning && (
+            <div style={{ marginBottom: "1rem", maxWidth: "400px", margin: "0 auto 1rem auto" }}>
+              <QRScanner onStockUpdated={(code) => {
+                if (code) {
+                   setSearchQuery(code);
+                }
+                setIsScanning(false);
+              }} />
+            </div>
+          )}
 
           {/* Category Filter Pills */}
           <div style={{ display: "flex", gap: "0.5rem", overflowX: "auto", paddingBottom: "0.5rem", marginBottom: "1.5rem", scrollbarWidth: "none" }}>
@@ -719,10 +854,10 @@ export default function CustomerView({ onLogout, dbMode }) {
                                   {item.original_price && item.original_price > item.price && (
                                     <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textDecoration: "line-through" }}>₹{item.original_price.toFixed(0)}</span>
                                   )}
-                                </div>
-                                {item.average_rating > 0 && (
+                              </div>
+                                {item.average_rating !== undefined && (
                                   <span style={{ display: "inline-flex", alignItems: "center", gap: "0.15rem", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)", borderRadius: "4px", padding: "1px 4px", fontSize: "0.65rem", fontWeight: "800", color: "var(--warning-color)" }} title={`${item.reviews_count} reviews`}>
-                                    ⭐ {item.average_rating}
+                                    ⭐ {item.average_rating > 0 ? item.average_rating : "New"}
                                   </span>
                                 )}
                               </div>
@@ -880,7 +1015,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                   </div>
 
 
-                  {order.status === "shipped" && !order.is_received && (
+                    {order.status === "shipped" && !order.is_received && (
                     <div style={{ background: "var(--bg-secondary)", padding: "0.75rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-light)", marginBottom: "0.75rem" }}>
                       <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginBottom: "0.4rem" }}>
                         Order is shipped! Please confirm receipt using the Shipment Tracking ID:
@@ -897,12 +1032,26 @@ export default function CustomerView({ onLogout, dbMode }) {
                         <span style={{ fontSize: "0.78rem", fontFamily: "monospace", fontWeight: "700", color: "var(--brand)" }}>{order.tracking_code}</span>
                         <button
                           type="button"
-                          onClick={() => setTrackingCodes({ ...trackingCodes, [order.id]: order.tracking_code })}
+                          onClick={async () => {
+                            setTrackingCodes({ ...trackingCodes, [order.id]: order.tracking_code });
+                            // Auto-confirm receipt
+                            try {
+                              await api.confirmReceipt(order.id, order.tracking_code);
+                              loadData();
+                            } catch (err) { console.error(err); }
+                          }}
                           style={{ background: "var(--brand-dim)", border: "none", color: "var(--brand)", fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px", cursor: "pointer", fontWeight: "700" }}
                         >
                           Autofill ID
                         </button>
                       </div>
+                      {order.tracking_link && (
+                        <div style={{ marginBottom: "0.5rem" }}>
+                          <a href={order.tracking_link} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "var(--brand)", fontWeight: "700", textDecoration: "underline", wordBreak: "break-all" }}>
+                            🔗 Track your shipment here
+                          </a>
+                        </div>
+                      )}
                       <label className="form-label" style={{ fontSize: "0.7rem", fontWeight: 700 }}>Enter Tracking ID to Confirm Receipt</label>
                       <div style={{ display: "flex", gap: "0.25rem", marginTop: "0.25rem" }}>
                         <input type="text" className="form-input" placeholder="Tracking ID" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem" }}
@@ -953,12 +1102,26 @@ export default function CustomerView({ onLogout, dbMode }) {
 
 
 
-      {/* ══ Item Detail Modal + Frequently Bought Together Carousel ══ */}
+      {/* ══ Item Detail Drawer + Frequently Bought Together Carousel ══ */}
       {selectedItem && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 110, display: "flex", alignItems: "flex-end" }} onClick={() => setSelectedItem(null)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 110, display: "flex", justifyContent: "flex-end", padding: "0" }} onClick={() => setSelectedItem(null)}>
           <div className="glass-panel" onClick={e => e.stopPropagation()}
-            style={{ width: "100%", maxWidth: "680px", margin: "0 auto", borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: "1.5rem", maxHeight: "80vh", overflowY: "auto" }}>
+            style={{ 
+              width: "100%", maxWidth: "480px", height: "100%", margin: 0, 
+              borderRadius: "0", display: "flex", flexDirection: "column",
+              animation: "slideInRight 0.3s ease-out forwards",
+              borderLeft: "1px solid var(--border-light)",
+            }}>
             
+            <div style={{ flex: 1, overflowY: "auto", padding: "1.5rem" }}>
+            
+            <style>{`
+              @keyframes slideInRight {
+                from { transform: translateX(100%); }
+                to { transform: translateX(0); }
+              }
+            `}</style>
+
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem" }}>
               <div style={{ fontSize: "0.7rem", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-muted)" }}>
                 {selectedItem.category}
@@ -975,7 +1138,7 @@ export default function CustomerView({ onLogout, dbMode }) {
             <h2 style={{ fontSize: "1.2rem", fontWeight: "800", margin: "0 0 0.5rem" }}>{selectedItem.name}</h2>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", lineHeight: "1.6", marginBottom: "1rem" }}>{selectedItem.description}</p>
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", marginBottom: "1.5rem", gap: "1rem" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                 <div>
                   <span style={{ fontSize: "1.4rem", fontWeight: "900" }}>₹{selectedItem.price.toFixed(0)}</span>
@@ -987,19 +1150,6 @@ export default function CustomerView({ onLogout, dbMode }) {
                   <span style={{ display: "inline-flex", alignItems: "center", gap: "0.15rem", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)", borderRadius: "6px", padding: "3px 8px", fontSize: "0.82rem", fontWeight: "800", color: "var(--warning-color)" }} title={`${itemReviews.length} reviews`}>
                     ⭐ {avgRating}
                   </span>
-                )}
-              </div>
-              <div>
-                {(cart[selectedItem.id] || 0) > 0 ? (
-                  <div style={{ display: "flex", alignItems: "center", background: "var(--accent)", borderRadius: "10px", overflow: "hidden" }}>
-                    <button onClick={() => removeFromCart(selectedItem.id)} style={{ background: "none", border: "none", color: "#fff", padding: "0.5rem 0.75rem", cursor: "pointer" }}><Minus size={16} /></button>
-                    <span style={{ padding: "0 0.5rem", fontWeight: "800", color: "#fff" }}>{cart[selectedItem.id]}</span>
-                    <button onClick={() => addToCart(selectedItem.id)} style={{ background: "none", border: "none", color: "#fff", padding: "0.5rem 0.75rem", cursor: "pointer" }}><Plus size={16} /></button>
-                  </div>
-                ) : (
-                  <button onClick={() => addToCart(selectedItem.id)} className="btn btn-primary" style={{ padding: "0.65rem 1.5rem", fontSize: "0.9rem" }}>
-                    + Add to Basket
-                  </button>
                 )}
               </div>
             </div>
@@ -1125,6 +1275,28 @@ export default function CustomerView({ onLogout, dbMode }) {
                 </div>
               </div>
             )}
+            </div>
+            
+            {/* Sticky Add to Basket Footer */}
+            <div style={{ padding: "1rem 1.5rem", background: "var(--bg-card)", borderTop: "1px solid var(--border-light)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, position: "sticky", bottom: 0 }}>
+              <div>
+                <span style={{ fontSize: "1.1rem", fontWeight: "900" }}>₹{selectedItem.price.toFixed(0)}</span>
+              </div>
+              <div>
+                {(cart[selectedItem.id] || 0) > 0 ? (
+                  <div style={{ display: "flex", alignItems: "center", background: "var(--accent)", borderRadius: "10px", overflow: "hidden" }}>
+                    <button onClick={() => removeFromCart(selectedItem.id)} style={{ background: "none", border: "none", color: "#fff", padding: "0.5rem 1rem", cursor: "pointer" }}><Minus size={16} /></button>
+                    <span style={{ padding: "0 0.75rem", fontWeight: "800", color: "#fff", fontSize: "1rem" }}>{cart[selectedItem.id]}</span>
+                    <button onClick={() => addToCart(selectedItem.id)} style={{ background: "none", border: "none", color: "#fff", padding: "0.5rem 1rem", cursor: "pointer" }}><Plus size={16} /></button>
+                  </div>
+                ) : (
+                  <button onClick={() => addToCart(selectedItem.id)} className="btn btn-primary" style={{ padding: "0.75rem 2rem", fontSize: "1rem" }}>
+                    + Add to Basket
+                  </button>
+                )}
+              </div>
+            </div>
+
           </div>
         </div>
       )}
@@ -1399,6 +1571,11 @@ export default function CustomerView({ onLogout, dbMode }) {
               </div>
             </div>
 
+            <div style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", color: "var(--success-color)", padding: "0.75rem", borderRadius: "12px", fontSize: "0.82rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.25rem" }}>
+              <Truck size={16} />
+              <span>Estimated Delivery: 2-3 Days</span>
+            </div>
+
             <button
               onClick={handlePlaceOrder}
               disabled={paymentProcessing}
@@ -1433,23 +1610,32 @@ export default function CustomerView({ onLogout, dbMode }) {
             <div style={{ display: "grid", gap: "0.6rem", marginBottom: "1.25rem" }}>
               {addresses.map(addr => {
                 const isSelected = addr.id === selectedAddressId;
+                const addrLabel = addr.title || addr.label;
+                const addrLine = addr.address_line || addr.address;
+                const isWork = addrLabel.toLowerCase() === "work" || addrLabel.toLowerCase() === "office";
                 return (
                   <div
                     key={addr.id}
-                    onClick={() => { setSelectedAddressId(addr.id); setShowAddressManager(false); }}
+                    onClick={() => { setSelectedAddressId(addr.id); setShowAddressManager(false); setCheckoutAddress(addrLine); }}
                     style={{
                       border: isSelected ? "2px solid var(--accent)" : "1px solid var(--border-light)",
                       background: isSelected ? "rgba(124,58,237,0.06)" : "var(--bg-secondary)",
-                      borderRadius: "8px", padding: "0.75rem", cursor: "pointer", display: "flex", gap: "0.5rem"
+                      borderRadius: "8px", padding: "0.75rem", cursor: "pointer", display: "flex", gap: "0.5rem", position: "relative"
                     }}
                   >
                     <div style={{ marginTop: "2px" }}>
-                      {addr.type === "work" ? <Briefcase size={14} color="var(--text-muted)" /> : <Home size={14} color="var(--text-muted)" />}
+                      {isWork ? <Briefcase size={14} color="var(--text-muted)" /> : <Home size={14} color="var(--text-muted)" />}
                     </div>
-                    <div>
-                      <div style={{ fontSize: "0.78rem", fontWeight: "800" }}>{addr.label}</div>
-                      <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginTop: "0.1rem" }}>{addr.address}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.78rem", fontWeight: "800" }}>{addrLabel}</div>
+                      <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginTop: "0.1rem" }}>{addrLine}</div>
                     </div>
+                    <button 
+                      onClick={(e) => handleDeleteAddress(addr.id, e)}
+                      style={{ background: "none", border: "none", color: "var(--danger)", cursor: "pointer", padding: "0.2rem" }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                 );
               })}
@@ -1479,6 +1665,44 @@ export default function CustomerView({ onLogout, dbMode }) {
               </div>
               <button type="submit" className="btn btn-primary btn-block" style={{ padding: "0.45rem", fontSize: "0.78rem" }}>
                 Save & Use Address
+              </button>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Profile Modal */}
+      {showProfileModal && createPortal(
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 120, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowProfileModal(false)}>
+          <div className="glass-card" onClick={e => e.stopPropagation()} style={{ width: "90%", maxWidth: "400px", padding: "1.5rem", borderRadius: "16px", animation: "popIn 0.2s ease-out" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <h3 style={{ fontSize: "1.2rem", fontWeight: "800", margin: 0 }}>My Profile</h3>
+              <button onClick={() => setShowProfileModal(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)" }}>
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleUpdateProfile} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">First Name</label>
+                  <input type="text" className="form-input" value={profileForm.first_name} onChange={e => setProfileForm({ ...profileForm, first_name: e.target.value })} />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Last Name</label>
+                  <input type="text" className="form-input" value={profileForm.last_name} onChange={e => setProfileForm({ ...profileForm, last_name: e.target.value })} />
+                </div>
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Phone Number</label>
+                <input type="tel" maxLength={10} className="form-input" pattern="\d{10}" placeholder="9876543210" value={profileForm.phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setProfileForm({ ...profileForm, phone: val }); }} />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Default Address</label>
+                <textarea className="form-input" rows="3" value={profileForm.address} onChange={e => setProfileForm({ ...profileForm, address: e.target.value })} placeholder="Your primary delivery address..." />
+              </div>
+              <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
+                {profileUpdating ? "Saving..." : "Save Changes"}
               </button>
             </form>
           </div>

@@ -5,9 +5,11 @@ import AdminView from "./components/AdminView";
 import CustomerView from "./components/CustomerView";
 import StaffPOS from "./components/StaffPOS";
 import OutletOwnerView from "./components/OutletOwnerView";
+import KitchenView from "./components/KitchenView";
+import ErrorBoundary from "./components/ErrorBoundary";
 import {
-  LayoutDashboard, ShoppingBag, Store, LogOut, Zap, Globe,
-  ChevronRight, Settings, Bell, UserPlus, Lock
+  LogOut, Zap, 
+  ChevronRight, Lock
 } from "lucide-react";
 
 
@@ -30,8 +32,8 @@ export default function App() {
       setDbMode(mode);
       const user = api.getCurrentUser();
       if (user) setCurrentUser(user);
-    } catch (e) {
-      console.error("Session init failed:", e);
+    } catch (err) {
+      console.error("Session init failed:", err);
     } finally {
       setLoading(false);
     }
@@ -107,6 +109,7 @@ export default function App() {
       case "customer": return <CustomerView onLogout={handleLogout} dbMode={dbMode} />;
       case "staff":    return <StaffPOS onLogout={handleLogout} dbMode={dbMode} />;
       case "outlet_owner": return <OutletOwnerView onLogout={handleLogout} dbMode={dbMode} />;
+      case "kitchen": return <KitchenView onLogout={handleLogout} dbMode={dbMode} />;
       default:
         return (
           <div style={{ padding: "3rem", textAlign: "center" }}>
@@ -126,7 +129,7 @@ export default function App() {
   };
 
   return (
-    <>
+    <ErrorBoundary>
       <div className="animate-fade-in">
         {renderView()}
       </div>
@@ -205,6 +208,6 @@ export default function App() {
           </div>
         </div>
       )}
-    </>
+    </ErrorBoundary>
   );
 }
