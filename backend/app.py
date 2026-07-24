@@ -16,6 +16,7 @@ from flask_jwt_extended import (
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
@@ -363,7 +364,7 @@ def create_app(config_override=None):
 
         # Send welcome email if customer role
         if user.role == "customer":
-            _send_welcome_email(app, user)
+            _send_verification_email(app, user)
 
         return jsonify({"message": "Registered successfully", "user": user.to_dict()}), 201
 
@@ -552,13 +553,28 @@ FlavorFlow Team
         return jsonify({"message": "Account deleted successfully"}), 200
 
     @app.route("/api/auth/verify-email", methods=["POST"])
-    @jwt_required()
     def verify_email():
-        uid = int(get_jwt_identity())
-        user = db.session.get(User, uid)
+        data = request.get_json(silent=True) or {}
+        token = data.get("token")
+        if not token:
+            return jsonify({"error": "Bad Request", "message": "Token is missing"}), 400
+            
+        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        try:
+            # Token expires in 24 hours (86400 seconds)
+            email = serializer.loads(token, salt="email-verify-salt", max_age=86400)
+        except SignatureExpired:
+            return jsonify({"error": "Unauthorized", "message": "Verification token has expired"}), 401
+        except BadSignature:
+            return jsonify({"error": "Unauthorized", "message": "Invalid verification token"}), 401
+            
+        user = db.session.scalars(select(User).where(User.email == email)).first()
         if not user:
-            return jsonify({"error": "Not Found"}), 404
-        
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+            
+        if user.is_email_verified:
+            return jsonify({"message": "Email is already verified", "already_verified": True}), 200
+            
         user.is_email_verified = True
         db.session.commit()
         return jsonify({"message": "Email verified successfully"}), 200
@@ -2881,6 +2897,33 @@ def _get_email_html_wrapper(title, content):
     </body>
     </html>
     """
+
+
+
+def _send_verification_email(app, user):
+    try:
+        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        token = serializer.dumps(user.email, salt="email-verify-salt")
+        sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
+        msg = Message(subject="Verify your Email - FlavorFlow 🧡", sender=sender, recipients=[user.email])
+        
+        # Determine base URL for frontend
+        frontend_url = "http://localhost:5173"
+        verify_link = f"{frontend_url}/verify-email?token={token}"
+        
+        content = f"""
+        <h2 style="color: #f97316; margin-top: 0;">Verify your email address, {user.first_name or 'Friend'}! 👋</h2>
+        <p>Thank you for signing up to <strong>FlavorFlow</strong>! To activate your account and place your first order, please verify your email address.</p>
+        <p>Click the button below to verify your email:</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{verify_link}" class="btn" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Email</a>
+        </div>
+        <p>If you did not sign up for this account, please ignore this email.</p>
+        """
+        msg.html = _get_email_html_wrapper("Email Verification", content)
+        mail.send(msg)
+    except Exception as e:
+        logger.warning(f"Failed to send verification email: {e}")
 
 
 def _send_welcome_email(app, user):

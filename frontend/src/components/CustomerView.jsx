@@ -114,6 +114,7 @@ export default function CustomerView({ onLogout, dbMode }) {
   // Coupon Discount states
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [useLoyaltyPoints, setUseLoyaltyPoints] = useState(false);
   const [couponError, setCouponError] = useState("");
 
   // Product Scanner state
@@ -278,7 +279,9 @@ export default function CustomerView({ onLogout, dbMode }) {
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       
-      await api.placeOrder(items, addressStr, paymentMethod, appliedCoupon ? appliedCoupon.code : null);
+      const user = api.getCurrentUser();
+      const pointsToRedeem = useLoyaltyPoints && user?.loyalty_points ? user.loyalty_points : 0;
+      await api.placeOrder(items, addressStr, paymentMethod, appliedCoupon ? appliedCoupon.code : null, pointsToRedeem);
       setCart({});
       setCardNumber("");
       setCardExpiry("");
@@ -526,10 +529,16 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   const catConfig = (catId) => CATEGORIES.find(c => c.id === catId) || { emoji: "📦", color: "#6b7280", label: catId };
 
+  const user = api.getCurrentUser();
   const discountAmount = appliedCoupon ? (getCartTotal() * appliedCoupon.discount_pct / 100) : 0;
   const finalSubtotal = getCartTotal() - discountAmount;
   const deliveryCharge = getCartTotal() >= 499 ? 0 : 49;
-  const finalTotal = finalSubtotal + deliveryCharge;
+  
+  const loyaltyPoints = user?.loyalty_points || 0;
+  const maxLoyaltyDiscount = loyaltyPoints / 100;
+  const actualLoyaltyDiscount = useLoyaltyPoints ? Math.min(maxLoyaltyDiscount, finalSubtotal + deliveryCharge) : 0;
+  
+  const finalTotal = finalSubtotal + deliveryCharge - actualLoyaltyDiscount;
 
   return (
     <div style={{ maxWidth: "100%", minHeight: "100vh", position: "relative", background: "var(--bg-canvas)" }} className="animate-fade-in">
@@ -1549,6 +1558,26 @@ export default function CustomerView({ onLogout, dbMode }) {
               )}
             </div>
 
+            {/* Loyalty Points section */}
+            {user?.loyalty_points > 0 && (
+              <div style={{ background: "var(--bg-secondary)", padding: "1rem", borderRadius: "12px", border: "1px solid var(--border-light)", marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <h4 style={{ fontSize: "0.82rem", fontWeight: "800", color: "var(--text-primary)", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                    ⭐ Loyalty Points
+                  </h4>
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>You have {user.loyalty_points} points (₹{(user.loyalty_points / 100).toFixed(0)} value)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUseLoyaltyPoints(!useLoyaltyPoints)}
+                  className={`btn ${useLoyaltyPoints ? 'btn-danger' : 'btn-primary'}`}
+                  style={{ padding: "0.4rem 0.8rem", fontSize: "0.75rem" }}
+                >
+                  {useLoyaltyPoints ? "Remove" : "Redeem"}
+                </button>
+              </div>
+            )}
+
             {/* Bill Summary details */}
             <div style={{ background: "var(--bg-secondary)", borderRadius: "12px", padding: "0.85rem", marginBottom: "1.25rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
@@ -1559,9 +1588,14 @@ export default function CustomerView({ onLogout, dbMode }) {
                   <span>Discount ({appliedCoupon.code})</span><span>-₹{discountAmount.toFixed(0)}</span>
                 </div>
               )}
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
                 <span>Delivery Charge</span><span style={{ color: getCartTotal() >= 499 ? "var(--success-color)" : "var(--text-secondary)" }}>{getCartTotal() >= 499 ? "FREE" : "₹49"}</span>
               </div>
+              {actualLoyaltyDiscount > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem", color: "var(--brand)", marginBottom: "0.5rem", fontWeight: "600" }}>
+                  <span>Loyalty Discount</span><span>-₹{actualLoyaltyDiscount.toFixed(2)}</span>
+                </div>
+              )}
               {getCartTotal() < 499 && (
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
                   Add ₹{(499 - getCartTotal()).toFixed(0)} more for FREE Delivery!
@@ -1709,6 +1743,19 @@ export default function CustomerView({ onLogout, dbMode }) {
               </div>
               <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
                 {profileUpdating ? "Saving..." : "Save Changes"}
+              </button>
+              <button type="button" onClick={async () => {
+                if (window.confirm("Are you sure you want to delete your account? This action cannot be undone.")) {
+                  try {
+                    await api.deleteProfile();
+                    api.logout();
+                    window.location.reload();
+                  } catch (err) {
+                    setToast({ message: "Failed to delete account: " + err.message, type: "error" });
+                  }
+                }
+              }} className="btn" style={{ marginTop: "0.25rem", background: "#ef4444", color: "white", padding: "0.75rem", borderRadius: "10px", fontWeight: "bold" }}>
+                Delete My Account
               </button>
             </form>
           </div>

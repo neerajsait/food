@@ -7,6 +7,7 @@ import StaffPOS from "./components/StaffPOS";
 import OutletOwnerView from "./components/OutletOwnerView";
 import KitchenView from "./components/KitchenView";
 import ErrorBoundary from "./components/ErrorBoundary";
+import VerifyEmail from "./components/VerifyEmail";
 import {
   LogOut, Zap, 
   ChevronRight, Lock
@@ -95,6 +96,10 @@ export default function App() {
         </p>
       </div>
     );
+  }
+
+  if (window.location.pathname === "/verify-email") {
+    return <VerifyEmail />;
   }
 
   // No user — show login (no sidebar)

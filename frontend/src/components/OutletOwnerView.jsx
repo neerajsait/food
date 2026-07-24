@@ -214,6 +214,16 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
     }
   };
 
+  const handleSelectOutlet = async (o) => {
+    try {
+      const stockData = await api.ownerGetStock(o.id);
+      setSelectedOutlet(stockData);
+    } catch (err) {
+      alert("Failed to load live stock: " + err.message);
+      setSelectedOutlet(o); // fallback to list data
+    }
+  };
+
   const lowStockCount = outlets.filter(o => o.needs_restock).length;
   const totalStock = outlets.reduce((sum, o) => sum + o.current_stock, 0);
 
@@ -304,7 +314,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
                 return (
                   <div
                     key={o.id}
-                    onClick={() => setSelectedOutlet(o)}
+                    onClick={() => handleSelectOutlet(o)}
                     className="glass-card"
                     style={{
                       cursor: "pointer",

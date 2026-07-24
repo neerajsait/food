@@ -9,12 +9,7 @@ import {
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
 
-const INITIAL_SUPPLIERS = [
-  { id: 1, name: "Prasad Organics Ltd", contact: "Siva Prasad", phone: "9848022338", items: ["Organic Red Chillies", "Dry Ginger Root", "Toor Dal"] },
-  { id: 2, name: "Andhra Ghee Farms", contact: "Ravi Naidu", phone: "9000188277", items: ["Pure Buffalo Ghee", "Fresh Cow Ghee"] },
-  { id: 3, name: "Konaseema Mango Groves", contact: "Satya Prasad", phone: "9440566311", items: ["Raw Mangoes (Avakaya Grade)", "Ripe Juicing Mangoes"] },
-  { id: 4, name: "PackWell Containers", contact: "Anil Kumar", phone: "8008811223", items: ["Glass Pickle Jars (250g)", "Aroma Lock Pouches", "Sweet Boxes"] }
-];
+
 
 /* ── Modal Wrapper ── */
 function Modal({ open, onClose, title, children, width = 480 }) {
@@ -54,7 +49,8 @@ export default function AdminView({ onLogout, dbMode }) {
   const [revenueShare, setRevenueShare] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [suppliers, _setSuppliers] = useState(INITIAL_SUPPLIERS);
+  const [suppliers, setSuppliers] = useState([]);
+  const [forecastData, setForecastData] = useState([]);
   
   // Product Reviews moderation states
   const [reviews, setReviews] = useState([]);
@@ -184,6 +180,8 @@ export default function AdminView({ onLogout, dbMode }) {
       } catch (err) {}
       try { const a = await api.adminGetAnalytics(); setAnalytics(a); } catch (err) {}
       try { const l = await api.adminGetAuditLogs(1, 40); setAuditLogs(l.logs || []); } catch (err) {}
+      try { const s = await api.getSuppliers(); setSuppliers(s); } catch (err) {}
+      try { const f = await api.getForecast(); setForecastData(f); } catch (err) {}
       try {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
@@ -583,6 +581,7 @@ export default function AdminView({ onLogout, dbMode }) {
     { id: "foods",      label: "Outlet Stations", icon: Package, depts: ["SuperAdmin", "Operations"] },
     { id: "finance",    label: "Revenue Share",   icon: FileText, depts: ["SuperAdmin", "Finance"] },
     { id: "analytics",  label: "Sales Analytics", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
+    { id: "forecast",   label: "Demand Forecast", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
     { id: "users",      label: "User Accounts",    icon: Users, depts: ["SuperAdmin", "HR"] },
     { id: "timesheets", label: "Timesheets",       icon: Clock, depts: ["SuperAdmin", "HR"] },
     { id: "batches",    label: "Expiry & Spoilage",icon: Calendar, depts: ["SuperAdmin", "Operations"] },
