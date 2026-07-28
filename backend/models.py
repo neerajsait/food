@@ -96,6 +96,8 @@ class User(db.Model):
     loyalty_points = Column(Integer, default=0, nullable=False)
     outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
     pin_hash = Column(String(255), nullable=True)
+    referral_code = Column(String(20), unique=True, nullable=True)
+    referred_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
 
     outlet = relationship('Outlet', foreign_keys=[outlet_id], backref='staff')
 
@@ -132,6 +134,8 @@ class User(db.Model):
             "emergency_contact": self.emergency_contact,
             "is_superadmin": self.is_superadmin,
             "admin_department": self.admin_department,
+            "referral_code": self.referral_code,
+            "referred_by_id": self.referred_by_id,
             "deleted_at": self.deleted_at.isoformat() if getattr(self, "deleted_at", None) else None
         }
         if hasattr(self, 'outlet_id'):
@@ -212,9 +216,12 @@ class MenuItem(db.Model):
     image_url = Column(String(255), nullable=True)
     global_stock = Column(Integer, nullable=True)  # None = unlimited
     is_active = Column(Boolean, default=True)
+    is_veg = Column(Boolean, default=True)
+    is_gluten_free = Column(Boolean, default=False)
+    spice_level = Column(String(20), default='medium')
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True):
+    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium'):
         self.code = code
         self.name = name
         self.price = price
@@ -224,6 +231,9 @@ class MenuItem(db.Model):
         self.image_url = image_url
         self.global_stock = global_stock
         self.is_active = is_active
+        self.is_veg = is_veg
+        self.is_gluten_free = is_gluten_free
+        self.spice_level = spice_level
 
     @property
     def average_rating(self):
@@ -247,6 +257,9 @@ class MenuItem(db.Model):
             "image_url": self.image_url,
             "global_stock": self.global_stock,
             "is_active": self.is_active,
+            "is_veg": self.is_veg,
+            "is_gluten_free": self.is_gluten_free,
+            "spice_level": self.spice_level,
             "average_rating": self.average_rating,
             "reviews_count": self.reviews_count
         }
@@ -646,30 +659,51 @@ class Coupon(db.Model):
 
     id = Column(Integer, primary_key=True)
     code = Column(String(50), unique=True, nullable=False)
-    discount_pct = Column(Integer, nullable=False)
+    discount_pct = Column(Integer, nullable=True)
+    discount_amount = Column(Numeric(10, 2), nullable=True)
+    max_discount_amount = Column(Numeric(10, 2), nullable=True)
+    applicable_menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=True)
+    applicable_customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
     expiry_date = Column(Date, nullable=True)
     usage_limit = Column(Integer, nullable=True)
     usage_count = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    min_order_value = Column(Numeric(10, 2), default=0.00)
+    is_first_order_only = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, code, discount_pct, expiry_date=None, usage_limit=None, is_active=True):
+    def __init__(self, code, discount_pct=None, discount_amount=None, max_discount_amount=None, 
+                 applicable_menu_item_id=None, applicable_customer_id=None,
+                 expiry_date=None, usage_limit=None, is_active=True, 
+                 min_order_value=0.00, is_first_order_only=False):
         self.code = code.upper().strip()
-        self.discount_pct = int(discount_pct)
+        self.discount_pct = int(discount_pct) if discount_pct is not None and str(discount_pct).strip() != "" else None
+        self.discount_amount = discount_amount
+        self.max_discount_amount = max_discount_amount
+        self.applicable_menu_item_id = applicable_menu_item_id
+        self.applicable_customer_id = applicable_customer_id
         self.expiry_date = expiry_date
         self.usage_limit = usage_limit
         self.usage_count = 0
         self.is_active = is_active
+        self.min_order_value = min_order_value
+        self.is_first_order_only = is_first_order_only
 
     def to_dict(self):
         return {
             "id": self.id,
             "code": self.code,
             "discount_pct": self.discount_pct,
+            "discount_amount": float(self.discount_amount) if self.discount_amount is not None else None,
+            "max_discount_amount": float(self.max_discount_amount) if self.max_discount_amount is not None else None,
+            "applicable_menu_item_id": self.applicable_menu_item_id,
+            "applicable_customer_id": self.applicable_customer_id,
             "expiry_date": self.expiry_date.isoformat() if self.expiry_date else None,
             "usage_limit": self.usage_limit,
             "usage_count": self.usage_count,
             "is_active": self.is_active,
+            "min_order_value": float(self.min_order_value) if self.min_order_value is not None else 0.0,
+            "is_first_order_only": self.is_first_order_only,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
 
@@ -872,4 +906,158 @@ class ProductionBatch(db.Model):
             "producer_email": self.producer.email if self.producer else None,
             "status": self.status,
             "has_qr": bool(self.qr_code_base64)
+        }
+
+# ---------------------------------------------------------------------------
+# WalletTransaction — loyalty points / wallet credit and debit history
+# ---------------------------------------------------------------------------
+class WalletTransaction(db.Model):
+    __tablename__ = 'wallet_transactions'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    amount = Column(Integer, nullable=False)  # Points amount
+    transaction_type = Column(String(20), nullable=False)  # 'credit' or 'debit'
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship('User', backref=db.backref('wallet_transactions', cascade='all, delete-orphan'))
+
+    def __init__(self, user_id, amount, transaction_type, description=None):
+        self.user_id = user_id
+        self.amount = amount
+        self.transaction_type = transaction_type
+        self.description = description
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "amount": self.amount,
+            "transaction_type": self.transaction_type,
+            "description": self.description,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# BroadcastMessage — CRM marketing broadcasts
+# ---------------------------------------------------------------------------
+class BroadcastMessage(db.Model):
+    __tablename__ = 'broadcast_messages'
+    id = Column(Integer, primary_key=True)
+    target_segment = Column(String(50), nullable=False)
+    message = Column(Text, nullable=False)
+    medium = Column(String(20), nullable=False) # 'sms', 'email', 'push'
+    status = Column(String(20), default='sent')
+    sent_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __init__(self, target_segment, message, medium, status='sent'):
+        self.target_segment = target_segment
+        self.message = message
+        self.medium = medium
+        self.status = status
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "target_segment": self.target_segment,
+            "message": self.message,
+            "medium": self.medium,
+            "status": self.status,
+            "sent_at": self.sent_at.isoformat() if self.sent_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# Banner — dynamic promotional banners
+# ---------------------------------------------------------------------------
+class Banner(db.Model):
+    __tablename__ = 'banners'
+    id = Column(Integer, primary_key=True)
+    title = Column(String(100), nullable=False)
+    image_url = Column(String(500), nullable=False)
+    target_url = Column(String(500), nullable=True)
+    is_active = Column(Boolean, default=True)
+    display_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0):
+        self.title = title
+        self.image_url = image_url
+        self.target_url = target_url
+        self.is_active = is_active
+        self.display_order = display_order
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "image_url": self.image_url,
+            "target_url": self.target_url,
+            "is_active": self.is_active,
+            "display_order": self.display_order,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# StoreSetting — global store configurations (e.g. offline/online)
+# ---------------------------------------------------------------------------
+class StoreSetting(db.Model):
+    __tablename__ = 'store_settings'
+    id = Column(Integer, primary_key=True)
+    setting_key = Column(String(50), unique=True, nullable=False)
+    setting_value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def __init__(self, setting_key, setting_value):
+        self.setting_key = setting_key
+        self.setting_value = setting_value
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "setting_key": self.setting_key,
+            "setting_value": self.setting_value,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+# ---------------------------------------------------------------------------
+# SupportTicket — customer support requests
+# ---------------------------------------------------------------------------
+class SupportTicket(db.Model):
+    __tablename__ = 'support_tickets'
+    
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    order_id = Column(Integer, ForeignKey('orders.id', ondelete='SET NULL'), nullable=True)
+    issue_type = Column(String(50), nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(String(20), default='Open')  # 'Open', 'Resolved', 'Closed'
+    admin_reply = Column(Text, nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    customer = relationship('User', foreign_keys=[customer_id])
+    order = relationship('Order', foreign_keys=[order_id])
+
+    def __init__(self, customer_id, issue_type, description, order_id=None, attachment_url=None):
+        self.customer_id = customer_id
+        self.issue_type = issue_type
+        self.description = description
+        self.order_id = order_id
+        self.attachment_url = attachment_url
+        self.status = 'Open'
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "customer_id": self.customer_id,
+            "customer_name": self.customer.first_name if self.customer else "Unknown",
+            "order_id": self.order_id,
+            "issue_type": self.issue_type,
+            "description": self.description,
+            "status": self.status,
+            "admin_reply": self.admin_reply,
+            "attachment_url": self.attachment_url,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }

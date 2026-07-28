@@ -69,12 +69,16 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [activeTab, setActiveTab] = useState("menu");
   const [menu, setMenu] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [tickets, setTickets] = useState([]);
   const [cart, setCart] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [activeCategory, setActiveCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterVeg, setFilterVeg] = useState(false);
+  const [filterGlutenFree, setFilterGlutenFree] = useState(false);
+  const [filterSpice, setFilterSpice] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null); // detail modal
   const [showCartDrawer, setShowCartDrawer] = useState(false);
 
@@ -116,6 +120,7 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [appliedCoupon, setAppliedCoupon] = useState(null);
   const [useLoyaltyPoints, setUseLoyaltyPoints] = useState(false);
   const [couponError, setCouponError] = useState("");
+  const [activeCoupons, setActiveCoupons] = useState([]);
 
   // Product Scanner state
   const [isScanning, setIsScanning] = useState(false);
@@ -144,6 +149,10 @@ export default function CustomerView({ onLogout, dbMode }) {
   }, [selectedItem?.id]);
 
 
+  const [banners, setBanners] = useState([]);
+  const [storeSettings, setStoreSettings] = useState({});
+  const [userProfile, setUserProfile] = useState(null);
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -153,10 +162,29 @@ export default function CustomerView({ onLogout, dbMode }) {
       const favsData = await api.getFavorites();
       const addrData = await api.getAddresses();
       
+      try {
+        const couponsData = await api.getCustomerCoupons();
+        setActiveCoupons(couponsData);
+      } catch(e) {
+        console.error("Failed to load active coupons", e);
+      }
+
+      const bannersData = await api.getPublicBanners().catch(() => []);
+      const settingsData = await api.getPublicStoreSettings().catch(() => ({}));
+      api.getCustomerOrders().then(setOrders).catch(() => {});
+      api.getCustomerTickets().then(setTickets).catch(() => {});
+      api.getCustomerFavorites().then(setFavorites).catch(() => {});
+      
+      let profileData = null;
+      try { profileData = await api.authMe(); } catch(e) {}
+      
       setMenu(menuData);
       setOrders(ordersData);
       setFavorites(favsData.map(f => f.menu_item_id));
       setAddresses(addrData.length > 0 ? addrData : DEFAULT_ADDRESSES);
+      setBanners(bannersData);
+      setStoreSettings(settingsData);
+      setUserProfile(profileData);
     } catch (err) {
       setError(err.message || "Failed to load data");
     } finally {
@@ -177,6 +205,7 @@ export default function CustomerView({ onLogout, dbMode }) {
   // Filtered menu logic
   const filteredMenu = useMemo(() => {
     return menu.filter(item => {
+      if (item.global_stock === 0) return false;
       const matchesCat =
         activeCategory === "all" ||
         (activeCategory === "favs" && favorites.includes(item.id)) ||
@@ -184,9 +213,12 @@ export default function CustomerView({ onLogout, dbMode }) {
       const matchesSearch = !searchQuery || 
         item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
         (item.code && item.code.toLowerCase().includes(searchQuery.toLowerCase()));
-      return matchesCat && matchesSearch;
+      const matchesVeg = !filterVeg || item.is_veg;
+      const matchesGluten = !filterGlutenFree || item.is_gluten_free;
+      const matchesSpice = filterSpice === "all" || item.spice_level === filterSpice;
+      return matchesCat && matchesSearch && matchesVeg && matchesGluten && matchesSpice;
     });
-  }, [menu, activeCategory, searchQuery, favorites]);
+  }, [menu, activeCategory, searchQuery, favorites, filterVeg, filterGlutenFree, filterSpice]);
 
   // Compute average rating for selected item reviews
   const avgRating = useMemo(() => {
@@ -242,6 +274,10 @@ export default function CustomerView({ onLogout, dbMode }) {
   };
 
   const handlePlaceOrder = async () => {
+    if (storeSettings.is_store_online === "false") {
+      alert("We're sorry, the store is currently offline. Please try again later.");
+      return;
+    }
     const items = Object.entries(cart).map(([id, qty]) => ({ menu_item_id: parseInt(id), quantity: qty }));
     if (!items.length) return;
     
@@ -473,7 +509,31 @@ export default function CustomerView({ onLogout, dbMode }) {
     }
   };
 
-  const addToCart = (itemId) => setCart(prev => ({ ...prev, [itemId]: (prev[itemId] || 0) + 1 }));
+  const handleReportIssue = async (orderId) => {
+    const issueType = prompt("Brief issue summary (e.g. Missing Item, Late Delivery):");
+    if (!issueType) return;
+    const description = prompt("Please provide details of the issue:");
+    if (!description) return;
+    
+    try {
+      await api.createTicket({ issue_type: issueType, description, order_id: orderId });
+      alert("Support ticket created! We will get back to you soon.");
+      api.getCustomerTickets().then(setTickets).catch(console.error);
+    } catch (err) {
+      alert("Failed to create ticket: " + err.message);
+    }
+  };
+
+  const addToCart = (itemId) => {
+    const item = menu.find(m => m.id === itemId);
+    if (!item) return;
+    const currentQty = cart[itemId] || 0;
+    if (item.global_stock !== null && item.global_stock !== undefined && currentQty >= item.global_stock) {
+      alert(`Cannot add more. Only ${item.global_stock} available in stock.`);
+      return;
+    }
+    setCart(prev => ({ ...prev, [itemId]: currentQty + 1 }));
+  };
   const removeFromCart = (itemId) => setCart(prev => {
     const next = { ...prev };
     if ((next[itemId] || 0) <= 1) delete next[itemId];
@@ -517,7 +577,8 @@ export default function CustomerView({ onLogout, dbMode }) {
   const getOrderStatusStage = (status) => {
     switch (status) {
       case "pending": return 1;
-      case "processing": return 2;
+      case "processing":
+      case "ready": return 2;
       case "shipped": return 3;
       case "delivered":
       case "completed": return 4;
@@ -558,8 +619,12 @@ export default function CustomerView({ onLogout, dbMode }) {
             justifyContent: "center", fontSize: "1.25rem", color: "#fff"
           }}>🍱</div>
           <div>
-            <span style={{ fontFamily: "var(--font-heading)", fontWeight: 800, fontSize: "1.2rem", color: "var(--text-primary)" }}>FlavorFlow Shop</span>
-            <span style={{ fontSize: "0.65rem", display: "block", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: "-2px" }}>Premium Kitchen</span>
+            <span style={{ fontFamily: "var(--font-heading)", fontWeight: 800, fontSize: "1.2rem", color: "var(--text-primary)" }}>
+              FlavorFlow Shop {storeSettings.is_store_online === "false" && <span style={{ color: "var(--alert-color)", fontSize: "0.9rem" }}>(Offline)</span>}
+            </span>
+            <span style={{ fontSize: "0.65rem", display: "block", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: "-2px" }}>
+              {storeSettings.is_holiday === "true" ? "Holiday Mode - Browsing Only" : "Premium Kitchen"}
+            </span>
           </div>
         </div>
 
@@ -593,6 +658,19 @@ export default function CustomerView({ onLogout, dbMode }) {
             {orders.length > 0 && <span className="nav-badge" style={{ marginLeft: "6px" }}>{orders.length}</span>}
           </button>
           <button
+            onClick={() => { setActiveTab("tickets"); loadData(); }}
+            style={{
+              padding: "0.5rem 1rem", border: "none", borderRadius: "var(--r-md)",
+              background: activeTab === "tickets" ? "var(--brand-dim)" : "transparent",
+              color: activeTab === "tickets" ? "var(--brand)" : "var(--text-secondary)",
+              fontWeight: activeTab === "tickets" ? 700 : 500, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.85rem",
+              transition: "all 0.2s"
+            }}
+          >
+            <MessageSquare size={15} /> Support
+          </button>
+          <button
             onClick={openCartDrawer}
             style={{
               padding: "0.5rem 1rem", border: "none", borderRadius: "var(--r-md)",
@@ -622,6 +700,16 @@ export default function CustomerView({ onLogout, dbMode }) {
               border: "1px solid", borderColor: dbMode.includes("Live") ? "rgba(22,163,74,0.2)" : "rgba(217,119,6,0.2)"
             }}>
               {dbMode.includes("Live") ? "Live Backend" : "Demo Mode"}
+            </div>
+          )}
+          {(userProfile?.loyalty_points > 0 || user?.loyalty_points > 0) && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.4rem 0.75rem", background: "rgba(249, 115, 22, 0.1)",
+              color: "var(--brand)", borderRadius: "var(--r-full)",
+              fontSize: "0.75rem", fontWeight: 700, border: "1px solid rgba(249, 115, 22, 0.2)"
+            }} title="Loyalty Points">
+              <Star size={13} fill="currentColor" /> {userProfile?.loyalty_points || user?.loyalty_points} pts
             </div>
           )}
           <button
@@ -698,6 +786,9 @@ export default function CustomerView({ onLogout, dbMode }) {
           <Clock size={14} /> My Orders
           {orders.length > 0 && <span className="nav-badge">{orders.length}</span>}
         </button>
+        <button className={`tab-btn ${activeTab === "tickets" ? "active" : ""}`} onClick={() => { setActiveTab("tickets"); loadData(); }}>
+          <MessageSquare size={14} /> Support
+        </button>
       </div>
 
       {error && <div style={{ color: "var(--alert-color)", textAlign: "center", fontSize: "0.85rem", marginBottom: "1rem", fontWeight: "600" }}>{error}</div>}
@@ -705,6 +796,17 @@ export default function CustomerView({ onLogout, dbMode }) {
       {/* ══════════════════════ SHOP / MENU TAB ══════════════════════ */}
       {activeTab === "menu" && (
         <div className="animate-fade-in">
+          
+          {/* Banners Section */}
+          {banners && banners.length > 0 && (
+            <div style={{ display: "flex", gap: "1rem", overflowX: "auto", paddingBottom: "1rem", marginBottom: "1rem", scrollbarWidth: "none" }}>
+              {banners.map(b => (
+                <div key={b.id} style={{ minWidth: "300px", flexShrink: 0, borderRadius: "12px", overflow: "hidden", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)", cursor: b.target_url ? "pointer" : "default" }} onClick={() => { if (b.target_url) window.location.href = b.target_url; }}>
+                  <img src={b.image_url} alt={b.title} style={{ width: "100%", height: "150px", objectFit: "cover", display: "block" }} />
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Search query input */}
           <div style={{ position: "relative", marginBottom: "1rem" }}>
@@ -903,6 +1005,51 @@ export default function CustomerView({ onLogout, dbMode }) {
         </div>
       )}
 
+      {/* ══════════ SUPPORT TICKETS ══════════ */}
+      {activeTab === "tickets" && (
+        <div className="card fade-in" style={{ padding: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+            <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.25rem", fontWeight: 700 }}>
+              My Support Tickets
+            </h2>
+            <button className="btn btn-primary" onClick={() => handleReportIssue(null)}>
+              <Plus size={15} /> New General Ticket
+            </button>
+          </div>
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {tickets.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "3rem", background: "var(--bg-secondary)", borderRadius: "var(--radius-lg)" }}>
+                <MessageSquare size={48} style={{ color: "var(--text-muted)", margin: "0 auto 1rem", opacity: 0.5 }} />
+                <h3 style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: "0.5rem" }}>No tickets yet</h3>
+                <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>If you have any issues, let us know!</p>
+              </div>
+            ) : (
+              tickets.map(ticket => (
+                <div key={ticket.id} className="glass-card" style={{ borderLeft: `3px solid ${ticket.status === 'Resolved' ? 'var(--success-color)' : 'var(--brand)'}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+                    <span style={{ fontWeight: 700 }}>{ticket.issue_type}</span>
+                    <span className={`badge-status status-${ticket.status === 'Open' ? 'pending' : 'delivered'}`}>{ticket.status}</span>
+                  </div>
+                  <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "1rem" }}>
+                    {ticket.description}
+                  </div>
+                  {ticket.admin_reply && (
+                    <div style={{ background: "var(--bg-secondary)", padding: "0.75rem", borderRadius: "var(--radius-sm)", fontSize: "0.85rem" }}>
+                      <strong style={{ display: "block", marginBottom: "0.25rem" }}>Admin Reply:</strong>
+                      {ticket.admin_reply}
+                    </div>
+                  )}
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                    {new Date(ticket.created_at).toLocaleString()} {ticket.order_id ? `| Order #${ticket.order_id}` : ""}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ══════════════════════ ORDERS HISTORY TAB ══════════════════════ */}
       {activeTab === "orders" && (
         <div className="animate-fade-in" style={{ display: "grid", gap: "1.25rem", paddingBottom: "2rem" }}>
@@ -1001,6 +1148,15 @@ export default function CustomerView({ onLogout, dbMode }) {
                     >
                       <FileText size={13} /> Download Receipt
                     </button>
+                    {["shipped", "delivered"].includes(order.status) && (
+                      <button
+                        onClick={() => handleReportIssue(order.id)}
+                        className="btn btn-secondary"
+                        style={{ padding: "0.35rem 0.75rem", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--brand)", borderColor: "var(--brand)" }}
+                      >
+                        <MessageSquare size={13} /> Report Issue
+                      </button>
+                    )}
                     {["pending", "processing"].includes(order.status) && (
                       <button
                         onClick={async (e) => {
@@ -1529,6 +1685,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                   onChange={e => setCouponCodeInput(e.target.value)}
                 />
                 <button
+                  id="apply-coupon-btn"
                   type="button"
                   onClick={handleApplyCoupon}
                   className="btn btn-primary"
@@ -1554,6 +1711,31 @@ export default function CustomerView({ onLogout, dbMode }) {
                   >
                     Remove
                   </button>
+                </div>
+              )}
+              {activeCoupons.length > 0 && !appliedCoupon && (
+                <div style={{ marginTop: "0.8rem" }}>
+                  <h5 style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>Available Coupons</h5>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                    {activeCoupons.map(c => (
+                      <button
+                        key={c.code}
+                        type="button"
+                        onClick={() => {
+                          setCouponCodeInput(c.code);
+                          setTimeout(() => document.getElementById("apply-coupon-btn")?.click(), 0);
+                        }}
+                        style={{
+                          background: "var(--bg-elevated)", border: "1px dashed var(--brand)", color: "var(--brand)",
+                          padding: "0.3rem 0.5rem", borderRadius: "6px", fontSize: "0.7rem", fontWeight: "600",
+                          cursor: "pointer", transition: "all 0.2s"
+                        }}
+                        title={`${c.discount_pct}% OFF`}
+                      >
+                        {c.code}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

@@ -2059,12 +2059,33 @@ export const api = {
     return safeJson(res);
   },
   async createTicket(payload) {
+    const isFormData = payload instanceof FormData;
     const res = await fetch(`${API_BASE_URL}/customer/tickets`, {
-      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify(payload)
+      method: "POST", 
+      headers: isFormData ? getAuthHeader() : { "Content-Type": "application/json", ...getAuthHeader() },
+      body: isFormData ? payload : JSON.stringify(payload)
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || "Failed to create ticket");
+    return data;
+  },
+  async updateTicket(id, payload) {
+    const isFormData = payload instanceof FormData;
+    const res = await fetch(`${API_BASE_URL}/customer/tickets/${id}`, {
+      method: "PUT",
+      headers: isFormData ? getAuthHeader() : { "Content-Type": "application/json", ...getAuthHeader() },
+      body: isFormData ? payload : JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update ticket");
+    return data;
+  },
+  async deleteTicket(id) {
+    const res = await fetch(`${API_BASE_URL}/customer/tickets/${id}`, {
+      method: "DELETE", headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to delete ticket");
     return data;
   },
   async adminGetTickets() {

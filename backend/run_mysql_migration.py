@@ -87,11 +87,12 @@ if table_exists('menu_item_reviews'):
 else:
     print("menu_item_reviews not found, skipping")
 
-# --- 4. Add STI columns to users ---
 for col, defn in [
     ('loyalty_points', 'INT NOT NULL DEFAULT 0'),
     ('outlet_id', 'INT NULL'),
-    ('pin_hash', 'VARCHAR(255) NULL')
+    ('pin_hash', 'VARCHAR(255) NULL'),
+    ('referral_code', 'VARCHAR(20) NULL UNIQUE'),
+    ('referred_by_id', 'INT NULL')
 ]:
     if not col_exists('users', col):
         c.execute(f"ALTER TABLE `users` ADD COLUMN `{col}` {defn}")
@@ -99,6 +100,28 @@ for col, defn in [
         print(f"Added users.{col}")
     else:
         print(f"users.{col} already exists")
+
+# --- 5. Add columns to menu_items ---
+for col, defn in [
+    ('code', 'VARCHAR(20) NULL UNIQUE'),
+    ('is_veg', 'BOOLEAN NOT NULL DEFAULT 1'),
+    ('is_gluten_free', 'BOOLEAN NOT NULL DEFAULT 0'),
+    ('spice_level', 'VARCHAR(20) NOT NULL DEFAULT "medium"')
+]:
+    if not col_exists('menu_items', col):
+        c.execute(f"ALTER TABLE `menu_items` ADD COLUMN `{col}` {defn}")
+        conn.commit()
+        print(f"Added menu_items.{col}")
+    else:
+        print(f"menu_items.{col} already exists")
+
+# --- 6. Add attachment_url to support_tickets ---
+if not col_exists('support_tickets', 'attachment_url'):
+    c.execute("ALTER TABLE `support_tickets` ADD COLUMN `attachment_url` VARCHAR(255) NULL")
+    conn.commit()
+    print("Added support_tickets.attachment_url")
+else:
+    print("support_tickets.attachment_url already exists")
 
 conn.close()
 print("Migration complete!")

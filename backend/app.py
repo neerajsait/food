@@ -21,12 +21,13 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from models import (
     db, User, Admin, Customer, Staff, OutletOwner, Outlet, MenuItem, OutletStock,
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
     Order, OrderItem, Review, Coupon, StaffShift, Address, Favorite, AdminAuditLog,
-    KitchenStaff, ProductionBatch
+    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket
 )
 import bleach
 
@@ -40,6 +41,8 @@ jwt = JWTManager()
 mail = Mail()
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 
+TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
+os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 
 # ============================================================
 # HELPERS
@@ -197,7 +200,7 @@ class SanitizedRequest(Request):
 def create_app(config_override=None):
     app = Flask(__name__)
     app.request_class = SanitizedRequest
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173,http://localhost:5174").split(",")
     CORS(app, resources={r"/api/*": {"origins": frontend_url}})
 
     # --- Config ---
@@ -207,11 +210,26 @@ def create_app(config_override=None):
     
     @app.before_request
     def log_request_info():
-        app.logger.info(f"Incoming Request: {request.method} {request.url}")
+        # Mask sensitive query parameters like tokens
+        safe_url = request.url
+        if "token=" in safe_url.lower():
+            import re
+            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        app.logger.info(f"Incoming Request: {request.method} {safe_url}")
 
     @app.after_request
     def log_response_info(response):
-        app.logger.info(f"Outgoing Response: {response.status} for {request.method} {request.url}")
+        safe_url = request.url
+        if "token=" in safe_url.lower():
+            import re
+            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        app.logger.info(f"Outgoing Response: {response.status} for {request.method} {safe_url}")
+        
+        # Security headers
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+        response.headers['Content-Security-Policy'] = "default-src 'self'"
         return response
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -219,7 +237,11 @@ def create_app(config_override=None):
         u = os.getenv("MYSQL_USER")
         p = os.getenv("MYSQL_PASSWORD")
         d = os.getenv("MYSQL_DB")
-        db_url = f"mysql+pymysql://{u}:{p}@{h}/{d}" if all([h, u, p, d]) else "sqlite:///food.db"
+        db_url = f"mysql+pymysql://{u}:{p}@{h}/{d}" if all([h, u, p, d]) else None
+        if not db_url:
+            if os.getenv("FLASK_ENV") == "production":
+                raise RuntimeError("MySQL database credentials must be provided in production.")
+            db_url = "sqlite:///food.db"
 
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -359,17 +381,37 @@ def create_app(config_override=None):
             user = Customer(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
             
         user.set_password(password, bcrypt)
+        
+        # --- Referral Logic ---
+        import random, string
+        user.referral_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        
+        ref_code = (data.get("referral_code") or "").strip().upper()
+        if ref_code:
+            referrer = db.session.scalars(select(User).where(User.referral_code == ref_code)).first()
+            if referrer:
+                user.referred_by_id = referrer.id
+                
         db.session.add(user)
+        db.session.flush()
+
+        if getattr(user, 'referred_by_id', None):
+            from decimal import Decimal
+            c_ref = Coupon(code=f"REF-{user.referred_by_id}-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.referred_by_id, description="Referral Reward")
+            c_new = Coupon(code=f"WEL-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.id, description="Welcome Referral Reward", is_first_order_only=True)
+            db.session.add(c_ref)
+            db.session.add(c_new)
+
         db.session.commit()
 
         # Send welcome email if customer role
-        if user.role == "customer":
+        if getattr(user, 'role', '') == "customer":
             _send_verification_email(app, user)
 
         return jsonify({"message": "Registered successfully", "user": user.to_dict()}), 201
 
     @app.route("/api/auth/login", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit("5 per minute")
     def login():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -409,7 +451,7 @@ def create_app(config_override=None):
         return jsonify(user.to_dict()), 200
 
     @app.route("/api/auth/forgot-password", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("3 per minute")
     def forgot_password():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -750,12 +792,17 @@ FlavorFlow Team
                 if used:
                     return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
 
-                discount_pct = coupon.discount_pct
                 coupon.usage_count += 1
-
-        if discount_pct > 0:
-            discount_pct = min(100, discount_pct)
-            total = total * Decimal(str((100 - discount_pct) / 100))
+                
+                # Apply discount
+                if coupon.discount_amount and coupon.discount_amount > 0:
+                    total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
+                elif coupon.discount_pct and coupon.discount_pct > 0:
+                    discount_pct = min(100, coupon.discount_pct)
+                    discount_value = total * Decimal(str(discount_pct / 100))
+                    if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
+                        discount_value = Decimal(str(coupon.max_discount_amount))
+                    total = max(Decimal("0.00"), total - discount_value)
 
         redeem_points = int(data.get("redeem_loyalty_points", 0))
         if redeem_points > 0:
@@ -878,9 +925,131 @@ FlavorFlow Team
         db.session.commit()
         return jsonify({"message": "Feedback submitted", "feedback": fb.to_dict()}), 201
 
+    @app.route("/api/customer/tickets", methods=["GET"])
+    @role_required("customer", "outlet_owner")
+    def get_my_tickets():
+        customer_id = int(get_jwt_identity())
+        tickets = db.session.scalars(select(SupportTicket).where(SupportTicket.customer_id == customer_id).order_by(SupportTicket.created_at.desc())).all()
+        return jsonify([t.to_dict() for t in tickets]), 200
+
+    @app.route("/api/customer/tickets", methods=["POST"])
+    @role_required("customer", "outlet_owner")
+    def create_ticket():
+        customer_id = int(get_jwt_identity())
+        
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            data = request.form
+        else:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+
+        issue_type = data.get("issue_type")
+        description = data.get("description")
+        order_id = data.get("order_id")
+        if order_id and order_id != "null":
+            try:
+                order_id = int(order_id)
+            except ValueError:
+                order_id = None
+        else:
+            order_id = None
+
+        if not issue_type or not description:
+            return jsonify({"error": "Bad Request", "message": "Issue type and description are required"}), 400
+
+        attachment_url = None
+        if "attachment" in request.files:
+            file = request.files["attachment"]
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+                file.save(file_path)
+                attachment_url = f"/static/uploads/tickets/{unique_name}"
+
+        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_url=attachment_url)
+        db.session.add(ticket)
+        db.session.commit()
+        
+        return jsonify({"message": "Support ticket created successfully", "ticket": ticket.to_dict()}), 201
+
+    @app.route("/api/customer/tickets/<int:ticket_id>", methods=["PUT"])
+    @role_required("customer", "outlet_owner")
+    def update_ticket(ticket_id):
+        customer_id = int(get_jwt_identity())
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or ticket.customer_id != customer_id:
+            return jsonify({"error": "Not Found"}), 404
+            
+        if ticket.status != "Open":
+            return jsonify({"error": "Bad Request", "message": "Only open tickets can be edited"}), 400
+
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            data = request.form
+        else:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+
+        if "issue_type" in data:
+            ticket.issue_type = data["issue_type"]
+        if "description" in data:
+            ticket.description = data["description"]
+
+        if "attachment" in request.files:
+            file = request.files["attachment"]
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+                file.save(file_path)
+                ticket.attachment_url = f"/static/uploads/tickets/{unique_name}"
+
+        db.session.commit()
+        return jsonify({"message": "Support ticket updated successfully", "ticket": ticket.to_dict()}), 200
+
+    @app.route("/api/customer/tickets/<int:ticket_id>", methods=["DELETE"])
+    @role_required("customer", "outlet_owner")
+    def delete_ticket(ticket_id):
+        customer_id = int(get_jwt_identity())
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or ticket.customer_id != customer_id:
+            return jsonify({"error": "Not Found"}), 404
+            
+        if ticket.status != "Open":
+            return jsonify({"error": "Bad Request", "message": "Only open tickets can be deleted"}), 400
+
+        db.session.delete(ticket)
+        db.session.commit()
+        return jsonify({"message": "Support ticket deleted successfully"}), 200
+
+
     # ============================================================
     # 3. ADMIN ROUTES
     # ============================================================
+
+    @app.route("/api/admin/tickets", methods=["GET"])
+    @role_required("admin", "superadmin")
+    def admin_get_tickets():
+        tickets = db.session.scalars(select(SupportTicket).order_by(SupportTicket.status.asc(), SupportTicket.created_at.desc())).all()
+        return jsonify([t.to_dict() for t in tickets]), 200
+
+    @app.route("/api/admin/tickets/<int:ticket_id>", methods=["PUT"])
+    @role_required("admin", "superadmin")
+    def admin_reply_ticket(ticket_id):
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket:
+            return jsonify({"error": "Not Found"}), 404
+        
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        if "status" in data:
+            ticket.status = data["status"]
+        if "admin_reply" in data:
+            ticket.admin_reply = data["admin_reply"]
+            
+        db.session.commit()
+        admin_id = int(get_jwt_identity())
+        log_admin_action(db.session, admin_id, "Reply Ticket", "SupportTicket", ticket.id, f"Replied to ticket {ticket.id}")
+        db.session.commit()
+        
+        return jsonify({"message": "Ticket updated", "ticket": ticket.to_dict()}), 200
 
     # --- Menu Items ---
     @app.route("/api/admin/menu", methods=["GET"])
@@ -945,7 +1114,7 @@ FlavorFlow Team
         if not item:
             return jsonify({"error": "Not Found"}), 404
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        for field in ("name", "code", "description", "category", "image_url", "global_stock"):
+        for field in ("name", "code", "description", "category", "image_url", "global_stock", "is_veg", "is_gluten_free", "spice_level"):
             if field in data:
                 setattr(item, field, data[field])
         if "price" in data and data["price"] is not None:
@@ -988,6 +1157,7 @@ FlavorFlow Team
         outlet = Outlet(name=name, address=address,
                         latitude=data.get("latitude"), longitude=data.get("longitude"),
                         owner_id=data.get("owner_id"),
+                        # pyrefly: ignore [unexpected-keyword]
                         revenue_share_percentage=data.get("revenue_share_percentage", 0.00))
         db.session.add(outlet)
         db.session.flush()
@@ -1292,9 +1462,9 @@ FlavorFlow Team
 
         if role in ("staff", "outlet_owner"):
             outlet = db.session.get(Outlet, outlet_id) if outlet_id else None
-            _send_staff_created_email(app, user, password, outlet)
+            _send_staff_created_email(app, user, outlet)
         else:
-            _send_admin_created_email(app, user, password)
+            _send_admin_created_email(app, user)
 
         return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
 
@@ -1340,7 +1510,7 @@ FlavorFlow Team
         db.session.commit()
 
         if password_changed and user.role == "admin" and user.email:
-            _send_admin_password_changed_email(app, user, data["password"])
+            _send_admin_password_changed_email(app, user)
 
         return jsonify({"message": "Updated", "user": user.to_dict()}), 200
 
@@ -1897,7 +2067,7 @@ FlavorFlow Team
         db.session.commit()
 
         if password_changed and user.role == "admin" and user.email:
-            _send_admin_password_changed_email(app, user, data["password"])
+            _send_admin_password_changed_email(app, user)
 
         return jsonify({"message": "User updated successfully", "user": user.to_dict()}), 200
 
@@ -2043,12 +2213,17 @@ FlavorFlow Team
                     if used:
                         return jsonify({"error": "Bad Request", "message": "the coupon u already used sorry try other options"}), 400
 
-                discount_pct = coupon.discount_pct
                 coupon.usage_count += 1
-
-        if discount_pct > 0:
-            discount_pct = min(100, discount_pct)
-            total = total * Decimal(str((100 - discount_pct) / 100))
+                
+                # Apply discount
+                if coupon.discount_amount and coupon.discount_amount > 0:
+                    total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
+                elif coupon.discount_pct and coupon.discount_pct > 0:
+                    discount_pct = min(100, coupon.discount_pct)
+                    discount_value = total * Decimal(str(discount_pct / 100))
+                    if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
+                        discount_value = Decimal(str(coupon.max_discount_amount))
+                    total = max(Decimal("0.00"), total - discount_value)
 
         # Loyalty points: redemption (1 point = ₹1 discount)
         points_redeemed = 0
@@ -2619,6 +2794,224 @@ FlavorFlow Team
             return jsonify({"error": "Not Found", "message": "Invalid or inactive coupon code"}), 404
         return jsonify(coupon.to_dict()), 200
 
+    # ============================================================
+    # WALLET & CRM ROUTES
+    # ============================================================
+    
+    @app.route("/api/admin/wallet/credit", methods=["POST"])
+    @role_required("admin")
+    def credit_wallet():
+        data = request.get_json()
+        user_id = data.get("user_id")
+        amount = data.get("amount")
+        description = data.get("description", "Wallet Credit")
+        if not user_id or not amount:
+            return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        user.loyalty_points = (user.loyalty_points or 0) + int(amount)
+        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
+        db.session.add(tx)
+        
+        log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
+        db.session.commit()
+        return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
+
+    @app.route("/api/admin/wallet/debit", methods=["POST"])
+    @role_required("admin")
+    def debit_wallet():
+        data = request.get_json()
+        user_id = data.get("user_id")
+        amount = data.get("amount")
+        description = data.get("description", "Wallet Debit")
+        if not user_id or not amount:
+            return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        if (user.loyalty_points or 0) < int(amount):
+            return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+            
+        user.loyalty_points = (user.loyalty_points or 0) - int(amount)
+        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
+        db.session.add(tx)
+        
+        log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
+        db.session.commit()
+        return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
+
+    @app.route("/api/admin/wallet/transactions/<int:user_id>", methods=["GET"])
+    @role_required("admin")
+    def get_wallet_transactions(user_id):
+        txs = db.session.scalars(
+            select(WalletTransaction).where(WalletTransaction.user_id == user_id).order_by(WalletTransaction.created_at.desc())
+        ).all()
+        return jsonify([t.to_dict() for t in txs]), 200
+
+    @app.route("/api/admin/customers/segments", methods=["GET"])
+    @role_required("admin")
+    def get_customer_segments():
+        # A simple dynamic segmentation for now
+        # High Value: Total spent > 5000
+        # Frequent Buyers: Order count > 5
+        # Inactive for 30 days
+        customers = db.session.scalars(select(User).where(User.role == 'customer')).all()
+        
+        segments = {
+            "all": [],
+            "frequent_buyers": [],
+            "high_value": [],
+            "inactive_30_days": []
+        }
+        
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        
+        for c in customers:
+            c_dict = c.to_dict()
+            orders = c.orders
+            
+            c_dict['order_count'] = len(orders)
+            c_dict['total_spent'] = sum(float(o.total_price) for o in orders)
+            
+            # Find last order date, handle timezone aware/naive
+            c_dict['last_order_date'] = max([o.created_at for o in orders]) if orders else None
+            if c_dict['last_order_date'] and c_dict['last_order_date'].tzinfo is None:
+                c_dict['last_order_date'] = c_dict['last_order_date'].replace(tzinfo=timezone.utc)
+            
+            segments["all"].append(c_dict)
+            
+            if c_dict['order_count'] > 5:
+                segments["frequent_buyers"].append(c_dict)
+            if c_dict['total_spent'] > 5000:
+                segments["high_value"].append(c_dict)
+            
+            if c_dict['last_order_date']:
+                if c_dict['last_order_date'] < thirty_days_ago:
+                    segments["inactive_30_days"].append(c_dict)
+            else:
+                # If they never ordered
+                segments["inactive_30_days"].append(c_dict)
+                
+        return jsonify(segments), 200
+
+    @app.route("/api/admin/broadcast", methods=["POST"])
+    @role_required("admin")
+    def send_broadcast():
+        data = request.get_json()
+        target_segment = data.get("segment")
+        message = data.get("message")
+        medium = data.get("medium")
+        
+        if not target_segment or not message or not medium:
+            return jsonify({"error": "Bad Request", "message": "segment, message, and medium are required"}), 400
+            
+        broadcast = BroadcastMessage(target_segment=target_segment, message=message, medium=medium, status="sent")
+        db.session.add(broadcast)
+        
+        log_admin_action(db.session, get_jwt_identity(), "send_broadcast", "BroadcastMessage", None, f"Sent {medium} to {target_segment}")
+        db.session.commit()
+        
+        return jsonify({"message": "Broadcast scheduled/sent successfully", "broadcast": broadcast.to_dict()}), 201
+
+    # ============================================================
+    # BANNERS & STORE SETTINGS ROUTES
+    # ============================================================
+
+    @app.route("/api/public/banners", methods=["GET"])
+    def get_public_banners():
+        banners = db.session.scalars(
+            select(Banner).where(Banner.is_active == True).order_by(Banner.display_order.asc())
+        ).all()
+        return jsonify([b.to_dict() for b in banners]), 200
+
+    @app.route("/api/admin/banners", methods=["GET"])
+    @role_required("admin")
+    def admin_get_banners():
+        banners = db.session.scalars(select(Banner).order_by(Banner.display_order.asc())).all()
+        return jsonify([b.to_dict() for b in banners]), 200
+        
+    @app.route("/api/admin/banners", methods=["POST"])
+    @role_required("admin")
+    def admin_create_banner():
+        data = request.get_json()
+        title = data.get("title")
+        image_url = data.get("image_url")
+        if not title or not image_url:
+            return jsonify({"error": "Bad Request", "message": "title and image_url are required"}), 400
+            
+        banner = Banner(
+            title=title,
+            image_url=image_url,
+            target_url=data.get("target_url"),
+            is_active=data.get("is_active", True),
+            display_order=data.get("display_order", 0)
+        )
+        db.session.add(banner)
+        log_admin_action(db.session, get_jwt_identity(), "create_banner", "Banner", None, f"Created banner {title}")
+        db.session.commit()
+        return jsonify(banner.to_dict()), 201
+        
+    @app.route("/api/admin/banners/<int:id>", methods=["PUT"])
+    @role_required("admin")
+    def admin_update_banner(id):
+        banner = db.session.get(Banner, id)
+        if not banner:
+            return jsonify({"error": "Not Found", "message": "Banner not found"}), 404
+            
+        data = request.get_json()
+        if "title" in data: banner.title = data["title"]
+        if "image_url" in data: banner.image_url = data["image_url"]
+        if "target_url" in data: banner.target_url = data["target_url"]
+        if "is_active" in data: banner.is_active = data["is_active"]
+        if "display_order" in data: banner.display_order = data["display_order"]
+        
+        db.session.commit()
+        return jsonify(banner.to_dict()), 200
+
+    @app.route("/api/admin/banners/<int:id>", methods=["DELETE"])
+    @role_required("admin")
+    def admin_delete_banner(id):
+        banner = db.session.get(Banner, id)
+        if not banner:
+            return jsonify({"error": "Not Found", "message": "Banner not found"}), 404
+            
+        db.session.delete(banner)
+        db.session.commit()
+        return jsonify({"message": "Banner deleted"}), 200
+
+    @app.route("/api/public/store-settings", methods=["GET"])
+    def get_public_store_settings():
+        settings = db.session.scalars(select(StoreSetting)).all()
+        # Return as key-value pairs
+        return jsonify({s.setting_key: s.setting_value for s in settings}), 200
+
+    @app.route("/api/admin/store-settings", methods=["GET"])
+    @role_required("admin")
+    def admin_get_store_settings():
+        settings = db.session.scalars(select(StoreSetting)).all()
+        return jsonify({s.setting_key: s.setting_value for s in settings}), 200
+
+    @app.route("/api/admin/store-settings", methods=["PUT"])
+    @role_required("admin")
+    def admin_update_store_settings():
+        data = request.get_json() # expects key-value dict like {"is_store_online": "false"}
+        for k, v in data.items():
+            setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == k)).first()
+            if not setting:
+                setting = StoreSetting(setting_key=k, setting_value=str(v))
+                db.session.add(setting)
+            else:
+                setting.setting_value = str(v)
+        
+        log_admin_action(db.session, get_jwt_identity(), "update_store_settings", "StoreSetting", None, "Updated store settings")
+        db.session.commit()
+        return jsonify({"message": "Settings updated successfully"}), 200
+
     return app
 
 
@@ -3025,19 +3418,18 @@ def _send_order_shipped_email(app, order, customer, tracking_code):
         logger.warning(f"Failed to send order shipped email: {e}")
 
 
-def _send_admin_created_email(app, admin, temp_password):
+def _send_admin_created_email(app, admin):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Welcome to FlavorFlow Admin Team! 🛡️", sender=sender, recipients=[admin.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Welcome to the Admin Team, {admin.first_name or 'Admin'}! 🛡️</h2>
         <p>Your administrator profile has been successfully set up on the FlavorFlow ERP platform.</p>
-        <p>Here are your credentials to log in to the admin panel:</p>
+        <p>Please use the temporary credentials provided to you securely by the system administrator to log in.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Role:</strong> Administrator<br>
             <strong>Username/Email:</strong> {admin.email}<br>
-            <strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{temp_password}</code>
         </div>
         
         <div style="text-align: center;">
@@ -3050,18 +3442,16 @@ def _send_admin_created_email(app, admin, temp_password):
         logger.warning(f"Failed to send admin onboarding email: {e}")
 
 
-def _send_admin_password_changed_email(app, admin, new_password):
+def _send_admin_password_changed_email(app, admin):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="FlavorFlow Admin Password Update 🔐", sender=sender, recipients=[admin.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Password Successfully Updated 🔐</h2>
         <p>Hi {admin.first_name or 'Admin'}, the password for your FlavorFlow administrator account has been changed.</p>
-        <p>Here is your new password:</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Username/Email:</strong> {admin.email}<br>
-            <strong>New Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{new_password}</code>
         </div>
         
         <p>If you did not request this change, please contact support immediately.</p>
@@ -3072,19 +3462,18 @@ def _send_admin_password_changed_email(app, admin, new_password):
         logger.warning(f"Failed to send password changed email: {e}")
 
 
-def _send_staff_created_email(app, staff, temp_password, outlet):
+def _send_staff_created_email(app, staff, outlet):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Welcome to FlavorFlow POS Team! 🏪", sender=sender, recipients=[staff.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Welcome to the Team, {staff.first_name or 'Partner'}! 🏪</h2>
         <p>Your cashier profile has been successfully set up on the FlavorFlow ERP platform.</p>
-        <p>Here are your temporary credentials to log in and access your terminal:</p>
+        <p>Please use the temporary credentials provided to you securely by the system administrator to log in.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Assigned Outlet:</strong> {outlet.name if outlet else 'Not Assigned'}<br>
             <strong>Username/Email:</strong> {staff.email}<br>
-            <strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{temp_password}</code>
         </div>
         
         <p style="font-size: 13px; color: #64748b; font-style: italic;">* Note: You will be prompted to set a secure password of your own upon your very first login.</p>
