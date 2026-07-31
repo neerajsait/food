@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import { api } from "./utils/api";
 import Login from "./components/Login";
-import AdminView from "./components/AdminView";
-import StaffPOS from "./components/StaffPOS";
-import OutletOwnerView from "./components/OutletOwnerView";
-import KitchenView from "./components/KitchenView";
 import ErrorBoundary from "./components/ErrorBoundary";
 import VerifyEmail from "./components/VerifyEmail";
+
+// Lazy load views for code splitting
+const AdminView = lazy(() => import("./components/AdminView"));
+const StaffPOS = lazy(() => import("./components/StaffPOS"));
+const OutletOwnerView = lazy(() => import("./components/OutletOwnerView"));
+const KitchenView = lazy(() => import("./components/KitchenView"));
 import {
   LogOut, Zap, 
   ChevronRight, Lock
@@ -30,10 +32,21 @@ export default function App() {
     try {
       const mode = await api.getMode();
       setDbMode(mode);
-      const user = api.getCurrentUser();
-      if (user) setCurrentUser(user);
+      
+      const token = localStorage.getItem("token");
+      if (token) {
+        const user = await api.getMe();
+        if (user) {
+          setCurrentUser(user);
+        } else {
+          api.logout();
+          setCurrentUser(null);
+        }
+      }
     } catch (err) {
       console.error("Session init failed:", err);
+      api.logout();
+      setCurrentUser(null);
     } finally {
       setLoading(false);
     }
@@ -106,35 +119,30 @@ export default function App() {
     return <Login onLoginSuccess={handleLoginSuccess} />;
   }
 
-  // Render the correct view
-  const renderView = () => {
-    switch (currentUser.role) {
-      case "admin":    return <AdminView onLogout={handleLogout} dbMode={dbMode} />;
-      case "staff":    return <StaffPOS onLogout={handleLogout} dbMode={dbMode} />;
-      case "outlet_owner": return <OutletOwnerView onLogout={handleLogout} dbMode={dbMode} />;
-      case "kitchen": return <KitchenView onLogout={handleLogout} dbMode={dbMode} />;
-      default:
-        return (
-          <div style={{ padding: "3rem", textAlign: "center" }}>
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <ChevronRight size={28} />
-              </div>
-              <h3>Role Not Configured</h3>
-              <p>Your account role ({currentUser.role}) does not have a portal yet. Please contact admin.</p>
-              <button className="btn btn-secondary" onClick={handleLogout} style={{ marginTop: "1rem" }}>
-                <LogOut size={15} /> Sign Out
-              </button>
-            </div>
-          </div>
-        );
-    }
-  };
 
   return (
     <ErrorBoundary>
       <div className="animate-fade-in">
-        {renderView()}
+        <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
+          {currentUser.role === 'admin' && <AdminView onLogout={handleLogout} dbMode={dbMode} />}
+          {currentUser.role === 'staff' && <StaffPOS onLogout={handleLogout} dbMode={dbMode} />}
+          {currentUser.role === 'outlet_owner' && <OutletOwnerView onLogout={handleLogout} dbMode={dbMode} />}
+          {currentUser.role === 'kitchen' && <KitchenView onLogout={handleLogout} dbMode={dbMode} />}
+          {currentUser.role !== 'admin' && currentUser.role !== 'staff' && currentUser.role !== 'outlet_owner' && currentUser.role !== 'kitchen' && (
+            <div style={{ padding: "3rem", textAlign: "center" }}>
+              <div className="empty-state">
+                <div className="empty-state-icon">
+                  <ChevronRight size={28} />
+                </div>
+                <h3>Role Not Configured</h3>
+                <p>Your account role ({currentUser.role}) does not have a portal yet. Please contact admin.</p>
+                <button className="btn btn-secondary" onClick={handleLogout} style={{ marginTop: "1rem" }}>
+                  <LogOut size={15} /> Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+        </Suspense>
       </div>
 
       {currentUser && currentUser.is_first_login && (

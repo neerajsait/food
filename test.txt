@@ -1,0 +1,120 @@
+# Production Readiness Audit Report
+**Date:** July 2026
+**Project:** FlavorFlow Web Application (React + Flask + MySQL)
+
+## 1. Executive Summary
+This document presents the findings of a rigorous, line-by-line production readiness audit across the FlavorFlow codebase. The audit covered backend architecture (Flask), database design (MySQL/SQLAlchemy), front-end implementations (React/Vite), security (OWASP Top 10), performance, and code quality. 
+
+While the core functionality and business logic are solidly implemented, **the application currently exhibits significant architectural bottlenecks, minor security risks, and optimization failures** that prevent it from achieving a clean "Production Ready" status. 
+
+> [!CAUTION]
+> **Final Recommendation:** **NO-GO for Client Delivery**
+> The application requires a dedicated hardening and optimization sprint before it can be safely delivered. See the Critical and High issues below.
+
+---
+
+## 2. Issues Log (Strict Prioritization)
+
+### 🔴 Critical Issues (Immediate Fix Required)
+*Note: The most critical security issues (e.g., secrets in Git, uncaught QR cryptographic exceptions, and raw DB plaintext passwords) were resolved in the previous sprint. The following remain:*
+
+**1. No React Code Splitting / Lazy Loading**
+* **Location:** `frontend-admin/src/App.jsx`, `frontend-customer/src/App.jsx`, `vite.config.js`
+* **Problem:** Every single view (`AdminView`, `KitchenView`, `StaffPOS`, etc.) is statically imported at the root `App.jsx`.
+* **Impact:** The entire application (all dashboards, dependencies, components) is bundled into a single massive JS file. This severely impacts Initial Load Time (TTFB/LCP) and memory usage, creating a very bad user experience for mobile users.
+* **Fix Required:** Implement `React.lazy()` for route-level components and update Vite config with `manualChunks`.
+```javascript
+// Change this:
+import AdminView from "./components/AdminView";
+// To this:
+const AdminView = React.lazy(() => import("./components/AdminView"));
+// And wrap the router in <Suspense fallback={<Loading />}>
+```
+
+**2. Database BLOB Storage for Images**
+* **Location:** `backend/models.py` (Line 998) and `run_mysql_migration.py` (Line 159)
+* **Problem:** `Banner.image_url` is mapped as `MEDIUMTEXT` (16MB capacity) specifically to store `base64` image strings directly in the database. 
+* **Impact:** Direct data loss risk via DB bloat, massive performance degradation during SQLAlchemy `SELECT *` operations, and severe memory exhaustion on the Flask workers when transferring huge JSON payloads.
+* **Fix Required:** Migrate images to an S3 bucket or local static volume and store the URL string (VARCHAR) in the DB.
+
+### 🟠 High Issues
+**3. N+1 Query Patterns**
+* **Location:** `backend/app.py`
+* **Problem:** When fetching customer lists and demand forecasts, the system triggers subsequent DB queries in Python loops (e.g., fetching `User.orders` for each user).
+* **Impact:** Database connections will exhaust under load, resulting in 504 Gateway Timeouts.
+* **Fix Required:** Use SQLAlchemy's `joinedload` or `subqueryload`.
+```python
+# Change this:
+customers = db.session.scalars(select(User).where(User.role == 'customer')).all()
+# To this:
+customers = db.session.scalars(select(User).where(User.role == 'customer').options(joinedload(User.orders))).unique().all()
+```
+
+**4. Default Fallback Credentials in Migration Script**
+* **Location:** `backend/run_mysql_migration.py` (Line 7)
+* **Problem:** DB credentials default to `root` / `root`. 
+* **Impact:** If executed in a production container without proper env vars, it attempts to run root mutations, which is a major security misconfiguration (OWASP A05).
+* **Fix Required:** Remove defaults or explicitly `sys.exit(1)` if `MYSQL_PASSWORD` is unset in a non-dev environment.
+
+### 🟡 Medium Issues
+**5. LocalStorage Security Risks (JWT Storage)**
+* **Location:** `frontend-admin/src/utils/api.js` (Line 12)
+* **Problem:** JWTs are stored in `localStorage` (`localStorage.getItem("token")`).
+* **Impact:** Any XSS vulnerability (from dependencies or future code) grants attackers full account takeover access. 
+* **Fix Required:** Move to `httpOnly`, `SameSite=Strict` cookies issued by the Flask backend.
+
+**6. Database Missing Indexes on High-Frequency Lookups**
+* **Location:** `backend/models.py`
+* **Problem:** `Order.status`, `Order.order_type`, `Order.outlet_id`, and `OutletStock.outlet_id` lack `index=True`.
+* **Impact:** Slow queries (`O(N)` table scans) on the most heavily hit endpoints (Admin Dashboards, POS).
+
+### 🟢 Low Issues
+**7. Dependency Audit Vulnerabilities**
+* **Location:** Backend Virtual Environment (`pip-audit`)
+* **Problem:** `pip` itself has 6 known CVE vulnerabilities (e.g., PYSEC-2026-196, PYSEC-2026-1795).
+* **Impact:** Minimal application risk, but flags on compliance audits.
+* **Fix Required:** Run `python.exe -m pip install --upgrade pip` (upgrade to >= 26.2).
+* *Note: The Node.js frontends passed `npm audit` with 0 vulnerabilities.*
+
+---
+
+## 3. Domain Reports
+
+### 🛡️ Security Audit (OWASP)
+- **SQL Injection:** Pass. Application uses SQLAlchemy ORM exclusively. No raw string interpolation found.
+- **XSS:** Pass. No usage of `dangerouslySetInnerHTML` found in React. Backend uses `bleach` sanitization.
+- **CSRF:** Needs Improvement. Dependent on moving JWTs from LocalStorage to Cookies (with CSRF tokens).
+- **Access Control:** Pass. Strict decorator-based role checks (`@role_required`, `@department_required`) enforce proper boundaries.
+- **Secrets:** Pass. Secrets removed from `.gitignore` and hardcoded salts rotated.
+
+### 🚀 Performance Report
+- **Backend:** N+1 query patterns and 14-query loops in Analytics endpoints will bottleneck horizontal scaling.
+- **Frontend:** Missing lazy loading creates a monolithic Javascript bundle. Vite `manualChunks` is unconfigured.
+- **Database:** Needs indexing on foreign keys. Storing base64 images in `MEDIUMTEXT` is a critical anti-pattern.
+
+### 🏗️ Code Quality Report
+- **Python (PEP 8):** Good. Functions are modularized. Controller logic in `app.py` is slightly monolithic (~4000 lines) and should be split into Blueprints (`/auth`, `/admin`, `/pos`, `/kitchen`).
+- **React (ESLint):** Good. Component structure is logical, but the `api.js` file is bloated with mock-storage logic that should be separated into a distinct mock service.
+
+### 🎨 UI/UX Report
+- **Consistency:** High. The recent grid refactoring ensures responsive behavior across devices.
+- **Accessibility (WCAG):** Missing `aria-labels` on icon-only buttons in the POS interface.
+- **Empty States:** Well implemented (e.g., "Role Not Configured" fallback in `App.jsx`).
+
+---
+
+## 4. Final Scores & Deliverables
+
+| Metric | Score | Assessment |
+| :--- | :--- | :--- |
+| **Production Readiness** | **65 / 100** | Fails due to DB image storage and missing code splitting. |
+| **Security** | **85 / 100** | Strong foundations (Bleach, decorators), docked for LocalStorage JWTs. |
+| **Performance** | **55 / 100** | High risk of DB timeout under load (N+1 queries, Base64 DB Bloat). |
+| **Maintainability** | **70 / 100** | Good syntax, but `app.py` monolith requires Blueprint refactoring. |
+| **Overall Project Score**| **68 / 100** | **Requires Hardening Sprint.** |
+
+## 5. Next Steps for Client Delivery
+1. Refactor `App.jsx` to use `React.lazy()` for all views.
+2. Refactor `Banner` and `Order` models to store image URLs/paths, not raw base64.
+3. Apply `index=True` to `models.py` foreign keys.
+4. Resolve the N+1 queries in the `app.py` analytics functions.

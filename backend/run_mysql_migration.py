@@ -3,11 +3,22 @@ import pymysql
 from dotenv import load_dotenv
 load_dotenv()
 import os
+import sys
+
+db_user = os.getenv('MYSQL_USER')
+db_password = os.getenv('MYSQL_PASSWORD')
+db_host = os.getenv('MYSQL_HOST', 'localhost')
+db_name = os.getenv('MYSQL_DB', 'food')
+
+if not db_user or not db_password:
+    print("ERROR: MYSQL_USER and MYSQL_PASSWORD environment variables are required.")
+    sys.exit(1)
+
 conn = pymysql.connect(
-    host=os.getenv('MYSQL_HOST', 'localhost'),
-    user=os.getenv('MYSQL_USER', 'root'),
-    password=os.getenv('MYSQL_PASSWORD', 'root'),
-    database=os.getenv('MYSQL_DB', 'food'),
+    host=db_host,
+    user=db_user,
+    password=db_password,
+    database=db_name,
     charset='utf8mb4'
 )
 c = conn.cursor()
@@ -91,6 +102,7 @@ for col, defn in [
     ('loyalty_points', 'INT NOT NULL DEFAULT 0'),
     ('outlet_id', 'INT NULL'),
     ('pin_hash', 'VARCHAR(255) NULL'),
+    ('staff_code', 'VARCHAR(10) NULL UNIQUE'),
     ('referral_code', 'VARCHAR(20) NULL UNIQUE'),
     ('referred_by_id', 'INT NULL')
 ]:
@@ -122,6 +134,55 @@ if not col_exists('support_tickets', 'attachment_url'):
     print("Added support_tickets.attachment_url")
 else:
     print("support_tickets.attachment_url already exists")
+
+# --- 7. Add columns to coupons ---
+for col, defn in [
+    ('discount_amount', 'DECIMAL(10, 2) NULL'),
+    ('max_discount_amount', 'DECIMAL(10, 2) NULL'),
+    ('applicable_menu_item_id', 'INT NULL'),
+    ('applicable_customer_id', 'INT NULL')
+]:
+    if not col_exists('coupons', col):
+        c.execute(f"ALTER TABLE `coupons` ADD COLUMN `{col}` {defn}")
+        conn.commit()
+        print(f"Added coupons.{col}")
+    else:
+        print(f"coupons.{col} already exists")
+
+# Add foreign keys for coupons if missing
+try:
+    c.execute("SHOW CREATE TABLE coupons")
+    create_stmt = c.fetchone()[1]
+    if 'fk_coupons_menu_item_id' not in create_stmt:
+        c.execute("ALTER TABLE `coupons` ADD CONSTRAINT `fk_coupons_menu_item_id` FOREIGN KEY (`applicable_menu_item_id`) REFERENCES `menu_items` (`id`) ON DELETE CASCADE")
+        conn.commit()
+        print("Added fk_coupons_menu_item_id")
+    if 'fk_coupons_customer_id' not in create_stmt:
+        c.execute("ALTER TABLE `coupons` ADD CONSTRAINT `fk_coupons_customer_id` FOREIGN KEY (`applicable_customer_id`) REFERENCES `users` (`id`) ON DELETE CASCADE")
+        conn.commit()
+        print("Added fk_coupons_customer_id")
+except Exception as e:
+    print(f"FK constraint check/add failed on coupons: {e}")
+
+# --- 8. Migrate banners table ---
+# Modify image_url column in banners to MEDIUMTEXT to allow base64 images
+try:
+    c.execute("ALTER TABLE `banners` MODIFY COLUMN `image_url` MEDIUMTEXT NOT NULL")
+    conn.commit()
+    print("Modified banners.image_url to MEDIUMTEXT")
+except Exception as e:
+    print(f"Failed to modify banners.image_url: {e}")
+
+# Add display_location column to banners if missing
+if not col_exists('banners', 'display_location'):
+    try:
+        c.execute("ALTER TABLE `banners` ADD COLUMN `display_location` VARCHAR(100) NOT NULL DEFAULT 'home'")
+        conn.commit()
+        print("Added banners.display_location")
+    except Exception as e:
+        print(f"Failed to add banners.display_location: {e}")
+else:
+    print("banners.display_location already exists")
 
 conn.close()
 print("Migration complete!")

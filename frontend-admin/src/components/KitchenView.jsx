@@ -9,99 +9,100 @@ const premiumStyles = `
   .kv-wrapper {
     display: flex;
     min-height: 100vh;
-    background: linear-gradient(135deg, #fdfbfb 0%, #ebedee 100%);
-    font-family: 'Inter', system-ui, sans-serif;
-    color: #1e293b;
-    animation: fadeIn 0.5s ease-out;
+    background: var(--bg-canvas);
+    font-family: var(--font-body);
+    color: var(--text-primary);
+    animation: fadeIn 0.3s ease-out;
   }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   
   .kv-sidebar {
-    width: 280px;
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(16px);
-    border-right: 1px solid rgba(255, 255, 255, 0.4);
+    width: 220px;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border-subtle);
     display: flex;
     flex-direction: column;
-    padding: 2rem 1.5rem;
-    box-shadow: 4px 0 24px rgba(0,0,0,0.02);
+    padding: 1rem;
   }
   
   .kv-brand {
     display: flex;
     align-items: center;
-    gap: 1rem;
-    margin-bottom: 3rem;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
   }
   
   .kv-brand-icon {
-    width: 48px;
-    height: 48px;
-    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
-    border-radius: 14px;
+    width: 36px;
+    height: 36px;
+    background: var(--brand);
+    border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: white;
-    box-shadow: 0 8px 16px rgba(234, 88, 12, 0.2);
   }
   
   .kv-nav-btn {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.75rem;
     width: 100%;
-    padding: 1rem 1.25rem;
-    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
     border: none;
     background: transparent;
-    color: #64748b;
-    font-size: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    margin-bottom: 0.5rem;
+    transition: all 0.2s;
+    margin-bottom: 0.25rem;
   }
   
   .kv-nav-btn:hover {
-    background: rgba(255, 255, 255, 0.9);
-    color: #0f172a;
-    transform: translateX(4px);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
   
   .kv-nav-btn.active {
-    background: #ffffff;
-    color: #ea580c;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    background: var(--brand-dim);
+    color: var(--brand);
+    border: 1px solid var(--border-brand);
   }
   
   .kv-main {
     flex: 1;
-    padding: 2rem 3rem;
+    padding: 0.5rem;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
   }
   
   .kv-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2.5rem;
+    margin-bottom: 0.75rem;
+    background: var(--bg-card);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
   }
   
   .kv-title {
-    font-size: 2rem;
+    font-size: 1.25rem;
     font-weight: 800;
-    background: linear-gradient(to right, #0f172a, #334155);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    color: var(--text-primary);
     margin: 0;
   }
   
   .kv-btn {
-    padding: 0.75rem 1.5rem;
-    border-radius: 10px;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
     border: none;
     font-weight: 600;
+    font-size: 0.85rem;
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
@@ -110,106 +111,86 @@ const premiumStyles = `
   }
   
   .kv-btn-primary {
-    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+    background: var(--brand);
     color: white;
-    box-shadow: 0 4px 12px rgba(234, 88, 12, 0.2);
   }
-  
-  .kv-btn-primary:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(234, 88, 12, 0.3);
-  }
+  .kv-btn-primary:hover { opacity: 0.9; }
   
   .kv-btn-success {
-    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    background: var(--success);
     color: white;
-    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);
   }
-  
-  .kv-btn-success:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(34, 197, 94, 0.3);
-  }
+  .kv-btn-success:hover { opacity: 0.9; }
 
   .kv-btn-icon {
-    width: 44px;
-    height: 44px;
-    border-radius: 12px;
-    border: 1px solid #e2e8f0;
-    background: white;
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-card);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    color: #475569;
+    color: var(--text-secondary);
     transition: all 0.2s;
   }
-
-  .kv-btn-icon:hover {
-    background: #f8fafc;
-    color: #0f172a;
-    transform: translateY(-2px);
-  }
+  .kv-btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
   
   .kv-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 1.5rem;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.75rem;
   }
   
   .kv-card {
-    background: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(12px);
-    border-radius: 16px;
-    padding: 1.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    box-shadow: 0 10px 30px -10px rgba(0,0,0,0.05);
-    transition: all 0.3s ease;
-    animation: slideUp 0.4s ease-out forwards;
-  }
-  
-  .kv-card:hover {
-    transform: translateY(-6px);
-    box-shadow: 0 20px 40px -10px rgba(0,0,0,0.1);
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid var(--border-default);
+    animation: slideUp 0.3s ease-out forwards;
+    display: flex;
+    flex-direction: column;
   }
   
   @keyframes slideUp {
-    from { opacity: 0; transform: translateY(20px); }
+    from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
   }
   
   .kv-badge {
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
     font-weight: 700;
-    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
   
-  .kv-badge-pending { background: #fee2e2; color: #ef4444; }
-  .kv-badge-processing { background: #fef3c7; color: #d97706; }
+  .kv-badge-pending { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); }
+  .kv-badge-processing { background: var(--info-bg); color: var(--info); border: 1px solid var(--info); }
   
   .kv-items-list {
-    background: #f8fafc;
-    border-radius: 12px;
-    padding: 1rem;
-    margin: 1.5rem 0;
+    background: var(--bg-hover);
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin: 0.75rem 0;
+    flex: 1;
   }
   
   .kv-item-row {
     display: flex;
     justify-content: space-between;
-    padding: 0.5rem 0;
-    border-bottom: 1px dashed #cbd5e1;
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border-subtle);
+    font-size: 0.9rem;
   }
   .kv-item-row:last-child { border-bottom: none; }
   
   .kv-modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(15, 23, 42, 0.4);
-    backdrop-filter: blur(8px);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -218,50 +199,47 @@ const premiumStyles = `
   }
   
   .kv-modal {
-    background: white;
-    border-radius: 24px;
-    padding: 2.5rem;
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 1.5rem;
     width: 100%;
     max-width: 480px;
-    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
     animation: slideUp 0.3s ease-out;
   }
 
   .kv-input {
     width: 100%;
-    padding: 0.875rem 1rem;
-    border-radius: 10px;
-    border: 1px solid #cbd5e1;
-    background: #f8fafc;
-    font-size: 1rem;
-    transition: all 0.2s;
+    padding: 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-default);
+    background: var(--bg-input);
+    font-size: 0.95rem;
     outline: none;
   }
   .kv-input:focus {
-    border-color: #ea580c;
-    box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.1);
-    background: white;
+    border-color: var(--brand);
+    box-shadow: 0 0 0 2px var(--brand-glow);
   }
   
   .kv-table {
     width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
+    border-collapse: collapse;
+    font-size: 0.9rem;
   }
   .kv-table th {
     text-align: left;
-    padding: 1rem;
-    color: #64748b;
+    padding: 0.75rem;
+    color: var(--text-secondary);
     font-weight: 600;
-    border-bottom: 2px solid #e2e8f0;
+    border-bottom: 2px solid var(--border-default);
   }
   .kv-table td {
-    padding: 1rem;
-    border-bottom: 1px solid #e2e8f0;
-    vertical-align: middle;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-subtle);
   }
   .kv-table tr:hover td {
-    background: rgba(255, 255, 255, 0.5);
+    background: var(--bg-hover);
   }
 
   .spin-anim {
@@ -302,7 +280,7 @@ export default function KitchenView({ onLogout, dbMode }) {
         const o = await api.getKitchenOrders();
         setOrders(o);
       } else {
-        const r = await api.getRestockRequests();
+        const r = await api.getStockRequests();
         setRestockReqs(r);
         const m = await api.getMenu();
         setMenuItems(m);
@@ -458,24 +436,47 @@ export default function KitchenView({ onLogout, dbMode }) {
                     <tr>
                       <th>Location</th>
                       <th>Menu Item</th>
-                      <th>Current Stock</th>
-                      <th>Restock Limit</th>
+                      <th>Type</th>
+                      <th>Quantity</th>
+                      <th>Status</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {restockReqs.length === 0 ? (
-                      <tr><td colSpan="4" style={{ textAlign: "center", padding: "3rem", color: "#64748b" }}>Inventory levels are healthy across all outlets.</td></tr>
+                      <tr><td colSpan="6" style={{ textAlign: "center", padding: "3rem", color: "#64748b" }}>No pending stock requests.</td></tr>
                     ) : (
                       restockReqs.map(r => (
                         <tr key={r.id}>
                           <td style={{ fontWeight: 600, color: "#475569" }}>{r.outlet_name || `Outlet #${r.outlet_id}`}</td>
                           <td style={{ fontWeight: 700, color: "#0f172a" }}>{r.menu_item_name}</td>
+                          <td>{r.type}</td>
                           <td>
-                            <span style={{ background: "#fee2e2", color: "#b91c1c", padding: "0.25rem 0.75rem", borderRadius: "8px", fontWeight: 700 }}>
-                              {r.current_stock}
+                            <span style={{ background: "#e0e7ff", color: "#4338ca", padding: "0.25rem 0.75rem", borderRadius: "8px", fontWeight: 700 }}>
+                              {r.quantity}
                             </span>
                           </td>
-                          <td style={{ color: "#64748b", fontWeight: 600 }}>{r.restock_limit}</td>
+                          <td>
+                            <span className={`status-badge status-${r.status.toLowerCase()}`}>
+                              {r.status}
+                            </span>
+                          </td>
+                          <td>
+                            {r.status !== "Fulfilled" && (
+                              <button className="btn btn-primary btn-sm" onClick={async () => {
+                                try {
+                                  await api.fulfillStockRequest(r.id);
+                                  alertMsg("Stock request fulfilled!");
+                                  const reqs = await api.getStockRequests();
+                                  setRestockReqs(reqs);
+                                } catch (e) {
+                                  alertMsg(e.message);
+                                }
+                              }}>
+                                Fulfill
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))
                     )}
@@ -508,7 +509,7 @@ export default function KitchenView({ onLogout, dbMode }) {
                       {menuItems.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                  <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
                     <div>
                       <label style={{ display: "block", fontSize: "0.875rem", fontWeight: 700, color: "#475569", marginBottom: "0.5rem" }}>Quantity</label>
                       <input type="number" className="kv-input" required min="1" value={batchForm.quantity} onChange={e => setBatchForm({...batchForm, quantity: e.target.value})} />

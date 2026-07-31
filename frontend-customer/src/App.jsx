@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import { api } from "./utils/api";
 import Login from "./components/Login";
-import CustomerView from "./components/CustomerView";
 import ErrorBoundary from "./components/ErrorBoundary";
 import VerifyEmail from "./components/VerifyEmail";
+
+// Lazy load views for code splitting
+const CustomerView = lazy(() => import("./components/CustomerView"));
 import {
   LogOut, Zap, 
   ChevronRight, Lock
@@ -27,10 +29,21 @@ export default function App() {
     try {
       const mode = await api.getMode();
       setDbMode(mode);
-      const user = api.getCurrentUser();
-      if (user) setCurrentUser(user);
+      
+      const token = localStorage.getItem("token");
+      if (token) {
+        const user = await api.getMe();
+        if (user) {
+          setCurrentUser(user);
+        } else {
+          api.logout();
+          setCurrentUser(null);
+        }
+      }
     } catch (err) {
       console.error("Session init failed:", err);
+      api.logout();
+      setCurrentUser(null);
     } finally {
       setLoading(false);
     }
@@ -105,24 +118,25 @@ export default function App() {
 
   // Render the correct view
   const renderView = () => {
-    switch (currentUser.role) {
-      case "customer": return <CustomerView onLogout={handleLogout} dbMode={dbMode} />;
-      default:
-        return (
+    return (
+      <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
+        {currentUser.role === 'customer' && <CustomerView onLogout={handleLogout} dbMode={dbMode} currentUser={currentUser} />}
+        {currentUser.role !== 'customer' && (
           <div style={{ padding: "3rem", textAlign: "center" }}>
             <div className="empty-state">
               <div className="empty-state-icon">
                 <ChevronRight size={28} />
               </div>
-              <h3>Role Not Configured</h3>
-              <p>Your account role ({currentUser.role}) does not have a portal yet. Please contact admin.</p>
+              <h3>Staff Portal</h3>
+              <p>Your account role ({currentUser.role}) does not belong here. Please log into the Admin/Staff Portal.</p>
               <button className="btn btn-secondary" onClick={handleLogout} style={{ marginTop: "1rem" }}>
                 <LogOut size={15} /> Sign Out
               </button>
             </div>
           </div>
-        );
-    }
+        )}
+      </Suspense>
+    );
   };
 
   return (

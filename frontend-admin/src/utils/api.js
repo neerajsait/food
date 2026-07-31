@@ -2,7 +2,7 @@
 // Implements a Mock Fallback Mode using localStorage if the backend is unreachable.
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || (
-  ["5173", "5174", "3000", "4173", "8080"].includes(window.location.port)
+  window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
     ? `${window.location.protocol}//${window.location.hostname}:5000/api`
     : `${window.location.protocol}//${window.location.host}/api`
 );
@@ -163,10 +163,38 @@ function initMockDB() {
   if (!localStorage.getItem("mock_users")) {
     localStorage.setItem("mock_users", JSON.stringify([
       { id: 1, email: "admin", role: "admin", first_name: "John", last_name: "Admin" },
-      { id: 2, email: "customer@gmail.com", role: "customer", first_name: "Sarah", last_name: "Customer" },
-      { id: 3, email: "staff@brand.com", role: "staff", outlet_id: 1, first_name: "Alex", last_name: "Staff" },
-      { id: 4, email: "owner@brand.com", role: "outlet_owner", first_name: "Rajesh", last_name: "Owner" }
+      { id: 2, email: "customer@gmail.com", role: "customer", first_name: "Sarah", last_name: "Customer",
+        loyalty_points: 250, referral_code: "SARAH2024", referral_count: 1,
+        loyalty_history: [
+          { id: 1, type: "earned", points: 150, desc: "Order #1001", date: new Date(Date.now() - 7*24*3600000).toISOString() },
+          { id: 2, type: "earned", points: 100, desc: "Referral bonus (friend joined)", date: new Date(Date.now() - 2*24*3600000).toISOString() }
+        ]
+      },
+      { id: 3, email: "staff@brand.com", role: "staff", outlet_id: 1, first_name: "Alex", last_name: "Staff", staff_code: "1001", password: "staff123" },
+      { id: 4, email: "owner@brand.com", role: "outlet_owner", first_name: "Rajesh", last_name: "Owner" },
+      { id: 5, email: "kitchen@brand.com", role: "kitchen", outlet_id: 1, first_name: "Priya", last_name: "Kitchen", staff_code: "2001", password: "kitchen123" }
     ]));
+  } else {
+    // Migrate existing users: ensure staff/kitchen have staff_code
+    const users = JSON.parse(localStorage.getItem("mock_users"));
+    let changed = false;
+    const existingCodes = new Set(users.map(u => u.staff_code).filter(Boolean));
+    users.forEach(u => {
+      if ((u.role === "staff" || u.role === "kitchen") && !u.staff_code) {
+        let code;
+        do { code = String(Math.floor(1000 + Math.random() * 9000)); } while (existingCodes.has(code));
+        existingCodes.add(code);
+        u.staff_code = code;
+        changed = true;
+      }
+      if (u.role === "customer" && !u.referral_code) {
+        u.referral_code = (u.first_name || "USER").toUpperCase().replace(/[^A-Z]/g,"").slice(0,6) + u.id;
+        u.loyalty_history = u.loyalty_history || [];
+        u.referral_count = u.referral_count || 0;
+        changed = true;
+      }
+    });
+    if (changed) localStorage.setItem("mock_users", JSON.stringify(users));
   }
   if (!localStorage.getItem("mock_orders")) {
     localStorage.setItem("mock_orders", JSON.stringify([]));
@@ -212,20 +240,49 @@ const mockApi = {
     if (users.find(u => u.email === email)) {
       throw new Error("Email already registered");
     }
-    const newId = users.length + 1;
-    const user = { id: newId, email, role, first_name, last_name, phone, outlet_id };
+    const newId = Date.now();
+
+    // Generate unique referral code for new customer
+    let myReferralCode = null;
+    if (role === "customer") {
+      const baseName = (first_name || "USER").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6);
+      myReferralCode = baseName + newId.toString().slice(-4);
+    }
+
+    const user = { id: newId, email, role, first_name, last_name, phone, outlet_id,
+      loyalty_points: 0, referral_code: myReferralCode, referral_count: 0, loyalty_history: [] };
+
+    // If a referral code was used, credit referrer and new user
+    if (referral_code && role === "customer") {
+      const referrer = users.find(u => u.referral_code === referral_code && u.role === "customer");
+      if (referrer) {
+        referrer.loyalty_points = (referrer.loyalty_points || 0) + 100;
+        referrer.referral_count = (referrer.referral_count || 0) + 1;
+        referrer.loyalty_history = referrer.loyalty_history || [];
+        referrer.loyalty_history.unshift({ id: Date.now(), type: "earned", points: 100,
+          desc: `Referral bonus (${first_name || email} joined!)`, date: new Date().toISOString() });
+        user.loyalty_points = 50; // welcome bonus for new user
+        user.loyalty_history = [{ id: Date.now() + 1, type: "earned", points: 50,
+          desc: "Welcome bonus (joined via referral)", date: new Date().toISOString() }];
+      }
+    }
+
     users.push(user);
     localStorage.setItem("mock_users", JSON.stringify(users));
     return { message: "Registration successful", user };
   },
 
-  async login(email, _password) {
+  async login(emailOrCode, _password) {
     const users = JSON.parse(localStorage.getItem("mock_users"));
-    const user = users.find(u => u.email === email);
+    // Allow staff/kitchen to login with staff_code
+    let user = users.find(u => u.email === emailOrCode);
     if (!user) {
-      throw new Error("Invalid email or password");
+      // Try staff_code match for staff/kitchen roles
+      user = users.find(u => u.staff_code === emailOrCode && (u.role === "staff" || u.role === "kitchen"));
     }
-    // Simulate JWT token containing payload claims
+    if (!user) {
+      throw new Error("Invalid credentials");
+    }
     const token = btoa(JSON.stringify({ id: user.id, email: user.email, role: user.role, outlet_id: user.outlet_id }));
     return { access_token: token, user };
   },
@@ -249,19 +306,19 @@ const mockApi = {
   async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null) {
     const menu = JSON.parse(localStorage.getItem("mock_menu"));
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
-    
+
     let total = 0;
     const items = itemsData.map(it => {
       const menuItem = menu.find(m => m.id === it.menu_item_id);
       if (!menuItem) throw new Error("Item not found");
-      
+
       if (menuItem.global_stock !== null && menuItem.global_stock !== undefined) {
         if (menuItem.global_stock < it.quantity) {
           throw new Error(`Item '${menuItem.name}' is out of stock (only ${menuItem.global_stock} left)`);
         }
         menuItem.global_stock -= it.quantity;
       }
-      
+
       total += menuItem.price * it.quantity;
       return {
         id: Math.random(),
@@ -271,7 +328,7 @@ const mockApi = {
         price: menuItem.price
       };
     });
-    
+
     // Save updated menu to persist mock stock decrements
     localStorage.setItem("mock_menu", JSON.stringify(menu));
 
@@ -315,7 +372,7 @@ const mockApi = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
-    
+
     orders.push(newOrder);
     localStorage.setItem("mock_orders", JSON.stringify(orders));
     return { message: "Order placed successfully", order: newOrder };
@@ -359,7 +416,7 @@ const mockApi = {
     };
     feedbacks.push(newFeedback);
     order.feedback_submitted = true;
-    
+
     localStorage.setItem("mock_feedbacks", JSON.stringify(feedbacks));
     localStorage.setItem("mock_orders", JSON.stringify(orders));
     return { message: "Feedback submitted successfully", feedback: newFeedback };
@@ -411,13 +468,13 @@ const mockApi = {
       const coupon = coupons.find(c => c.code === couponCode.toUpperCase().trim() && c.is_active);
       if (coupon) {
         if (coupon.discount_amount) {
-            totalAmount = Math.max(0, totalAmount - coupon.discount_amount);
+          totalAmount = Math.max(0, totalAmount - coupon.discount_amount);
         } else if (coupon.discount_pct) {
-            let discountValue = totalAmount * (coupon.discount_pct / 100);
-            if (coupon.max_discount_amount && discountValue > coupon.max_discount_amount) {
-                discountValue = coupon.max_discount_amount;
-            }
-            totalAmount = Math.max(0, totalAmount - discountValue);
+          let discountValue = totalAmount * (coupon.discount_pct / 100);
+          if (coupon.max_discount_amount && discountValue > coupon.max_discount_amount) {
+            discountValue = coupon.max_discount_amount;
+          }
+          totalAmount = Math.max(0, totalAmount - discountValue);
         }
       }
     }
@@ -573,7 +630,7 @@ const mockApi = {
     return { message: "Item removed from outlet" };
   },
 
-    async adminGetRevenueShare() {
+  async adminGetRevenueShare() {
     return fetchAPI("/api/admin/revenue-share");
   },
 
@@ -839,7 +896,7 @@ const mockApi = {
     const item = menu.find(m => m.id === parseInt(itemId));
     const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
     const user = users.find(u => u.id === parseInt(userId));
-    
+
     const newReview = {
       id: Date.now(),
       menu_item_id: parseInt(itemId),
@@ -902,10 +959,13 @@ export const api = {
     return data;
   },
 
-  async login(email, password) {
+  async login(payload) {
     const live = await checkBackendAlive();
     if (!live) {
-      const data = await mockApi.login(email, password);
+      // Mock API expects (email, password)
+      const emailOrCode = payload.email || payload.staff_code;
+      const passOrPin = payload.password || payload.pin;
+      const data = await mockApi.login(emailOrCode, passOrPin);
       localStorage.setItem("token", data.access_token);
       localStorage.setItem("user", JSON.stringify(data.user));
       return data;
@@ -914,7 +974,7 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify(payload)
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
@@ -931,6 +991,28 @@ export const api = {
   getCurrentUser() {
     const userStr = localStorage.getItem("user");
     return userStr ? JSON.parse(userStr) : null;
+  },
+
+  async getMe() {
+    const live = await checkBackendAlive();
+    if (!live) {
+      return this.getCurrentUser();
+    }
+    const token = localStorage.getItem("token");
+    if (!token) throw new Error("No token");
+
+    const res = await fetch(`${API_BASE_URL}/auth/me`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`
+      }
+    });
+    const data = await safeJson(res);
+    if (data.user) {
+      localStorage.setItem("user", JSON.stringify(data.user));
+      return data.user;
+    }
+    return null;
   },
 
   // -----------------------
@@ -1112,7 +1194,7 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return { success: true };
     const res = await fetch(`${API_BASE_URL}/admin/outlets/${outletId}`, {
-      method: "POST",
+      method: "DELETE",
       headers: getAuthHeader()
     });
     const result = await safeJson(res);
@@ -1150,7 +1232,7 @@ export const api = {
 
   async adminUpdateMenuItem(itemId, data) {
     const live = await checkBackendAlive();
-    if (!live) return { success: true }; 
+    if (!live) return { success: true };
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -1163,7 +1245,7 @@ export const api = {
 
   async adminDeleteMenuItem(itemId) {
     const live = await checkBackendAlive();
-    if (!live) return { success: true }; 
+    if (!live) return { success: true };
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "POST", // POST to bypass 405 Method Not Allowed proxy errors
       headers: getAuthHeader()
@@ -1236,7 +1318,7 @@ export const api = {
 
   async posScanArrival(qrData) {
     const live = await checkBackendAlive();
-    
+
     let payload;
     try {
       payload = JSON.parse(qrData);
@@ -1269,7 +1351,7 @@ export const api = {
     return data;
   },
 
-    async adminGetRevenueShare() {
+  async adminGetRevenueShare() {
     const outlets = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
     const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
     return outlets.map(o => {
@@ -1422,7 +1504,7 @@ export const api = {
     });
     const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Change failed");
-    
+
     if (user) {
       user.is_first_login = false;
       localStorage.setItem("user", JSON.stringify(user));
@@ -1432,7 +1514,26 @@ export const api = {
 
   async updateProfile(data) {
     const live = await checkBackendAlive();
-    if (!live) return { success: true, user: data }; // Mock implementation
+    const currentUser = this.getCurrentUser();
+    if (!live) {
+      if (!currentUser) throw new Error("Unauthorized");
+      // Actually persist the profile changes in mock mode
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const idx = users.findIndex(u => u.id === currentUser.id);
+      if (idx !== -1) {
+        if (data.first_name) users[idx].first_name = data.first_name;
+        if (data.last_name !== undefined) users[idx].last_name = data.last_name;
+        if (data.phone !== undefined) users[idx].phone = data.phone;
+        if (data.address !== undefined) users[idx].address = data.address;
+        if (data.email && data.email !== currentUser.email) users[idx].email = data.email;
+        if (data.password) users[idx].password = data.password;
+        localStorage.setItem("mock_users", JSON.stringify(users));
+        const updatedUser = { ...currentUser, ...users[idx] };
+        localStorage.setItem("user", JSON.stringify(updatedUser));
+        return { success: true, user: updatedUser };
+      }
+      return { success: true, user: currentUser };
+    }
     const res = await fetch(`${API_BASE_URL}/auth/profile`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -1444,6 +1545,25 @@ export const api = {
       localStorage.setItem("user", JSON.stringify(result.user));
     }
     return result;
+  },
+
+  async getLoyaltyHistory() {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const fullUser = users.find(u => u.id === user.id) || user;
+      return {
+        loyalty_points: fullUser.loyalty_points || 0,
+        referral_code: fullUser.referral_code || null,
+        referral_count: fullUser.referral_count || 0,
+        history: (fullUser.loyalty_history || []).sort((a, b) => new Date(b.date) - new Date(a.date))
+      };
+    }
+    const res = await fetch(`${API_BASE_URL}/customer/loyalty`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load loyalty data");
+    return safeJson(res);
   },
 
   async adminGetUsers() {
@@ -1541,6 +1661,18 @@ export const api = {
     const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || "Failed to delete coupon");
     return result;
+  },
+
+  async getOutletCoupons() {
+    const live = await checkBackendAlive();
+    if (!live) {
+      // Mock: return all active coupons that are outlet or both scope
+      const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+      return coupons.filter(c => c.is_active && (!c.scope || c.scope === "both" || c.scope === "outlet"));
+    }
+    const res = await fetch(`${API_BASE_URL}/outlet/coupons`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to fetch outlet coupons");
+    return safeJson(res);
   },
 
   async getMenuItemReviews(itemId) {
@@ -1922,15 +2054,32 @@ export const api = {
     if (!res.ok) throw new Error(data.message || data.error || "Failed to update order status");
     return data;
   },
-  async getRestockRequests() {
+  async getStockRequests() {
     const live = await checkBackendAlive();
-    if (!live) {
-      const stock = JSON.parse(localStorage.getItem("mock_outlet_stock") || "[]");
-      return stock.filter(s => s.current_stock <= s.restock_limit);
-    }
-    const res = await fetch(`${API_BASE_URL}/kitchen/restock-requests`, { headers: getAuthHeader() });
-    if (!res.ok) throw new Error("Failed to load restock requests");
+    if (!live) return [];
+    const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load stock requests");
     return safeJson(res);
+  },
+  async createStockRequest(payload) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Mock backend does not support this feature");
+    const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() }, body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to create stock request");
+    return data;
+  },
+  async fulfillStockRequest(id) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Mock backend does not support this feature");
+    const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests/${id}/fulfill`, {
+      method: "PUT", headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to fulfill stock request");
+    return data;
   },
   async produceBatch(menu_item_id, quantity, expiry_date) {
     const live = await checkBackendAlive();
@@ -1988,7 +2137,7 @@ export const api = {
     if (!res.ok) throw new Error(data.message || "Failed to send broadcast");
     return data;
   },
-  
+
   // --- Banners & Store Settings ---
   async getPublicBanners() {
     const live = await checkBackendAlive(true);
@@ -2081,4 +2230,4 @@ export const api = {
     if (!res.ok) throw new Error(data.message || "Failed to update ticket");
     return data;
   }
-};
+};

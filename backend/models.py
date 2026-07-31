@@ -96,6 +96,7 @@ class User(db.Model):
     loyalty_points = Column(Integer, default=0, nullable=False)
     outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
     pin_hash = Column(String(255), nullable=True)
+    staff_code = Column(String(10), unique=True, nullable=True)
     referral_code = Column(String(20), unique=True, nullable=True)
     referred_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
 
@@ -115,6 +116,14 @@ class User(db.Model):
 
     def check_password(self, password: str, bcrypt) -> bool:
         return bcrypt.check_password_hash(self.password_hash, password)
+
+    def set_pin(self, pin: str, bcrypt):
+        self.pin_hash = bcrypt.generate_password_hash(pin).decode('utf-8')
+
+    def check_pin(self, pin: str, bcrypt) -> bool:
+        if not self.pin_hash:
+            return False
+        return bcrypt.check_password_hash(self.pin_hash, pin)
 
     def to_dict(self):
         d = {
@@ -143,6 +152,8 @@ class User(db.Model):
             d["outlet_name"] = self.outlet.name if getattr(self, 'outlet', None) else None
         if hasattr(self, 'pin_hash'):
             d["has_pin"] = self.pin_hash is not None
+        if hasattr(self, 'staff_code'):
+            d["staff_code"] = self.staff_code
         if hasattr(self, 'loyalty_points'):
             d["loyalty_points"] = self.loyalty_points or 0
         return d
@@ -219,9 +230,11 @@ class MenuItem(db.Model):
     is_veg = Column(Boolean, default=True)
     is_gluten_free = Column(Boolean, default=False)
     spice_level = Column(String(20), default='medium')
+    tag = Column(String(50), nullable=True)
+    admin_rating = Column(Float, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium'):
+    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium', tag=None, admin_rating=None):
         self.code = code
         self.name = name
         self.price = price
@@ -234,9 +247,13 @@ class MenuItem(db.Model):
         self.is_veg = is_veg
         self.is_gluten_free = is_gluten_free
         self.spice_level = spice_level
+        self.tag = tag
+        self.admin_rating = admin_rating
 
     @property
     def average_rating(self):
+        if self.admin_rating is not None:
+            return float(self.admin_rating)
         if not self.reviews:
             return 0.0
         return round(sum(r.rating for r in self.reviews) / len(self.reviews), 1)
@@ -260,6 +277,8 @@ class MenuItem(db.Model):
             "is_veg": self.is_veg,
             "is_gluten_free": self.is_gluten_free,
             "spice_level": self.spice_level,
+            "tag": self.tag,
+            "admin_rating": self.admin_rating,
             "average_rating": self.average_rating,
             "reviews_count": self.reviews_count
         }
@@ -272,7 +291,7 @@ class OutletStock(db.Model):
     __tablename__ = 'outlet_stocks'
 
     id = Column(Integer, primary_key=True)
-    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=False)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=False, index=True)
     menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
     current_stock = Column(Integer, nullable=False, default=0)
     restock_limit = Column(Integer, nullable=False, default=10)
@@ -498,12 +517,12 @@ class Order(db.Model):
     __tablename__ = 'orders'
 
     id = Column(Integer, primary_key=True)
-    order_type = Column(String(20), nullable=False, default='online') # 'online' or 'pos'
+    order_type = Column(String(20), nullable=False, default='online', index=True) # 'online' or 'pos'
     customer_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True) # Nullable for guest POS sales
-    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True, index=True)
     staff_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     
-    status = Column(String(20), nullable=False, default='pending')
+    status = Column(String(20), nullable=False, default='pending', index=True)
     total_price = Column(Numeric(10, 2), nullable=False, default=0.00)
     tracking_code = Column(String(100), nullable=True)
     tracking_label = Column(Text, nullable=True)
@@ -670,12 +689,13 @@ class Coupon(db.Model):
     is_active = Column(Boolean, default=True)
     min_order_value = Column(Numeric(10, 2), default=0.00)
     is_first_order_only = Column(Boolean, default=False)
+    scope = Column(String(20), default='both')  # 'both', 'outlet', 'customer'
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __init__(self, code, discount_pct=None, discount_amount=None, max_discount_amount=None, 
                  applicable_menu_item_id=None, applicable_customer_id=None,
                  expiry_date=None, usage_limit=None, is_active=True, 
-                 min_order_value=0.00, is_first_order_only=False):
+                 min_order_value=0.00, is_first_order_only=False, scope='both'):
         self.code = code.upper().strip()
         self.discount_pct = int(discount_pct) if discount_pct is not None and str(discount_pct).strip() != "" else None
         self.discount_amount = discount_amount
@@ -688,6 +708,7 @@ class Coupon(db.Model):
         self.is_active = is_active
         self.min_order_value = min_order_value
         self.is_first_order_only = is_first_order_only
+        self.scope = scope if scope in ('both', 'outlet', 'customer') else 'both'
 
     def to_dict(self):
         return {
@@ -704,6 +725,7 @@ class Coupon(db.Model):
             "is_active": self.is_active,
             "min_order_value": float(self.min_order_value) if self.min_order_value is not None else 0.0,
             "is_first_order_only": self.is_first_order_only,
+            "scope": self.scope or "both",
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
 
@@ -973,18 +995,20 @@ class Banner(db.Model):
     __tablename__ = 'banners'
     id = Column(Integer, primary_key=True)
     title = Column(String(100), nullable=False)
-    image_url = Column(String(500), nullable=False)
+    image_url = Column(String(1000), nullable=False)  # Stores path/URL, not raw base64
     target_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
     display_order = Column(Integer, default=0)
+    display_location = Column(String(100), nullable=False, default='home')
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0):
+    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0, display_location='home'):
         self.title = title
         self.image_url = image_url
         self.target_url = target_url
         self.is_active = is_active
         self.display_order = display_order
+        self.display_location = display_location
 
     def to_dict(self):
         return {
@@ -994,8 +1018,10 @@ class Banner(db.Model):
             "target_url": self.target_url,
             "is_active": self.is_active,
             "display_order": self.display_order,
+            "display_location": self.display_location,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
+
 
 # ---------------------------------------------------------------------------
 # StoreSetting — global store configurations (e.g. offline/online)
@@ -1060,4 +1086,43 @@ class SupportTicket(db.Model):
             "attachment_url": self.attachment_url,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+class StockRequest(db.Model):
+    __tablename__ = 'stock_requests'
+    
+    id = Column(Integer, primary_key=True)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=False)
+    staff_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    menu_item_id = Column(Integer, ForeignKey('menu_items.id', ondelete='CASCADE'), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    status = Column(String(20), default='Pending') # Pending, Approved, Fulfilled
+    type = Column(String(20), default='Restock') # Restock, Produce
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    
+    outlet = relationship('Outlet', foreign_keys=[outlet_id])
+    staff = relationship('User', foreign_keys=[staff_id])
+    menu_item = relationship('MenuItem', foreign_keys=[menu_item_id])
+    
+    def __init__(self, outlet_id, menu_item_id, quantity, staff_id=None, request_type='Restock'):
+        self.outlet_id = outlet_id
+        self.menu_item_id = menu_item_id
+        self.quantity = quantity
+        self.staff_id = staff_id
+        self.type = request_type
+        
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "outlet_id": self.outlet_id,
+            "outlet_name": self.outlet.name if self.outlet else "Unknown",
+            "staff_id": self.staff_id,
+            "staff_name": self.staff.first_name if self.staff else "Admin",
+            "menu_item_id": self.menu_item_id,
+            "menu_item_name": self.menu_item.name if self.menu_item else "Unknown",
+            "quantity": self.quantity,
+            "status": self.status,
+            "type": self.type,
+            "created_at": self.created_at.isoformat() if self.created_at else None
         }

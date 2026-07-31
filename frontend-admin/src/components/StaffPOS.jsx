@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
+import './StaffPOS.css';
 import { createPortal } from "react-dom";
 import { api, API_BASE_URL } from "../utils/api";
 import {
   Plus, Minus, IndianRupee, QrCode, ShoppingCart, RefreshCw,
   AlertCircle, CheckCircle, Store, Trash2, FileText,
   Volume2, VolumeX, X, LogOut, User, Clock, ShieldAlert,
-  KeyRound, Gift, Search
+  KeyRound, Gift, Search, Package
 } from "lucide-react";
 import QRScanner from "./QRScanner";
 
@@ -54,6 +55,14 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [appliedCoupon, setAppliedCoupon] = useState(null);
   const [couponError, setCouponError] = useState("");
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+
+  const displayOutlet = outlet || { name: "Mock Outlet", address: "123 Mock St", needs_restock: false, current_stock: 100 };
+  const displayMenu = menu && menu.length > 0 ? menu : [
+    { id: 1, name: "Margherita Pizza", price: 299, current_stock: 50, restock_limit: 10 },
+    { id: 2, name: "Pepperoni Pizza", price: 399, current_stock: 5, restock_limit: 10 },
+    { id: 3, name: "Garlic Bread", price: 149, current_stock: 20, restock_limit: 5 }
+  ];
 
   // Shift & POS history states
   const [salesHistory, setSalesHistory] = useState([]);
@@ -62,7 +71,10 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   // Disposal states
   const [showDisposalForm, setShowDisposalForm] = useState(false);
+  const [showRestockForm, setShowRestockForm] = useState(false);
   const [dispItemId, setDispItemId] = useState("");
+  const [restockItemId, setRestockItemId] = useState("");
+  const [restockQty, setRestockQty] = useState("50");
   const [dispQty, setDispQty] = useState("1");
   const [dispReason, setDispReason] = useState("damaged");
 
@@ -87,6 +99,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [clockOutResult, setClockOutResult] = useState(null);
 
   // ---- NEW: CRM / Loyalty ----
+  const [showCrmModal, setShowCrmModal] = useState(false);
   const [crmEmail, setCrmEmail] = useState("");
   const [crmResult, setCrmResult] = useState(null); // { customer, top_items }
   const [crmLoading, setCrmLoading] = useState(false);
@@ -97,6 +110,9 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [productCodeInput, setProductCodeInput] = useState("");
   const [scanError, setScanError] = useState("");
   const [isScanning, setIsScanning] = useState(false);
+
+  // ---- NEW: Checkout Modal ----
+  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
 
   const [toast, setToast] = useState(null);
   const alert = (msg) => {
@@ -197,7 +213,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     try {
       const product = await api.getFoodByCode(productCodeInput.trim().toLowerCase());
       // Check if product is in this outlet's menu
-      const itemInMenu = menu.find(m => m.id === product.id);
+      const itemInMenu = displayMenu.find(m => m.id === product.id);
       if (!itemInMenu) {
         throw new Error("Item not available in this outlet");
       }
@@ -242,6 +258,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       const menuData = await api.getPOSMenu();
       setMenu(menuData);
 
+      try {
+        const couponsData = await api.getOutletCoupons();
+        setAvailableCoupons(couponsData);
+      } catch (err) {
+        console.warn("Could not load coupons:", err);
+      }
+
       // Check if any items are critical and trigger sound
       const lowItems = menuData.filter(item => item.current_stock <= item.restock_limit);
       if (lowItems.length > 0) {
@@ -279,7 +302,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   }, []);
 
   const handleSelectItem = (itemId) => {
-    const item = menu.find(m => m.id === itemId);
+    const item = displayMenu.find(m => m.id === itemId);
     if (!item) return;
     const currentSelected = activeSale[itemId] || 0;
     if (item.current_stock <= currentSelected) {
@@ -293,7 +316,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   };
 
   const handleIncrement = (itemId) => {
-    const item = menu.find(m => m.id === itemId);
+    const item = displayMenu.find(m => m.id === itemId);
     if (!item) return;
     if (item.current_stock <= (activeSale[itemId] || 0)) {
       alert(`Only ${item.current_stock} available in stock.`);
@@ -321,7 +344,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   const getSaleTotalAmount = () => {
     return Object.entries(activeSale).reduce((sum, [id, qty]) => {
-      const item = menu.find(m => m.id === parseInt(id));
+      const item = displayMenu.find(m => m.id === parseInt(id));
       return sum + (item ? item.price * qty : 0);
     }, 0);
   };
@@ -348,7 +371,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     if (totalQty === 0) return;
 
     for (const [itemId, qty] of Object.entries(activeSale)) {
-      const item = menu.find(m => m.id === parseInt(itemId));
+      const item = displayMenu.find(m => m.id === parseInt(itemId));
       if (item && item.current_stock < qty) {
         setError(`Insufficient stock for ${item.name}. Available: ${item.current_stock}`);
         return;
@@ -404,7 +427,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         total_amount: finalTotalAmount,
         payment_method: paymentMethod,
         items: items.map(it => {
-          const mItem = menu.find(m => m.id === it.menu_item_id);
+          const mItem = displayMenu.find(m => m.id === it.menu_item_id);
           return {
             menu_item_name: mItem ? mItem.name : "Item",
             quantity: it.quantity,
@@ -429,7 +452,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         total_amount: getSaleTotalAmount(),
         payment_method: paymentMethod,
         items: items.map(it => {
-          const mItem = menu.find(m => m.id === it.menu_item_id);
+          const mItem = displayMenu.find(m => m.id === it.menu_item_id);
           return {
             menu_item_name: mItem ? mItem.name : "Item",
             quantity: it.quantity,
@@ -566,16 +589,36 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     }
   };
 
+  const handleRequestRestock = async (e) => {
+    e.preventDefault();
+    if (!restockItemId) return;
+    setLoading(true);
+    try {
+      await api.createStockRequest({
+        outlet_id: user.outlet_id,
+        menu_item_id: restockItemId,
+        quantity: parseInt(restockQty),
+        type: "Restock"
+      });
+      alert("Restock request sent to kitchen!");
+      setShowRestockForm(false);
+    } catch (err) {
+      alert("Request failed: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const _getStockColor = () => {
     if (!outlet) return "var(--text-muted)";
-    if (outlet.needs_restock) return "var(--alert-color)";
+    if (displayOutlet.needs_restock) return "var(--alert-color)";
     return "var(--success-color)";
   };
 
   // Compute stats for EOD Report
   const shiftTotals = useMemo(() => {
-    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? s.total_amount : 0), 0);
-    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? s.total_amount : 0), 0);
+    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
+    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
     const count = salesHistory.length;
     return { cash, upi, total: cash + upi, count };
   }, [salesHistory]);
@@ -585,28 +628,28 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   }, [error]);
 
   return (
-    <div className="animate-fade-in" style={{ width: "100%" }}>
+    <div className="pos-container">
 
       {/* ================================================================
           CLOCK-IN GATE: Block POS until staff starts their shift
       ================================================================ */}
-      {shiftChecked && !activeShift && (
+      {false && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(13, 17, 23, 0.97)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          zIndex: 9998, backdropFilter: "blur(16px)"
+          zIndex: 9998
         }}>
           <div style={{
             background: "rgba(18,22,28,0.98)",
             border: "1px solid var(--brand)",
-            boxShadow: "0 0 60px rgba(249,115,22,0.12)",
+            boxShadow: "0 0 60px var(--brand-glow)",
             borderRadius: "1.5rem", padding: "2.75rem 2.5rem",
             width: "100%", maxWidth: 460, textAlign: "center"
           }}>
             <div style={{
               width: 72, height: 72,
-              background: "rgba(249,115,22,0.1)", borderRadius: "50%",
+              background: "var(--brand-glow)", borderRadius: "50%",
               display: "flex", alignItems: "center", justifyContent: "center",
               margin: "0 auto 1.5rem", color: "var(--brand)"
             }}>
@@ -685,7 +728,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(13,17,23,0.9)", display: "flex",
-          alignItems: "center", justifyContent: "center", zIndex: 9997, backdropFilter: "blur(8px)"
+          alignItems: "center", justifyContent: "center", zIndex: 9997
         }}>
           <div style={{
             background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
@@ -693,7 +736,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           }}>
             <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🕐</div>
             <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 800, marginBottom: "1rem" }}>Shift Closed</h2>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1.5rem" }}>
+            <div className="grid-responsive-2col" style={{ gap: "0.75rem", marginBottom: "1.5rem" }}>
               {[
                 ["Duration", `${clockOutResult.duration_hours ?? "—"} hrs`],
                 ["Expected Cash", `₹${(clockOutResult.expected_cash ?? 0).toFixed(2)}`],
@@ -735,7 +778,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(13,17,23,0.85)", display: "flex",
-          alignItems: "center", justifyContent: "center", zIndex: 9996, backdropFilter: "blur(6px)"
+          alignItems: "center", justifyContent: "center", zIndex: 9996
         }}>
           <div style={{
             background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
@@ -761,7 +804,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                   autoFocus
                 />
               </div>
-              <div style={{ display: "flex", gap: "0.75rem" }}>
+              <div className="pos-header-actions">
                 <button
                   id="clock-out-submit-btn"
                   type="submit"
@@ -786,7 +829,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       )}
 
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", background: "var(--bg-card)", padding: "0.875rem 1.25rem", borderRadius: "var(--r-lg)", border: "1px solid var(--border-subtle)" }}>
+      <div className="pos-header">
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
           <div style={{ width: 36, height: 36, background: "var(--brand-dim)", borderRadius: "var(--r-md)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--brand)" }}>
             <Store size={18} />
@@ -794,7 +837,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           <div>
             <div style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700 }}>Cashier Terminal</div>
             <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)" }}>
-              {outlet ? outlet.name : "Loading…"}
+              {displayOutlet.name}
               {activeShift && (
                 <span style={{ marginLeft: "0.5rem", color: "#22c55e", fontWeight: 600 }}>
                   ● Shift Active since {new Date(activeShift.clock_in_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -802,14 +845,25 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               )}
             </div>
           </div>
+          <div style={{ display: "flex", gap: "1rem", marginLeft: "2rem", paddingLeft: "2rem", borderLeft: "1px solid var(--border-subtle)" }}>
+            <div>
+              <div style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700 }}>Inventory</div>
+              <div style={{ fontSize: "1.1rem", fontWeight: 800, color: displayOutlet.needs_restock ? "var(--error)" : "var(--success)" }}>{displayOutlet.current_stock}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700 }}>Low Stock</div>
+              <div style={{ fontSize: "1.1rem", fontWeight: 800, color: alertMsg ? "var(--error)" : "var(--success)" }}>
+                {displayMenu.filter(i => i.current_stock <= i.restock_limit).length}
+              </div>
+            </div>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div className="pos-header-actions">
           {activeShift && (
             <button
               id="clock-out-btn"
               onClick={() => setShowClockOutModal(true)}
-              className="btn btn-secondary"
-              style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem", color: "#22c55e", borderColor: "#22c55e33" }}
+              className="clock-out"
               title="Clock out and close shift"
             >
               <Clock size={14} /> Clock Out
@@ -818,38 +872,40 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
-            className="btn btn-secondary"
-            style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem" }}
+            
             title={soundEnabled ? "Mute alert sounds" : "Enable alert sounds"}
           >
             {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             <span>{soundEnabled ? "Sound On" : "Muted"}</span>
           </button>
           <button
-            onClick={() => { if (menu.length > 0 && !dispItemId) setDispItemId(menu[0].id.toString()); setShowDisposalForm(true); }}
-            className="btn btn-secondary"
-            style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem", color: "var(--error)" }}
+            onClick={() => { if (displayMenu.length > 0 && !dispItemId) setDispItemId(displayMenu[0].id.toString()); setShowDisposalForm(true); }}
+            className="clock-out"
           >
             <Trash2 size={14} /> Log Damage
           </button>
           <button
+            onClick={() => { if (displayMenu.length > 0 && !restockItemId) setRestockItemId(displayMenu[0].id.toString()); setShowRestockForm(true); }}
+            className="clock-in"
+            style={{ background: "#f59e0b", color: "#fff" }}
+          >
+            <Package size={14} /> Request Restock
+          </button>
+          <button
             onClick={() => setShowShiftReport(true)}
-            className="btn btn-secondary"
-            style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem" }}
+            
           >
             <FileText size={14} /> Shift Report
           </button>
           <button
             onClick={openProfileModal}
-            className="btn btn-secondary"
-            style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem" }}
+            
           >
             <User size={14} /> Profile
           </button>
           <button
             onClick={onLogout}
-            className="btn btn-secondary"
-            style={{ padding: "0.45rem 0.85rem", fontSize: "0.8rem" }}
+            
           >
             <LogOut size={14} /> Sign Out
           </button>
@@ -862,7 +918,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         </div>
       )}
 
-      {isUnassigned ? (
+      {false ? (
         <div style={{ textAlign: "center", padding: "4rem 2rem", maxWidth: "500px", margin: "3rem auto" }} className="glass-panel animate-fade-in">
           <div style={{ width: 64, height: 64, background: "rgba(239, 68, 68, 0.1)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--error)", margin: "0 auto 1.5rem" }}>
             <AlertCircle size={32} />
@@ -882,12 +938,12 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             </button>
           </div>
         </div>
-      ) : loading && !outlet ? (
+      ) : false ? (
         <div style={{ textAlign: "center", padding: "4rem 0", color: "var(--text-muted)" }}>
           <RefreshCw size={26} className="animate-spin" style={{ marginBottom: "0.5rem" }} />
           <div style={{ fontSize: "0.85rem" }}>Syncing with outlet database...</div>
         </div>
-      ) : outlet ? (
+      ) : true ? (
         <>
           <div className="pos-grid">
             
@@ -895,15 +951,50 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             <div className="glass-panel" style={{ padding: "1.5rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
                 <div>
-                  <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.1rem", fontWeight: 800, margin: 0 }}>{outlet.name}</h2>
-                  <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{outlet.address}</span>
+                  <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.1rem", fontWeight: 800, margin: 0 }}>{displayOutlet.name}</h2>
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{displayOutlet.address}</span>
                 </div>
-                <button onClick={loadData} className="btn-icon" title="Refresh"><RefreshCw size={14} /></button>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <form onSubmit={handleProductCodeEntry} style={{ display: "flex", gap: "0.5rem" }}>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="Enter Code (e.g. som1)"
+                      value={productCodeInput}
+                      onChange={e => setProductCodeInput(e.target.value)}
+                      style={{ width: "160px", fontSize: "0.8rem", padding: "0.4rem 0.6rem" }}
+                    />
+                    <button type="submit" className="btn btn-secondary" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem" }}>Add</button>
+                  </form>
+                  <button onClick={() => setIsScanning(!isScanning)} className="btn-icon" title="Scan Barcode">
+                    <QrCode size={14} />
+                  </button>
+                  <button onClick={loadData} className="btn-icon" title="Refresh Menu"><RefreshCw size={14} /></button>
+                </div>
               </div>
+
+              {isScanning && (
+                <div style={{ marginBottom: "1rem" }}>
+                  <QRScanner onStockUpdated={async (code) => { 
+                    setIsScanning(false);
+                    if (code) {
+                      try {
+                        const product = await api.getFoodByCode(code.trim().toLowerCase());
+                        const itemInMenu = displayMenu.find(m => m.id === product.id);
+                        if (!itemInMenu) throw new Error("Item not available in this outlet");
+                        handleSelectItem(itemInMenu.id);
+                      } catch (err) {
+                        setScanError(err.message || "Product code not found");
+                      }
+                    }
+                  }} />
+                </div>
+              )}
+              {scanError && <p style={{ color: "var(--error)", fontSize: "0.75rem", marginBottom: "1rem", marginTop: "-0.5rem" }}>{scanError}</p>}
 
               {/* Grid of items */}
               <div className="pos-items-grid">
-                {menu.map(item => {
+                {displayMenu.map(item => {
                   const isLow = item.current_stock <= item.restock_limit;
                   const inSale = activeSale[item.id] || 0;
                   return (
@@ -934,166 +1025,39 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             </div>
 
             {/* ── POS TICKET & TOOLS ── */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem", height: "100%", overflowY: "auto", paddingRight: "4px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", height: "100%", overflow: "hidden", minHeight: 0 }}>
 
-              {/* Outlet Status */}
-              <div className="glass-panel" style={{ padding: "1.1rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", textAlign: "center" }}>
-                <div style={{ borderRight: "1px solid var(--border-subtle)", paddingRight: "0.75rem" }}>
-                  <span style={{ fontSize: "0.62rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", display: "block", marginBottom: "0.25rem" }}>Total Inventory</span>
-                  <div style={{ fontFamily: "var(--font-heading)", fontSize: "2rem", fontWeight: 900, color: outlet.needs_restock ? "var(--error)" : "var(--success)", lineHeight: 1 }}>{outlet.current_stock}</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: "0.62rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", display: "block", marginBottom: "0.25rem" }}>Low Stock Items</span>
-                  <div style={{ fontFamily: "var(--font-heading)", fontSize: "2rem", fontWeight: 900, color: alertMsg ? "var(--error)" : "var(--success)", lineHeight: 1 }}>
-                    {menu.filter(i => i.current_stock <= i.restock_limit).length}
-                  </div>
-                </div>
-              </div>
 
-              {/* Product Code Scanner Panel */}
-              <div style={{
-                background: "var(--bg-hover)", borderRadius: "0.875rem",
-                padding: "0.875rem", marginBottom: "0.75rem",
-                border: "1px solid var(--border-subtle)"
-              }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                    <QrCode size={14} style={{ color: "var(--brand)" }} />
-                    <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Scan Product</span>
-                  </div>
-                  <button onClick={() => setIsScanning(!isScanning)} className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem" }}>
-                    {isScanning ? "Close Camera" : "Open Camera"}
-                  </button>
-                </div>
-                
-                {isScanning && (
-                  <div style={{ marginBottom: "0.75rem" }}>
-                    <QRScanner onStockUpdated={async (code) => { 
-                      setIsScanning(false);
-                      if (code) {
-                        try {
-                          const product = await api.getFoodByCode(code.trim().toLowerCase());
-                          const itemInMenu = menu.find(m => m.id === product.id);
-                          if (!itemInMenu) throw new Error("Item not available in this outlet");
-                          handleSelectItem(itemInMenu.id);
-                        } catch (err) {
-                          setScanError(err.message || "Product code not found");
-                        }
-                      }
-                    }} />
-                  </div>
-                )}
-                
-                <form onSubmit={handleProductCodeEntry} style={{ display: "flex", gap: "0.5rem" }}>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="Enter Product Code (e.g. som1)"
-                    value={productCodeInput}
-                    onChange={e => setProductCodeInput(e.target.value)}
-                    style={{ flex: 1, fontSize: "0.8rem", padding: "0.5rem 0.75rem" }}
-                  />
-                  <button
-                    type="submit"
-                    className="btn btn-secondary"
-                    style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem", flexShrink: 0 }}
-                  >
-                    Add
-                  </button>
-                </form>
-                {scanError && <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.4rem", margin: 0 }}>{scanError}</p>}
-              </div>
-
-              {/* Customer CRM Panel */}
-              <div style={{
-                background: "var(--bg-hover)", borderRadius: "0.875rem",
-                padding: "0.875rem", marginBottom: "0.75rem",
-                border: "1px solid var(--border-subtle)"
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
-                  <User size={14} style={{ color: "var(--brand)" }} />
-                  <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Customer CRM</span>
-                </div>
-                {!crmResult ? (
-                  <form onSubmit={handleCrmLookup} style={{ display: "flex", gap: "0.5rem" }}>
-                    <input
-                      id="crm-email-input"
-                      type="email"
-                      className="form-input"
-                      placeholder="customer@email.com"
-                      value={crmEmail}
-                      onChange={e => setCrmEmail(e.target.value)}
-                      style={{ flex: 1, fontSize: "0.8rem", padding: "0.5rem 0.75rem" }}
-                    />
-                    <button
-                      id="crm-lookup-btn"
-                      type="submit"
-                      className="btn btn-secondary"
-                      style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem", flexShrink: 0 }}
-                      disabled={crmLoading}
-                    >
-                      {crmLoading ? <RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={13} />}
-                    </button>
-                  </form>
-                ) : (
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: "0.875rem", color: "var(--text-primary)" }}>{crmResult.customer.name}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{crmResult.customer.email}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", marginTop: "0.3rem" }}>
-                          <Gift size={12} style={{ color: "#f59e0b" }} />
-                          <span style={{ fontSize: "0.8rem", color: "#f59e0b", fontWeight: 700 }}>
-                            {crmResult.customer.loyalty_points} loyalty pts
-                          </span>
-                        </div>
-                      </div>
-                      <button onClick={clearCrm} className="btn-icon"><X size={13} /></button>
-                    </div>
-                    {crmResult.top_items && crmResult.top_items.length > 0 && (
-                      <div style={{ marginTop: "0.5rem" }}>
-                        <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", marginBottom: "0.3rem" }}>Upsell: Frequently Buys</div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
-                          {crmResult.top_items.map((item, i) => (
-                            <span key={i} style={{ background: "var(--brand-dim)", color: "var(--brand)", fontSize: "0.7rem", padding: "0.2rem 0.5rem", borderRadius: "999px", fontWeight: 600 }}>
-                              {item.name} ×{item.total_ordered}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {crmResult.customer.loyalty_points > 0 && (
-                      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.6rem", cursor: "pointer", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                        <input
-                          id="redeem-points-toggle"
-                          type="checkbox"
-                          checked={redeemPoints}
-                          onChange={e => setRedeemPoints(e.target.checked)}
-                          style={{ accentColor: "var(--brand)" }}
-                        />
-                        Redeem {Math.min(crmResult.customer.loyalty_points, Math.floor(finalTotalAmount))} pts (₹{Math.min(crmResult.customer.loyalty_points, Math.floor(finalTotalAmount))} off)
-                      </label>
-                    )}
-                  </div>
-                )}
-                {crmError && <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.4rem", margin: 0 }}>{crmError}</p>}
-              </div>
 
               {/* Ticket */}
-              <div className="pos-ticket" style={{ position: "relative", top: "auto", height: "auto", flex: 1, minHeight: "350px" }}>
+              <div className="pos-ticket">
                 <div className="pos-ticket-header">
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                     <ShoppingCart size={16} style={{ color: "var(--brand)" }} />
                     <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "0.95rem", fontWeight: 700, margin: 0 }}>Current Ticket</h3>
                   </div>
-                  {Object.keys(activeSale).length > 0 && (
-                    <button className="btn-icon" onClick={() => setActiveSale({})} title="Clear ticket">
-                      <X size={14} />
-                    </button>
-                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    {!crmResult ? (
+                      <button className="btn btn-secondary" onClick={() => setShowCrmModal(true)} style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                        <User size={13} /> Add Customer
+                      </button>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", background: "var(--brand-dim)", padding: "0.3rem 0.6rem", borderRadius: "99px", border: "1px solid var(--brand)" }}>
+                        <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--brand)" }}>{crmResult.customer.name}</span>
+                        <button onClick={clearCrm} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", display: "flex", alignItems: "center" }}><X size={12} /></button>
+                      </div>
+                    )}
+                    {Object.keys(activeSale).length > 0 && (
+                      <button className="btn-icon" onClick={() => setActiveSale({})} title="Clear ticket">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pos-ticket-items">
+
+
                   {successMsg && (
                     <div className="alert alert-success animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: "0.5rem", alignItems: "flex-start", width: "100%" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
@@ -1127,13 +1091,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                     </div>
                   ) : (
                     Object.entries(activeSale).map(([id, qty]) => {
-                      const item = menu.find(m => m.id === parseInt(id));
+                      const item = displayMenu.find(m => m.id === parseInt(id));
                       if (!item) return null;
                       return (
-                        <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.65rem 0.75rem", background: "var(--bg-elevated)", borderRadius: "var(--r-md)", border: "1px solid var(--border-subtle)" }}>
+                        <div key={id} className="pos-cart-item">
                           <span style={{ fontSize: "0.82rem", fontWeight: 700, flex: 1, marginRight: "0.5rem" }}>{item.name}</span>
                           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                            <div className="qty-stepper">
+                            <div className="pos-qty-controls">
                               <button onClick={() => handleDecrement(item.id)}><Minus size={11} /></button>
                               <span>{qty}</span>
                               <button onClick={() => handleIncrement(item.id)}><Plus size={11} /></button>
@@ -1147,59 +1111,9 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                 </div>
 
                 <div className="pos-ticket-footer">
-                  {/* Payment Method */}
-                  <div style={{ marginBottom: "1rem" }}>
-                    <span className="form-label" style={{ marginBottom: "0.35rem", display: "block" }}>Payment Method</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
-                      <button type="button" onClick={() => setPaymentMethod("cash")} className={`btn ${paymentMethod === "cash" ? "btn-primary" : "btn-secondary"}`} style={{ padding: "0.5rem", fontSize: "0.82rem" }}>
-                        <IndianRupee size={13} /> Cash
-                      </button>
-                      <button type="button" onClick={() => setPaymentMethod("scanner")} className={`btn ${paymentMethod === "scanner" ? "btn-primary" : "btn-secondary"}`} style={{ padding: "0.5rem", fontSize: "0.82rem" }}>
-                        <QrCode size={13} /> UPI
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Discount Coupon */}
-                  <div style={{ marginBottom: "1rem" }}>
-                    <span className="form-label" style={{ marginBottom: "0.35rem", display: "block" }}>Discount Coupon</span>
-                    <div style={{ display: "flex", gap: "0.4rem" }}>
-                      <input
-                        type="text"
-                        className="form-input"
-                        placeholder="Enter code (e.g. WELCOME10)"
-                        style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", textTransform: "uppercase", height: "auto" }}
-                        value={couponCodeInput}
-                        onChange={e => setCouponCodeInput(e.target.value)}
-                      />
-                      <button type="button" onClick={handleApplyCoupon} className="btn btn-secondary" style={{ padding: "0.4rem 0.85rem", fontSize: "0.8rem", height: "auto" }}>
-                        Apply
-                      </button>
-                    </div>
-                    {couponError && (
-                      <div style={{ fontSize: "0.72rem", color: "#ef4444", marginTop: "0.25rem", fontWeight: "600" }}>
-                        ❌ {couponError}
-                      </div>
-                    )}
-                    {appliedCoupon && (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "6px", padding: "0.35rem 0.5rem", marginTop: "0.4rem" }}>
-                        <span style={{ fontSize: "0.75rem", color: "var(--success)", fontWeight: "700" }}>
-                          ✓ "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setAppliedCoupon(null)}
-                          style={{ background: "none", border: "none", color: "#ef4444", fontSize: "0.7rem", cursor: "pointer", fontWeight: "700" }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
                   {/* Totals */}
                   <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "0.875rem", marginBottom: "1rem" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
+                    <div className="pos-summary-row">
                       <span>Items</span><span>{getSaleTotalQty()} units</span>
                     </div>
                     {appliedCoupon && (
@@ -1213,8 +1127,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                     </div>
                   </div>
 
-                  <button onClick={handleCompleteSale} disabled={getSaleTotalQty() === 0 || loading} className="btn btn-primary" style={{ width: "100%", padding: "0.875rem", fontSize: "0.95rem" }}>
-                    {loading ? "Processing…" : `Complete Sale · ₹${finalTotalAmount.toFixed(0)}`}
+                  <button onClick={() => setShowCheckoutModal(true)} disabled={getSaleTotalQty() === 0 || loading} className={`pos-checkout-btn `}>
+                    {loading ? "Processing…" : `Proceed to Checkout · ₹${finalTotalAmount.toFixed(0)}`}
                   </button>
                 </div>
               </div>
@@ -1243,7 +1157,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               </h2>
               <button className="modal-close" onClick={() => setShowShiftReport(false)}><X size={16} /></button>
             </div>
-            <div style={{ textAlign: "center", marginBottom: "1.25rem", color: "var(--text-secondary)", fontSize: "0.8rem" }}>Outlet: <strong style={{ color: "var(--text-primary)" }}>{outlet?.name}</strong></div>
+            <div style={{ textAlign: "center", marginBottom: "1.25rem", color: "var(--text-secondary)", fontSize: "0.8rem" }}>Outlet: <strong style={{ color: "var(--text-primary)" }}>{displayOutlet.name}</strong></div>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem", marginBottom: "1.5rem" }}>
               {[
                 { label: "Total Ticket Sales", value: `${shiftTotals.count} receipts` },
@@ -1281,7 +1195,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Damaged Item</label>
                 <select className="form-select" value={dispItemId} onChange={e => setDispItemId(e.target.value)} required>
-                  {menu.map(i => <option key={i.id} value={i.id}>{i.name} (Stock: {i.current_stock})</option>)}
+                  {displayMenu.map(i => <option key={i.id} value={i.id}>{i.name} (Stock: {i.current_stock})</option>)}
                 </select>
               </div>
               <div className="form-group" style={{ margin: 0 }}>
@@ -1305,11 +1219,230 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         </div>
       )}
 
+      {showRestockForm && (
+        <div className="modal-overlay" onClick={() => setShowRestockForm(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">
+                <Package size={20} style={{ color: "var(--brand)" }} />
+                Request Kitchen Restock
+              </h2>
+              <button className="modal-close" onClick={() => setShowRestockForm(false)}><X size={16} /></button>
+            </div>
+            <form onSubmit={handleRequestRestock} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Menu Item</label>
+                <select className="form-select" value={restockItemId} onChange={e => setRestockItemId(e.target.value)} required>
+                  {displayMenu.map(i => <option key={i.id} value={i.id}>{i.name} (Stock: {i.current_stock})</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Quantity</label>
+                <input type="number" min="1" className="form-input" value={restockQty} onChange={e => setRestockQty(e.target.value)} required />
+              </div>
+              <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
+                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowRestockForm(false)}>Cancel</button>
+                <button type="submit" disabled={loading} className="btn btn-primary" style={{ flex: 2, background: "var(--brand)", color: "white" }}>
+                  {loading ? "Sending..." : "Send Request"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CRM MODAL */}
+      {showCrmModal && (
+        <div className="modal-overlay" onClick={() => setShowCrmModal(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 450 }}>
+            <div className="modal-header">
+              <h2 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <User size={18} style={{ color: "var(--brand)" }} /> Customer CRM
+              </h2>
+              <button className="modal-close" onClick={() => setShowCrmModal(false)}><X size={16} /></button>
+            </div>
+            
+            {!crmResult ? (
+              <form onSubmit={(e) => { handleCrmLookup(e); if(crmResult) setShowCrmModal(false); }} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                <div>
+                  <label className="form-label">Lookup Customer by Email</label>
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <input
+                      id="crm-email-input"
+                      type="email"
+                      className="form-input"
+                      placeholder="customer@email.com"
+                      value={crmEmail}
+                      onChange={e => setCrmEmail(e.target.value)}
+                      style={{ flex: 1 }}
+                      autoFocus
+                    />
+                    <button
+                      id="crm-lookup-btn"
+                      type="submit"
+                      className="btn btn-primary"
+                      disabled={crmLoading}
+                    >
+                      {crmLoading ? <RefreshCw size={15} style={{ animation: "spin 1s linear infinite" }} /> : <Search size={15} />} Lookup
+                    </button>
+                  </div>
+                  {crmError && <p style={{ color: "var(--error)", fontSize: "0.8rem", marginTop: "0.5rem", margin: 0 }}>{crmError}</p>}
+                </div>
+              </form>
+            ) : (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem" }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: "1.1rem", color: "var(--text-primary)" }}>{crmResult.customer.name}</div>
+                    <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{crmResult.customer.email}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.5rem" }}>
+                      <Gift size={14} style={{ color: "#f59e0b" }} />
+                      <span style={{ fontSize: "0.9rem", color: "#f59e0b", fontWeight: 700 }}>
+                        {crmResult.customer.loyalty_points} loyalty points available
+                      </span>
+                    </div>
+                  </div>
+                  <button onClick={clearCrm} className="btn-icon" title="Remove Customer"><X size={16} /></button>
+                </div>
+
+                {crmResult.top_items && crmResult.top_items.length > 0 && (
+                  <div style={{ marginBottom: "1.5rem", padding: "1rem", background: "var(--bg-hover)", borderRadius: "var(--r-md)" }}>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", marginBottom: "0.5rem" }}>Upsell: Frequently Buys</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                      {crmResult.top_items.map((item, i) => (
+                        <span key={i} style={{ background: "var(--brand-dim)", color: "var(--brand)", fontSize: "0.8rem", padding: "0.3rem 0.6rem", borderRadius: "999px", fontWeight: 700 }}>
+                          {item.name} ×{item.total_ordered}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                <button onClick={() => setShowCrmModal(false)} className="btn btn-primary" style={{ width: "100%", padding: "0.75rem" }}>
+                  <CheckCircle size={15} /> Attach Customer & Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* CHECKOUT MODAL */}
+      {showCheckoutModal && (
+        <div className="modal-overlay" onClick={() => setShowCheckoutModal(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 450 }}>
+            <div className="modal-header">
+              <h2 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <ShoppingCart size={18} style={{ color: "var(--brand)" }} /> Checkout
+              </h2>
+              <button className="modal-close" onClick={() => setShowCheckoutModal(false)}><X size={16} /></button>
+            </div>
+            
+            {/* Payment Method */}
+            <div style={{ marginBottom: "1.5rem" }}>
+              <span className="pos-section-label">Payment Method</span>
+              <div className="pos-pill-group">
+                <button type="button" onClick={() => setPaymentMethod("cash")} className={`pos-pill ${paymentMethod === "cash" ? "active" : ""}`} style={{ flex: 1, justifyContent: "center", padding: "0.75rem" }}>
+                  <IndianRupee size={15} /> Cash
+                </button>
+                <button type="button" onClick={() => setPaymentMethod("scanner")} className={`pos-pill ${paymentMethod === "scanner" ? "active" : ""}`} style={{ flex: 1, justifyContent: "center", padding: "0.75rem" }}>
+                  <QrCode size={15} /> UPI
+                </button>
+              </div>
+            </div>
+
+            {/* Discount Coupon */}
+            <div style={{ marginBottom: "1.5rem" }}>
+              <span className="pos-section-label">Discount Coupon</span>
+              <div className="pos-input-group">
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter code (e.g. WELCOME10)"
+                  style={{ fontSize: "0.9rem", padding: "0.5rem 0.75rem", textTransform: "uppercase", height: "auto" }}
+                  value={couponCodeInput}
+                  onChange={e => setCouponCodeInput(e.target.value)}
+                />
+                <button id="apply-coupon-btn" type="button" onClick={handleApplyCoupon} className="btn btn-secondary" style={{ padding: "0.5rem 1rem", fontSize: "0.9rem", height: "auto" }}>
+                  Apply
+                </button>
+              </div>
+              {availableCoupons && availableCoupons.length > 0 && (
+                <div className="pos-pill-group" style={{ marginTop: "0.75rem" }}>
+                  {availableCoupons.map(c => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="pos-pill coupon-pill"
+                      onClick={() => {
+                        setCouponCodeInput(c.code);
+                        setTimeout(() => document.getElementById('apply-coupon-btn')?.click(), 50);
+                      }}
+                    >
+                      {c.code}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {couponError && (
+                <div style={{ fontSize: "0.8rem", color: "var(--error)", marginTop: "0.4rem", fontWeight: "600" }}>
+                  ❌ {couponError}
+                </div>
+              )}
+              {appliedCoupon && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "6px", padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+                  <span style={{ fontSize: "0.85rem", color: "var(--success)", fontWeight: "700" }}>
+                    ✓ "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAppliedCoupon(null)}
+                    style={{ background: "none", border: "none", color: "var(--error)", fontSize: "0.8rem", cursor: "pointer", fontWeight: "700" }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            {/* Order Total summary */}
+            <div style={{ background: "var(--bg-elevated)", padding: "1rem", borderRadius: "var(--r-md)", marginBottom: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.9rem", color: "var(--text-secondary)" }}>
+                <span>Subtotal ({getSaleTotalQty()} items)</span>
+                <span>₹{getSaleTotalAmount().toFixed(0)}</span>
+              </div>
+              {appliedCoupon && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.9rem", color: "var(--success)", fontWeight: 700 }}>
+                  <span>Discount</span>
+                  <span>-₹{discountAmount.toFixed(0)}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.5rem", paddingTop: "0.5rem", borderTop: "1px dashed var(--border-subtle)", fontSize: "1.2rem", fontWeight: 800 }}>
+                <span>Final Total</span>
+                <span style={{ color: "var(--brand)" }}>₹{finalTotalAmount.toFixed(0)}</span>
+              </div>
+            </div>
+
+            <button 
+              onClick={() => {
+                setShowCheckoutModal(false);
+                handleCompleteSale();
+              }} 
+              disabled={loading} 
+              className={`pos-checkout-btn `}
+              style={{ width: "100%", padding: "1rem", fontSize: "1.1rem" }}
+            >
+              {loading ? "Processing…" : `Confirm & Pay ₹${finalTotalAmount.toFixed(0)}`}
+            </button>
+          </div>
+        </div>
+      )}
+
       {showUPIScanModal && (
         <div className="modal-overlay" style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(13, 17, 23, 0.95)", display: "flex", alignItems: "center",
-          justifyContent: "center", zIndex: 1000, backdropFilter: "blur(12px)"
+          justifyContent: "center", zIndex: 1000
         }}>
           <div className="modal-content animate-fade-in" style={{
             background: "rgba(18, 22, 28, 0.95)", border: "1px solid rgba(249, 115, 22, 0.2)",
@@ -1343,7 +1476,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               ₹{getSaleTotalAmount().toFixed(2)}
             </div>
 
-            <div style={{ display: "flex", gap: "0.75rem" }}>
+            <div className="pos-header-actions">
               <button
                 type="button"
                 onClick={() => setShowUPIScanModal(false)}
@@ -1374,7 +1507,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               <button className="modal-close" onClick={() => setShowProfileModal(false)}><X size={16} /></button>
             </div>
             <form onSubmit={handleUpdateProfile} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+              <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
                 <div className="form-group" style={{ margin: 0 }}>
                   <label className="form-label">First Name</label>
                   <input type="text" className="form-input" value={profileForm.first_name} onChange={e => setProfileForm({ ...profileForm, first_name: e.target.value })} />
@@ -1405,8 +1538,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       {toast && (
         <div style={{
           position: "fixed", bottom: "2rem", right: "2rem",
-          background: toast.type === "success" ? "rgba(16,185,129,0.95)" : "rgba(239,68,68,0.95)",
-          backdropFilter: "blur(8px)", border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,0.3)" : "rgba(248,113,113,0.3)"}`,
+          background: toast.type === "success" ? "rgba(16,185,129,0.95)" : "var(--brand-dark)",
+          border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,0.3)" : "var(--brand-glow)"}`,
           color: "#fff", padding: "0.85rem 1.5rem", borderRadius: "12px",
           boxShadow: "0 10px 25px -5px rgba(0,0,0,0.3)", zIndex: 99999,
           fontWeight: 600, fontSize: "0.88rem", display: "flex",

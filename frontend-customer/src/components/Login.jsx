@@ -27,6 +27,7 @@ export default function Login({ onLoginSuccess }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
+  const [referralCode, setReferralCode] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -48,12 +49,13 @@ export default function Login({ onLoginSuccess }) {
     setError(""); setMessage(""); setLoading(true);
     try {
       if (isRegistering) {
-        await api.register(email, password, "customer", firstName, lastName, phone, null);
+        await api.register(email, password, "customer", firstName, lastName, phone, null, referralCode.trim() || null);
         setMessage("Account created! Please sign in.");
         setIsRegistering(false);
         setPassword("");
+        setReferralCode("");
       } else {
-        const data = await api.login(email, password);
+        const data = await api.login({ email, password });
         onLoginSuccess(data.user);
       }
     } catch (err) {
@@ -66,7 +68,13 @@ export default function Login({ onLoginSuccess }) {
   const handleQuickLogin = async (qEmail, qPass) => {
     setError(""); setMessage(""); setLoading(true);
     try {
-      const data = await api.login(qEmail, qPass);
+      let payload = {};
+      if (qEmail.includes("@") || qEmail === "admin") {
+         payload = { email: qEmail, password: qPass };
+      } else {
+         payload = { staff_code: qEmail, pin: qPass };
+      }
+      const data = await api.login(payload);
       onLoginSuccess(data.user);
     } catch (err) {
       setError(err.message || "Quick login failed.");
@@ -128,8 +136,8 @@ export default function Login({ onLoginSuccess }) {
           }}>
             {STATS.map(s => (
               <div key={s.label} style={{
-                background: "rgba(249,115,22,0.08)",
-                border: "1px solid rgba(249,115,22,0.2)",
+                background: "var(--brand-glow)",
+                border: "1px solid var(--brand-glow)",
                 borderRadius: "var(--r-lg)", padding: "0.875rem",
                 textAlign: "center"
               }}>
@@ -275,6 +283,12 @@ export default function Login({ onLoginSuccess }) {
                   <label className="form-label">Phone Number</label>
                   <input type="tel" required maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setPhone(val); }} />
                 </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    🎁 Referral Code <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 400 }}>(optional — earn 50 bonus points!)</span>
+                  </label>
+                  <input type="text" className="form-input" placeholder="e.g. SARAH2024" value={referralCode} onChange={e => setReferralCode(e.target.value.toUpperCase())} style={{ letterSpacing: "0.05em" }} />
+                </div>
               </div>
             )}
 
@@ -306,7 +320,7 @@ export default function Login({ onLoginSuccess }) {
           {!isRegistering && import.meta.env.DEV && (
             <>
               <div className="divider">Quick Demo Access</div>
-              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
                 <button className="quick-login-btn" onClick={() => handleQuickLogin("admin", "admin")} disabled={loading}>
                   <Shield size={16} />
                   <span>Admin</span>
@@ -315,9 +329,13 @@ export default function Login({ onLoginSuccess }) {
                   <ShoppingBag size={16} />
                   <span>Customer</span>
                 </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("staff@brand.com", "staff")} disabled={loading}>
+                <button className="quick-login-btn" onClick={() => handleQuickLogin("1001", "staff123")} disabled={loading} title="Staff Code: 1001">
                   <Store size={16} />
-                  <span>Staff</span>
+                  <span>Staff<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 1001</small></span>
+                </button>
+                <button className="quick-login-btn" onClick={() => handleQuickLogin("2001", "kitchen123")} disabled={loading} title="Kitchen Code: 2001">
+                  <Zap size={16} />
+                  <span>Kitchen<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 2001</small></span>
                 </button>
                 <button className="quick-login-btn" onClick={() => handleQuickLogin("owner@brand.com", "owner")} disabled={loading}>
                   <UserPlus size={16} />
@@ -334,7 +352,7 @@ export default function Login({ onLoginSuccess }) {
         <div className="modal-overlay" style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center",
-          justifyContent: "center", zIndex: 1000, backdropFilter: "blur(8px)"
+          justifyContent: "center", zIndex: 1000
         }}>
           <div className="modal-content animate-fade-in" style={{
             background: "rgba(18, 22, 28, 0.95)", border: "1px solid rgba(249, 115, 22, 0.2)",

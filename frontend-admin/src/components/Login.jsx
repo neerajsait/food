@@ -23,10 +23,15 @@ export default function Login({ onLoginSuccess }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
+  
+  const [loginMode, setLoginMode] = useState("admin"); // "admin" | "staff"
+  const [staffCode, setStaffCode] = useState("");
+  const [pin, setPin] = useState("");
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
+  const [referralCode, setReferralCode] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -48,12 +53,14 @@ export default function Login({ onLoginSuccess }) {
     setError(""); setMessage(""); setLoading(true);
     try {
       if (isRegistering) {
-        await api.register(email, password, "customer", firstName, lastName, phone, null);
+        await api.register(email, password, "customer", firstName, lastName, phone, null, referralCode.trim() || null);
         setMessage("Account created! Please sign in.");
         setIsRegistering(false);
         setPassword("");
+        setReferralCode("");
       } else {
-        const data = await api.login(email, password);
+        const payload = loginMode === "staff" ? { staff_code: staffCode, pin } : { email, password };
+        const data = await api.login(payload);
         onLoginSuccess(data.user);
       }
     } catch (err) {
@@ -66,7 +73,7 @@ export default function Login({ onLoginSuccess }) {
   const handleQuickLogin = async (qEmail, qPass) => {
     setError(""); setMessage(""); setLoading(true);
     try {
-      const data = await api.login(qEmail, qPass);
+      const data = await api.login({ email: qEmail, password: qPass });
       onLoginSuccess(data.user);
     } catch (err) {
       setError(err.message || "Quick login failed.");
@@ -128,8 +135,8 @@ export default function Login({ onLoginSuccess }) {
           }}>
             {STATS.map(s => (
               <div key={s.label} style={{
-                background: "rgba(249,115,22,0.08)",
-                border: "1px solid rgba(249,115,22,0.2)",
+                background: "var(--brand-glow)",
+                border: "1px solid var(--brand-glow)",
                 borderRadius: "var(--r-lg)", padding: "0.875rem",
                 textAlign: "center"
               }}>
@@ -186,74 +193,159 @@ export default function Login({ onLoginSuccess }) {
           )}
 
           <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {/* Email */}
-            <div className="form-group" style={{ margin: 0 }}>
-              <label className="form-label">Email or Username</label>
-              <div className="input-icon-wrap">
-                <Mail size={15} className="input-icon" />
-                <input
-                  type="text"
-                  required
-                  className="form-input"
-                  placeholder="admin or email@example.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* Password */}
-            <div className="form-group" style={{ margin: 0 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <label className="form-label">Password</label>
-                {!isRegistering && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowForgotModal(true);
-                      setForgotStep(1);
-                      setForgotEmail(email);
-                      setForgotToken("");
-                      setForgotNewPassword("");
-                      setForgotError("");
-                      setForgotMessage("");
-                    }}
-                    style={{
-                      background: "none", border: "none", color: "var(--brand)",
-                      cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
-                      padding: 0, textDecoration: "underline", fontFamily: "var(--font-body)"
-                    }}
-                  >
-                    Forgot Password?
-                  </button>
-                )}
-              </div>
-              <div className="input-icon-wrap" style={{ position: "relative" }}>
-
-                <Lock size={15} className="input-icon" />
-                <input
-                  type={showPass ? "text" : "password"}
-                  required
-                  className="form-input"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  style={{ paddingRight: "2.8rem" }}
-                />
+            
+            {!isRegistering && (
+              <div style={{ display: "flex", gap: "10px", marginTop: "1rem" }}>
                 <button
                   type="button"
-                  onClick={() => setShowPass(!showPass)}
+                  onClick={() => setLoginMode("admin")}
                   style={{
-                    position: "absolute", right: "0.9rem", top: "50%",
-                    transform: "translateY(-50%)", background: "none",
-                    border: "none", color: "var(--text-muted)", cursor: "pointer",
-                    display: "flex"
+                    flex: 1, padding: "0.5rem", borderRadius: "var(--r-md)",
+                    border: loginMode === "admin" ? "2px solid var(--brand)" : "1px solid var(--border)",
+                    background: loginMode === "admin" ? "var(--brand-glow)" : "transparent",
+                    color: loginMode === "admin" ? "var(--brand)" : "var(--text-secondary)",
+                    cursor: "pointer", fontWeight: 600
                   }}
                 >
-                  {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                  Admin / Owner
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLoginMode("staff")}
+                  style={{
+                    flex: 1, padding: "0.5rem", borderRadius: "var(--r-md)",
+                    border: loginMode === "staff" ? "2px solid var(--brand)" : "1px solid var(--border)",
+                    background: loginMode === "staff" ? "var(--brand-glow)" : "transparent",
+                    color: loginMode === "staff" ? "var(--brand)" : "var(--text-secondary)",
+                    cursor: "pointer", fontWeight: 600
+                  }}
+                >
+                  Staff / Kitchen
                 </button>
               </div>
-            </div>
+            )}
+
+            {isRegistering || loginMode === "admin" ? (
+              <>
+                {/* Email */}
+                <div className="form-group" style={{ margin: 0, marginTop: isRegistering ? 0 : "1rem" }}>
+                  <label className="form-label">Email or Username</label>
+                  <div className="input-icon-wrap">
+                    <Mail size={15} className="input-icon" />
+                    <input
+                      type="text"
+                      required
+                      className="form-input"
+                      placeholder="admin or email@example.com"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* Password */}
+                <div className="form-group" style={{ margin: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <label className="form-label">Password</label>
+                    {!isRegistering && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowForgotModal(true);
+                          setForgotStep(1);
+                          setForgotEmail(email);
+                          setForgotToken("");
+                          setForgotNewPassword("");
+                          setForgotError("");
+                          setForgotMessage("");
+                        }}
+                        style={{
+                          background: "none", border: "none", color: "var(--brand)",
+                          cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
+                          padding: 0, textDecoration: "underline", fontFamily: "var(--font-body)"
+                        }}
+                      >
+                        Forgot Password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="input-icon-wrap" style={{ position: "relative" }}>
+
+                    <Lock size={15} className="input-icon" />
+                    <input
+                      type={showPass ? "text" : "password"}
+                      required
+                      className="form-input"
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      style={{ paddingRight: "2.8rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass(!showPass)}
+                      style={{
+                        position: "absolute", right: "0.9rem", top: "50%",
+                        transform: "translateY(-50%)", background: "none",
+                        border: "none", color: "var(--text-muted)", cursor: "pointer",
+                        display: "flex"
+                      }}
+                    >
+                      {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Staff Code */}
+                <div className="form-group" style={{ margin: 0, marginTop: "1rem" }}>
+                  <label className="form-label">4-Digit Staff ID</label>
+                  <div className="input-icon-wrap">
+                    <UserPlus size={15} className="input-icon" />
+                    <input
+                      type="text"
+                      required
+                      maxLength="4"
+                      className="form-input"
+                      placeholder="e.g. 1234"
+                      value={staffCode}
+                      onChange={e => setStaffCode(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* PIN */}
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">4-Digit PIN</label>
+                  <div className="input-icon-wrap" style={{ position: "relative" }}>
+                    <Lock size={15} className="input-icon" />
+                    <input
+                      type={showPass ? "text" : "password"}
+                      required
+                      maxLength="4"
+                      className="form-input"
+                      placeholder="••••"
+                      value={pin}
+                      onChange={e => setPin(e.target.value)}
+                      style={{ paddingRight: "2.8rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass(!showPass)}
+                      style={{
+                        position: "absolute", right: "0.9rem", top: "50%",
+                        transform: "translateY(-50%)", background: "none",
+                        border: "none", color: "var(--text-muted)", cursor: "pointer",
+                        display: "flex"
+                      }}
+                    >
+                      {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Registration extra fields */}
             {isRegistering && (
@@ -261,7 +353,7 @@ export default function Login({ onLoginSuccess }) {
                 borderTop: "1px solid var(--border-subtle)", paddingTop: "1rem",
                 display: "flex", flexDirection: "column", gap: "0.75rem"
               }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
                   <div className="form-group" style={{ margin: 0 }}>
                     <label className="form-label">First Name</label>
                     <input type="text" required className="form-input" placeholder="Priya" value={firstName} onChange={e => setFirstName(e.target.value)} />
@@ -274,6 +366,12 @@ export default function Login({ onLoginSuccess }) {
                 <div className="form-group" style={{ margin: 0 }}>
                   <label className="form-label">Phone Number</label>
                   <input type="tel" required maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setPhone(val); }} />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    🎁 Referral Code <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 400 }}>(optional — earn 50 bonus points!)</span>
+                  </label>
+                  <input type="text" className="form-input" placeholder="e.g. SARAH2024" value={referralCode} onChange={e => setReferralCode(e.target.value.toUpperCase())} style={{ letterSpacing: "0.05em" }} />
                 </div>
               </div>
             )}
@@ -306,7 +404,7 @@ export default function Login({ onLoginSuccess }) {
           {!isRegistering && import.meta.env.DEV && (
             <>
               <div className="divider">Quick Demo Access</div>
-              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
                 <button className="quick-login-btn" onClick={() => handleQuickLogin("admin", "admin")} disabled={loading}>
                   <Shield size={16} />
                   <span>Admin</span>
@@ -315,9 +413,13 @@ export default function Login({ onLoginSuccess }) {
                   <ShoppingBag size={16} />
                   <span>Customer</span>
                 </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("staff@brand.com", "staff")} disabled={loading}>
+                <button className="quick-login-btn" onClick={() => handleQuickLogin("1001", "staff123")} disabled={loading} title="Staff Code: 1001">
                   <Store size={16} />
-                  <span>Staff</span>
+                  <span>Staff<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 1001</small></span>
+                </button>
+                <button className="quick-login-btn" onClick={() => handleQuickLogin("2001", "kitchen123")} disabled={loading} title="Kitchen Code: 2001">
+                  <Zap size={16} />
+                  <span>Kitchen<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 2001</small></span>
                 </button>
                 <button className="quick-login-btn" onClick={() => handleQuickLogin("owner@brand.com", "owner")} disabled={loading}>
                   <UserPlus size={16} />
@@ -334,7 +436,7 @@ export default function Login({ onLoginSuccess }) {
         <div className="modal-overlay" style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
           background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center",
-          justifyContent: "center", zIndex: 1000, backdropFilter: "blur(8px)"
+          justifyContent: "center", zIndex: 1000
         }}>
           <div className="modal-content animate-fade-in" style={{
             background: "rgba(18, 22, 28, 0.95)", border: "1px solid rgba(249, 115, 22, 0.2)",

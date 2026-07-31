@@ -66,7 +66,7 @@ export default function QRGenerator({ outlets, menuItems }) {
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem", alignItems: "start" }}>
+    <div className="grid-responsive-2col" style={{ gap: "1.5rem", alignItems: "start" }}>
       <div className="glass-panel" style={{ padding: "1.5rem" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: "700", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <QrCode size={18} /> Generate Dispatch QR
@@ -89,7 +89,7 @@ export default function QRGenerator({ outlets, menuItems }) {
               ))}
             </select>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group">
               <label className="form-label">Quantity *</label>
               <input type="number" min="1" name="qty" className="form-input" placeholder="e.g. 50" value={form.qty} onChange={handleChange} required />
@@ -99,7 +99,7 @@ export default function QRGenerator({ outlets, menuItems }) {
               <input type="text" name="order_id" className="form-input" placeholder="e.g. 1024" value={form.order_id} onChange={handleChange} />
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group">
               <label className="form-label">Batch Number (optional)</label>
               <input type="text" name="batch_number" className="form-input" placeholder="e.g. BATCH-01" value={form.batch_number} onChange={handleChange} />

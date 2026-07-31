@@ -5,13 +5,14 @@ import {
   Package, AlertTriangle, Plus, Store, MapPin, 
   Globe, RefreshCw, Edit3, X, LogOut, User
 } from "lucide-react";
+import "./OutletOwnerView.css";
 
 /* ── Modal Wrapper ── */
 function Modal({ open, onClose, title, children, width = 480 }) {
   if (!open) return null;
   return createPortal(
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box" style={{ maxWidth: width }} onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay animate-fade-overlay" onClick={onClose}>
+      <div className="modal-box animate-scale-up" style={{ maxWidth: width }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2 className="modal-title">{title}</h2>
           <button className="modal-close" onClick={onClose}><X size={16} /></button>
@@ -22,6 +23,7 @@ function Modal({ open, onClose, title, children, width = 480 }) {
     document.body
   );
 }
+
 
 export default function OutletOwnerView({ onLogout, dbMode }) {
   const [toast, setToast] = useState(null);
@@ -228,122 +230,199 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
   const totalStock = outlets.reduce((sum, o) => sum + o.current_stock, 0);
 
   return (
-    <div className="animate-fade-in" style={{ padding: "2rem" }}>
+    <div className="animate-fade-in" style={{ padding: "1rem", maxWidth: "100%", margin: "0" }}>
       {/* ── Page Header ── */}
-      <div className="page-header">
-        <div className="page-header-left">
-          <h1>Outlet Owner Portal</h1>
-          <p>Monitor stock, manage your assigned retail outlets, and edit parameters</p>
+      <div style={{
+        background: "linear-gradient(135deg, var(--brand) 0%, #388E3C 100%)",
+        padding: "2rem",
+        borderRadius: "20px",
+        boxShadow: "0 10px 25px rgba(67, 160, 71, 0.15)",
+        color: "#ffffff",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: "1.5rem",
+        marginBottom: "2rem",
+        position: "relative",
+        overflow: "hidden"
+      }}>
+        <div style={{ position: "absolute", inset: 0, opacity: 0.1, background: "radial-gradient(circle at top right, #fff 0%, transparent 60%)" }} />
+        <div style={{ position: "relative", zIndex: 2 }}>
+          <h1 style={{ fontFamily: "var(--font-heading)", fontSize: "2rem", fontWeight: 900, margin: 0, letterSpacing: "-0.02em" }}>Outlet Owner Dashboard</h1>
+          <p style={{ opacity: 0.85, fontSize: "0.9rem", margin: "0.25rem 0 0", fontWeight: 500 }}>Monitor live stock levels, configure retail stations, and audit safety limits</p>
         </div>
-        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", position: "relative", zIndex: 2 }}>
           {dbMode && (
             <div style={{
-              fontSize: "0.72rem", color: dbMode.includes("Live") ? "var(--success)" : "var(--warning)",
-              background: dbMode.includes("Live") ? "var(--success-bg)" : "var(--warning-bg)",
-              padding: "0.3rem 0.75rem", borderRadius: "var(--r-full)", fontWeight: 600,
-              border: "1px solid", borderColor: dbMode.includes("Live") ? "rgba(22,163,74,0.2)" : "rgba(217,119,6,0.2)",
-              marginRight: "0.25rem"
+              fontSize: "0.72rem", color: "#FFF",
+              background: "rgba(255,255,255,0.15)",
+              backdropFilter: "blur(4px)",
+              padding: "0.4rem 0.85rem", borderRadius: "var(--r-full)", fontWeight: 700,
+              border: "1px solid rgba(255,255,255,0.25)",
+              textTransform: "uppercase", letterSpacing: "0.05em"
             }}>
-              {dbMode.includes("Live") ? "Live Backend" : "Demo Mode"}
+              {dbMode.includes("Live") ? "● Live Database" : "● Demo Mode"}
             </div>
           )}
-          <button className="btn btn-secondary" onClick={loadData} disabled={loading}>
-            <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
-            {loading ? "Loading…" : "Refresh"}
+          <button className="btn" onClick={loadData} disabled={loading} style={{
+            background: "rgba(255,255,255,0.2)", color: "#FFF", border: "1px solid rgba(255,255,255,0.25)",
+            padding: "0.6rem 1.2rem", borderRadius: "10px", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.4rem",
+            cursor: "pointer", transition: "all 0.2s"
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.3)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.2)"; }}>
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            {loading ? "Refreshing..." : "Refresh"}
           </button>
-          <button className="btn btn-primary" onClick={() => setShowAddOutlet(true)}>
-            <Plus size={15} /> Register Outlet
+          <button className="btn" onClick={() => setShowAddOutlet(true)} style={{
+            background: "#FFF", color: "var(--brand)", border: "none",
+            padding: "0.6rem 1.2rem", borderRadius: "10px", fontWeight: "800", display: "flex", alignItems: "center", gap: "0.4rem",
+            cursor: "pointer", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", transition: "all 0.2s"
+          }}
+          onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 6px 16px rgba(0,0,0,0.12)"; }}
+          onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)"; }}>
+            <Plus size={14} /> Register Outlet
           </button>
-          <button className="btn btn-secondary" onClick={openProfileModal}>
-            <User size={15} /> My Profile
+          <button className="btn" onClick={openProfileModal} style={{
+            background: "rgba(255,255,255,0.1)", color: "#FFF", border: "1px solid rgba(255,255,255,0.15)",
+            padding: "0.6rem 1.2rem", borderRadius: "10px", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.4rem",
+            cursor: "pointer", transition: "all 0.2s"
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.2)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; }}>
+            <User size={14} /> My Profile
           </button>
-          <button className="btn btn-secondary" onClick={onLogout}>
-            <LogOut size={15} /> Sign Out
+          <button className="btn" onClick={onLogout} style={{
+            background: "transparent", color: "#FFF", border: "none",
+            padding: "0.6rem 1.2rem", borderRadius: "10px", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.4rem",
+            cursor: "pointer", transition: "all 0.2s"
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = "rgba(255,255,255,0.8)"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "#FFF"; }}>
+            <LogOut size={14} /> Sign Out
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="alert alert-error" style={{ marginBottom: "1.5rem" }}>
+        <div className="alert alert-error" style={{ marginBottom: "1.5rem", borderRadius: "12px", borderLeft: "4px solid var(--error)" }}>
           <AlertTriangle size={15} /> {error}
         </div>
       )}
 
       {/* ── KPI Widgets ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1.25rem", marginBottom: "2rem" }}>
-        <div className="stat-card">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1.5rem", marginBottom: "2.5rem" }}>
+        <div className="stat-card" style={{
+          background: "var(--bg-elevated)", border: "1px solid var(--border-light)", borderRadius: "16px", padding: "1.5rem",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.02)", display: "flex", flexDirection: "column", gap: "0.5rem",
+          transition: "transform 0.3s var(--ease), box-shadow 0.3s ease", cursor: "default"
+        }}
+        onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.06)"; }}
+        onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 10px 30px rgba(0,0,0,0.02)"; }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span className="stat-card-label">Managed Outlets</span>
-            <div style={{ width: 36, height: 36, borderRadius: "var(--r-md)", background: "rgba(249,115,22,0.12)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--brand)" }}><Store size={18} /></div>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Managed Outlets</span>
+            <div style={{ width: 40, height: 40, borderRadius: "12px", background: "rgba(67, 160, 71, 0.08)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--brand)" }}><Store size={20} /></div>
           </div>
-          <div className="stat-card-value">{outlets.length}</div>
-          <div className="stat-card-sub">Assigned under ownership</div>
+          <div style={{ fontSize: "2.2rem", fontWeight: 900, color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>{outlets.length}</div>
+          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Assigned under ownership</div>
         </div>
-        <div className="stat-card">
+
+        <div className="stat-card" style={{
+          background: "var(--bg-elevated)", border: "1px solid var(--border-light)", borderRadius: "16px", padding: "1.5rem",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.02)", display: "flex", flexDirection: "column", gap: "0.5rem",
+          transition: "transform 0.3s var(--ease), box-shadow 0.3s ease", cursor: "default"
+        }}
+        onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.06)"; }}
+        onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 10px 30px rgba(0,0,0,0.02)"; }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span className="stat-card-label">Restock Alerts</span>
-            <div style={{ width: 36, height: 36, borderRadius: "var(--r-md)", background: "rgba(239,68,68,0.12)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--error)" }}><AlertTriangle size={18} /></div>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Restock Alerts</span>
+            <div style={{ width: 40, height: 40, borderRadius: "12px", background: lowStockCount > 0 ? "rgba(239, 68, 68, 0.08)" : "rgba(16, 185, 129, 0.08)", display: "flex", alignItems: "center", justifyContent: "center", color: lowStockCount > 0 ? "var(--error)" : "var(--success)" }}><AlertTriangle size={20} /></div>
           </div>
-          <div className="stat-card-value" style={{ color: lowStockCount > 0 ? "var(--error)" : "var(--success)" }}>{lowStockCount}</div>
-          <div className="stat-card-sub">{lowStockCount > 0 ? "Requires attention" : "All stock levels OK"}</div>
+          <div style={{ fontSize: "2.2rem", fontWeight: 900, color: lowStockCount > 0 ? "var(--error)" : "var(--success)", fontFamily: "var(--font-heading)" }}>{lowStockCount}</div>
+          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{lowStockCount > 0 ? "Action required immediately" : "All outlet stocks are healthy"}</div>
         </div>
-        <div className="stat-card">
+
+        <div className="stat-card" style={{
+          background: "var(--bg-elevated)", border: "1px solid var(--border-light)", borderRadius: "16px", padding: "1.5rem",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.02)", display: "flex", flexDirection: "column", gap: "0.5rem",
+          transition: "transform 0.3s var(--ease), box-shadow 0.3s ease", cursor: "default"
+        }}
+        onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.06)"; }}
+        onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 10px 30px rgba(0,0,0,0.02)"; }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span className="stat-card-label">Total Unit Stock</span>
-            <div style={{ width: 36, height: 36, borderRadius: "var(--r-md)", background: "rgba(34,197,94,0.12)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--success)" }}><Package size={18} /></div>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Total Unit Stock</span>
+            <div style={{ width: 40, height: 40, borderRadius: "12px", background: "rgba(141, 78, 39, 0.08)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent-terracotta)" }}><Package size={20} /></div>
           </div>
-          <div className="stat-card-value">{totalStock}</div>
-          <div className="stat-card-sub">Across all managed locations</div>
+          <div style={{ fontSize: "2.2rem", fontWeight: 900, color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>{totalStock}</div>
+          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Aggregated across all locations</div>
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.5fr", gap: "1.5rem", alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.6fr", gap: "2rem", alignItems: "start" }}>
         
         {/* ── Left Side: Outlets List ── */}
-        <div className="glass-panel" style={{ padding: "1.5rem" }}>
-          <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.1rem", fontWeight: 700, marginBottom: "1rem" }}>My Outlets</h2>
+        <div style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border-light)",
+          borderRadius: "20px",
+          padding: "1.75rem",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.02)"
+        }}>
+          <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, marginBottom: "1.25rem", color: "var(--text-primary)" }}>My Outlets</h2>
           {outlets.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon"><Store size={22} /></div>
-              <p>No outlets registered yet. Click 'Register Outlet' to add one.</p>
+            <div className="empty-state" style={{ padding: "3rem 1rem", textAlign: "center" }}>
+              <div style={{ width: 44, height: 44, background: "var(--bg-secondary)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1rem", color: "var(--text-muted)" }}><Store size={20} /></div>
+              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>No outlets registered yet. Click 'Register Outlet' to add one.</p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {outlets.map(o => {
                 const isSelected = selectedOutlet?.id === o.id;
                 return (
                   <div
                     key={o.id}
                     onClick={() => handleSelectOutlet(o)}
-                    className="glass-card"
                     style={{
                       cursor: "pointer",
-                      padding: "1rem",
-                      border: isSelected ? "1px solid var(--brand)" : "1px solid var(--border-subtle)",
-                      boxShadow: isSelected ? "0 0 0 1px var(--brand-dim), var(--shadow-glow)" : undefined,
-                      transition: "all 0.2s ease"
+                      padding: "1.25rem",
+                      borderRadius: "14px",
+                      background: isSelected ? "rgba(67,160,71,0.04)" : "var(--bg-secondary)",
+                      border: isSelected ? "2px solid var(--brand)" : "1px solid var(--border-light)",
+                      boxShadow: isSelected ? "0 8px 20px rgba(67,160,71,0.08)" : "none",
+                      transform: isSelected ? "translateX(4px)" : "none",
+                      transition: "all 0.25s cubic-bezier(0.16, 1, 0.3, 1)"
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "0.5rem" }}>
-                      <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>{o.name}</span>
+                      <span style={{ fontWeight: 800, fontSize: "0.95rem", color: "var(--text-primary)" }}>{o.name}</span>
                       <button
                         className="btn-icon"
-                        style={{ padding: "0.25rem" }}
+                        style={{
+                          padding: "0.3rem", borderRadius: "6px", background: "var(--bg-elevated)", border: "1px solid var(--border-light)",
+                          cursor: "pointer", color: "var(--text-secondary)", transition: "all 0.2s"
+                        }}
                         onClick={(e) => { e.stopPropagation(); handleStartEdit(o); }}
                         title="Edit parameters"
                       >
                         <Edit3 size={12} />
                       </button>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem", color: "var(--text-secondary)", marginBottom: "0.75rem" }}>
-                      <MapPin size={11} /> {o.address}
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "1rem" }}>
+                      <MapPin size={12} style={{ color: "var(--brand)" }} /> {o.address}
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Stock: <strong>{o.current_stock}</strong> units</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px dashed var(--border-light)", paddingTop: "0.75rem" }}>
+                      <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>Stock units: <strong style={{ color: "var(--text-primary)" }}>{o.current_stock}</strong></span>
                       {o.needs_restock ? (
-                        <span className="badge-status status-cancelled" style={{ fontSize: "0.62rem" }}>Restock</span>
+                        <span style={{
+                          background: "var(--error-bg)", color: "var(--error)", fontSize: "0.68rem", fontWeight: "800",
+                          padding: "2px 8px", borderRadius: "var(--r-full)", textTransform: "uppercase", letterSpacing: "0.03em"
+                        }}>Restock Alert</span>
                       ) : (
-                        <span className="badge-status status-delivered" style={{ fontSize: "0.62rem" }}>Healthy</span>
+                        <span style={{
+                          background: "var(--success-bg)", color: "var(--success)", fontSize: "0.68rem", fontWeight: "800",
+                          padding: "2px 8px", borderRadius: "var(--r-full)", textTransform: "uppercase", letterSpacing: "0.03em"
+                        }}>Healthy Stock</span>
                       )}
                     </div>
                   </div>
@@ -354,52 +433,96 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         </div>
 
         {/* ── Right Side: Outlet Details & Stock levels ── */}
-        <div className="glass-panel" style={{ padding: "1.5rem" }}>
+        <div style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border-light)",
+          borderRadius: "20px",
+          padding: "1.75rem",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.02)",
+          minHeight: "400px"
+        }}>
           {selectedOutlet ? (
-            <div>
-              <div style={{ borderBottom: "1px solid var(--border-subtle)", paddingBottom: "1rem", marginBottom: "1.25rem" }}>
-                <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, color: "var(--brand)" }}>{selectedOutlet.name}</h2>
-                <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "0.25rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
-                  <MapPin size={13} /> {selectedOutlet.address}
+            <div className="animate-fade-in" key={selectedOutlet.id}>
+              <div style={{ borderBottom: "1px solid var(--border-light)", paddingBottom: "1.25rem", marginBottom: "1.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span style={{ fontSize: "1.5rem" }}>🏪</span>
+                  <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 900, color: "var(--brand)", margin: 0 }}>{selectedOutlet.name}</h2>
+                </div>
+                <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                  <MapPin size={14} style={{ color: "var(--brand)" }} /> {selectedOutlet.address}
                 </p>
                 {selectedOutlet.latitude && (
-                  <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.15rem" }}>
-                    Coordinates: {selectedOutlet.latitude}, {selectedOutlet.longitude}
-                  </p>
+                  <div style={{ display: "flex", gap: "0.75rem", fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.35rem" }}>
+                    <span>📍 Lat: {selectedOutlet.latitude}</span>
+                    <span>📍 Lng: {selectedOutlet.longitude}</span>
+                  </div>
                 )}
               </div>
 
-              <h3 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: "0.75rem" }}>Station Stock & Safety Limits</h3>
-              <div className="table-container">
-                <table className="custom-table" style={{ fontSize: "0.8rem" }}>
+              <h3 style={{ fontSize: "0.95rem", fontWeight: 800, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.4rem", color: "var(--text-primary)" }}>
+                <Package size={15} style={{ color: "var(--brand)" }} /> Station Stock & Safety Limits
+              </h3>
+              <div className="table-container" style={{ border: "1px solid var(--border-light)", borderRadius: "12px", overflow: "hidden" }}>
+                <table className="custom-table" style={{ fontSize: "0.82rem", width: "100%", borderCollapse: "collapse" }}>
                   <thead>
-                    <tr>
-                      <th>Product</th>
-                      <th>Price</th>
-                      <th>Safety Limit</th>
-                      <th>Current Stock</th>
-                      <th>Status</th>
+                    <tr style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border-light)" }}>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "left", fontWeight: "700" }}>Product</th>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "left", fontWeight: "700" }}>Price</th>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "left", fontWeight: "700" }}>Safety Limit</th>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "left", fontWeight: "700" }}>Current Stock</th>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "left", fontWeight: "700" }}>Status</th>
+                      <th style={{ padding: "0.85rem 1rem", textAlign: "center", fontWeight: "700" }}>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(selectedOutlet.items || []).map(item => (
-                      <tr key={item.menu_item_id}>
-                        <td><strong>{item.menu_item_name}</strong></td>
-                        <td>₹{item.menu_item_price}</td>
-                        <td>{item.restock_limit} units</td>
-                        <td><strong>{item.current_stock}</strong></td>
-                        <td>
-                          {item.current_stock <= item.restock_limit ? (
-                            <span className="badge-status status-cancelled" style={{ fontSize: "0.6" }}>Low</span>
-                          ) : (
-                            <span className="badge-status status-delivered" style={{ fontSize: "0.6" }}>Good</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {(selectedOutlet.items || []).map((item, idx) => {
+                      const isLow = item.current_stock <= item.restock_limit;
+                      return (
+                        <tr key={item.menu_item_id} style={{ borderBottom: "1px solid var(--border-light)", background: idx % 2 === 0 ? "transparent" : "rgba(249,249,249,0.3)" }}>
+                          <td style={{ padding: "0.85rem 1rem" }}><strong>{item.menu_item_name}</strong></td>
+                          <td style={{ padding: "0.85rem 1rem", color: "var(--text-secondary)" }}>₹{item.menu_item_price}</td>
+                          <td style={{ padding: "0.85rem 1rem", color: "var(--text-secondary)" }}>{item.restock_limit} units</td>
+                          <td style={{ padding: "0.85rem 1rem" }}><strong style={{ color: isLow ? "var(--error)" : "var(--text-primary)" }}>{item.current_stock}</strong></td>
+                          <td style={{ padding: "0.85rem 1rem" }}>
+                            {isLow ? (
+                              <span style={{
+                                background: "var(--error-bg)", color: "var(--error)", fontSize: "0.65rem", fontWeight: "800",
+                                padding: "2px 8px", borderRadius: "6px", textTransform: "uppercase", letterSpacing: "0.03em"
+                              }}>Low Stock</span>
+                            ) : (
+                              <span style={{
+                                background: "var(--success-bg)", color: "var(--success)", fontSize: "0.65rem", fontWeight: "800",
+                                padding: "2px 8px", borderRadius: "6px", textTransform: "uppercase", letterSpacing: "0.03em"
+                              }}>Good Stock</span>
+                            )}
+                          </td>
+                          <td style={{ padding: "0.85rem 1rem", textAlign: "center" }}>
+                            <button
+                              className="btn-primary"
+                              style={{ padding: "0.4rem 0.8rem", fontSize: "0.75rem", borderRadius: "6px", border: "none", background: "var(--brand)", color: "#fff", cursor: "pointer", fontWeight: "700" }}
+                              onClick={async () => {
+                                try {
+                                  await api.createStockRequest({
+                                    outlet_id: selectedOutlet.id,
+                                    menu_item_id: item.menu_item_id,
+                                    quantity: 50, // request standard 50 units for now
+                                    type: "Restock"
+                                  });
+                                  alert("Stock request submitted to Kitchen!");
+                                } catch (e) {
+                                  alert(e.message);
+                                }
+                              }}
+                            >
+                              Request Stock
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {(!selectedOutlet.items || selectedOutlet.items.length === 0) && (
                       <tr>
-                        <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", fontStyle: "italic", padding: "1.5rem" }}>
+                        <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", fontStyle: "italic", padding: "2.5rem" }}>
                           No products assigned to this outlet by System Admin yet.
                         </td>
                       </tr>
@@ -409,10 +532,10 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </div>
             </div>
           ) : (
-            <div className="empty-state" style={{ padding: "4rem 2rem" }}>
-              <div className="empty-state-icon"><Package size={24} /></div>
-              <h3>No Outlet Selected</h3>
-              <p>Select an outlet from the left sidebar to view its live stock, parameters, and safety limit reports.</p>
+            <div className="empty-state" style={{ padding: "6rem 2rem", textAlign: "center" }}>
+              <div style={{ width: 56, height: 56, background: "rgba(67, 160, 71, 0.06)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1.25rem", color: "var(--brand)" }}><Package size={26} /></div>
+              <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "0.5rem" }}>No Outlet Selected</h3>
+              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", maxWidth: "320px", margin: "0 auto" }}>Select an outlet from the left sidebar to view its live stock, coordinates, and safety limit reports.</p>
             </div>
           )}
         </div>
@@ -423,7 +546,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
 
       {/* Register Outlet */}
       <Modal open={showAddOutlet} onClose={() => setShowAddOutlet(false)} title="Register New Outlet">
-        <form onSubmit={handleAddOutlet} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <form onSubmit={handleAddOutlet} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Outlet Name</label>
             <input type="text" required className="form-input" placeholder="e.g. Hyderabad Hitech City Stall" value={outletName} onChange={e => setOutletName(e.target.value)} />
@@ -432,17 +555,17 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <label className="form-label">Address</label>
             <div style={{ display: "flex", gap: "0.5rem" }}>
               <input type="text" required className="form-input" placeholder="e.g. Hitech City, Hyderabad, TS" value={outletAddress} onChange={e => setOutletAddress(e.target.value)} />
-              <button type="button" onClick={() => lookupCoordinates(outletAddress, "add")} disabled={geocodingLoading} className="btn btn-secondary" style={{ padding: "0 0.875rem", flexShrink: 0 }} title="Auto-fetch coordinates">
+              <button type="button" onClick={() => lookupCoordinates(outletAddress, "add")} disabled={geocodingLoading} className="btn btn-secondary" style={{ padding: "0 1rem", flexShrink: 0 }} title="Auto-fetch coordinates">
                 {geocodingLoading ? <div style={{ width: 14, height: 14, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> : <Globe size={15} />}
               </button>
             </div>
             {geocodingMsg && (
-              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: geocodingMsg.includes("✓") ? "var(--success)" : "var(--error)" }}>
+              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: geocodingMsg.includes("✓") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
                 {geocodingMsg}
               </div>
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Latitude</label>
               <input type="number" step="any" className="form-input" placeholder="17.4483" value={outletLatitude} onChange={e => setOutletLatitude(e.target.value)} />
@@ -452,16 +575,16 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               <input type="number" step="any" className="form-input" placeholder="78.3741" value={outletLongitude} onChange={e => setOutletLongitude(e.target.value)} />
             </div>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem" }}>
-            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Store size={15} /> Register Outlet</button>
-            <button type="button" onClick={() => setShowAddOutlet(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1, padding: "0.75rem", fontWeight: "700" }}><Store size={15} /> Register Outlet</button>
+            <button type="button" onClick={() => setShowAddOutlet(false)} className="btn btn-secondary" style={{ flex: 1, padding: "0.75rem", fontWeight: "700" }}>Cancel</button>
           </div>
         </form>
       </Modal>
 
       {/* Edit Outlet */}
       <Modal open={showEditOutlet} onClose={() => setShowEditOutlet(false)} title="Edit Outlet Parameters">
-        <form onSubmit={handleEditOutlet} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <form onSubmit={handleEditOutlet} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Outlet Name</label>
             <input type="text" required className="form-input" value={editName} onChange={e => setEditName(e.target.value)} />
@@ -470,17 +593,17 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <label className="form-label">Address</label>
             <div style={{ display: "flex", gap: "0.5rem" }}>
               <input type="text" required className="form-input" value={editAddress} onChange={e => setEditAddress(e.target.value)} />
-              <button type="button" onClick={() => lookupCoordinates(editAddress, "edit")} disabled={editGeocodingLoading} className="btn btn-secondary" style={{ padding: "0 0.875rem", flexShrink: 0 }} title="Auto-fetch coordinates">
+              <button type="button" onClick={() => lookupCoordinates(editAddress, "edit")} disabled={editGeocodingLoading} className="btn btn-secondary" style={{ padding: "0 1rem", flexShrink: 0 }} title="Auto-fetch coordinates">
                 {editGeocodingLoading ? <div style={{ width: 14, height: 14, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> : <Globe size={15} />}
               </button>
             </div>
             {editGeocodingMsg && (
-              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: editGeocodingMsg.includes("✓") ? "var(--success)" : "var(--error)" }}>
+              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: editGeocodingMsg.includes("✓") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
                 {editGeocodingMsg}
               </div>
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+          <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Latitude</label>
               <input type="number" step="any" className="form-input" value={editLatitude} onChange={e => setEditLatitude(e.target.value)} />
@@ -490,16 +613,16 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               <input type="number" step="any" className="form-input" value={editLongitude} onChange={e => setEditLongitude(e.target.value)} />
             </div>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem" }}>
-            <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Save Changes</button>
-            <button type="button" onClick={() => setShowEditOutlet(false)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1, padding: "0.75rem", fontWeight: "700" }}>Save Changes</button>
+            <button type="button" onClick={() => setShowEditOutlet(false)} className="btn btn-secondary" style={{ flex: 1, padding: "0.75rem", fontWeight: "700" }}>Cancel</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={showProfileModal} onClose={() => setShowProfileModal(false)} title="My Profile">
-        <form onSubmit={handleUpdateProfile} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+        <form onSubmit={handleUpdateProfile} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">First Name</label>
               <input type="text" className="form-input" value={profileForm.first_name} onChange={e => setProfileForm({ ...profileForm, first_name: e.target.value })} />
@@ -518,14 +641,14 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <input type="password" minLength={8} className="form-input" value={profileForm.password || ""} onChange={e => setProfileForm({ ...profileForm, password: e.target.value })} placeholder="Leave blank to keep current password" />
             <small style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>Must be at least 8 characters with letters and numbers.</small>
           </div>
-          <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
+          <button type="submit" disabled={profileUpdating} className="btn btn-primary" style={{ marginTop: "0.5rem", padding: "0.75rem", fontWeight: "700" }}>
             {profileUpdating ? "Saving..." : "Save Changes"}
           </button>
         </form>
       </Modal>
 
       {toast && (
-        <div style={{
+        <div className="animate-scale-up" style={{
           position: "fixed", bottom: "2rem", right: "2rem",
           background: toast.type === "success" ? "rgba(16,185,129,0.95)" : "rgba(239,68,68,0.95)",
           backdropFilter: "blur(8px)", border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,0.3)" : "rgba(248,113,113,0.3)"}`,
