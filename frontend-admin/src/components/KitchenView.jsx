@@ -461,20 +461,26 @@ export default function KitchenView({ onLogout, dbMode }) {
                               {r.status}
                             </span>
                           </td>
-                          <td>
-                            {r.status !== "Fulfilled" && (
-                              <button className="btn btn-primary btn-sm" onClick={async () => {
+                          <td style={{ display: "flex", gap: "0.5rem" }}>
+                            {r.status === "Pending" && (
+                              <button className="btn btn-secondary btn-sm" onClick={async () => {
                                 try {
-                                  await api.fulfillStockRequest(r.id);
-                                  alertMsg("Stock request fulfilled!");
+                                  await api.updateStockRequestStatus(r.id, "In Progress");
+                                  alertMsg("Request accepted.");
                                   const reqs = await api.getStockRequests();
                                   setRestockReqs(reqs);
-                                } catch (e) {
-                                  alertMsg(e.message);
-                                }
-                              }}>
-                                Fulfill
-                              </button>
+                                } catch (e) { alertMsg(e.message); }
+                              }}>Accept</button>
+                            )}
+                            {(r.status === "Pending" || r.status === "In Progress") && (
+                              <button className="btn btn-primary btn-sm" onClick={async () => {
+                                try {
+                                  await api.updateStockRequestStatus(r.id, "Dispatched");
+                                  alertMsg("Items dispatched to outlet!");
+                                  const reqs = await api.getStockRequests();
+                                  setRestockReqs(reqs);
+                                } catch (e) { alertMsg(e.message); }
+                              }}>Dispatch</button>
                             )}
                           </td>
                         </tr>

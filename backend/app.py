@@ -49,6 +49,14 @@ os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 # HELPERS
 # ============================================================
 
+def get_loyalty_settings():
+    earn_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_earn_rate')).first()
+    redeem_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_redeem_rate')).first()
+    
+    earn_val = float(earn_rate.setting_value) if earn_rate else 0.1  # 1 point per 10 rupees
+    redeem_val = float(redeem_rate.setting_value) if redeem_rate else 0.01  # 100 points = 1 rupee discount
+    return earn_val, redeem_val
+
 def role_required(*roles):
     """Decorator: JWT required + role check."""
     def decorator(fn):
@@ -95,7 +103,7 @@ def department_required(*departments):
 
 def sanitize_input(data, skip_keys=None):
     if skip_keys is None:
-        skip_keys = ["password", "new_password", "old_password"]
+        skip_keys = ["password", "new_password", "old_password", "image_url", "target_url", "icon", "attachment"]
         
     if isinstance(data, dict):
         return {k: (v if k in skip_keys else sanitize_input(v, skip_keys)) for k, v in data.items()}
@@ -226,6 +234,12 @@ def create_app(config_override=None):
             safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
         app.logger.info(f"Outgoing Response: {response.status} for {request.method} {safe_url}")
         
+        # Prevent caching for all API responses
+        if request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            
         # Security headers handled by add_security_headers
         return response
     db_url = os.getenv("DATABASE_URL")
@@ -677,8 +691,17 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
             
             user.set_password(new_password, bcrypt)
-            user.set_pin(new_password, bcrypt)
-            
+
+        # Handle PIN change (for staff/kitchen)
+        new_pin = data.get("pin")
+        if new_pin is not None:
+            new_pin = str(new_pin).strip()
+            if new_pin:
+                if not new_pin.isdigit() or len(new_pin) != 4:
+                    return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
+                user.set_pin(new_pin, bcrypt)
+            else:
+                user.pin_hash = None
         db.session.commit()
         return jsonify({"message": "Profile updated successfully", "user": user.to_dict()}), 200
 
@@ -850,6 +873,7 @@ The FlavorFlow Team"""
         delivery_address = data.get("delivery_address")
         payment_method = data.get("payment_method", "COD")
         coupon_code = data.get("coupon_code")
+        delivery_charge = Decimal(str(data.get("delivery_charge", 0.00)))
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items in order"}), 400
@@ -876,6 +900,8 @@ The FlavorFlow Team"""
             price = menu_item.price
             total += price * qty
             order_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))
+        
+        total += delivery_charge
 
         discount_pct = 0
         coupon = None
@@ -888,6 +914,20 @@ The FlavorFlow Team"""
                     return jsonify({"error": "Bad Request", "message": "Coupon has expired"}), 400
                 if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
                     return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached"}), 400
+
+                # Check scope
+                if coupon.scope == 'outlet':
+                    return jsonify({"error": "Bad Request", "message": "This coupon is only valid for in-store purchases"}), 400
+
+                # Check min order value
+                if coupon.min_order_value and total < Decimal(str(coupon.min_order_value)):
+                    return jsonify({"error": "Bad Request", "message": f"Minimum order value of ₹{coupon.min_order_value} required"}), 400
+
+                # Check if first order only
+                if coupon.is_first_order_only:
+                    has_orders = db.session.scalars(select(Order).where(Order.customer_id == customer_id)).first()
+                    if has_orders:
+                        return jsonify({"error": "Bad Request", "message": "This coupon is only valid for your first order"}), 400
 
                 # Check if this user already used this coupon
                 used = db.session.scalars(select(Order).where(Order.customer_id == customer_id, Order.applied_coupon_code == coupon.code)).first()
@@ -906,27 +946,44 @@ The FlavorFlow Team"""
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
 
+        earn_rate, redeem_rate = get_loyalty_settings()
+        
         redeem_points = int(data.get("redeem_loyalty_points", 0))
+        points_redeemed = 0
         if redeem_points > 0:
             if not customer:
                 return jsonify({"error": "Bad Request", "message": "Loyalty points can only be used by registered customers"}), 400
-            if customer.loyalty_points < redeem_points:
-                return jsonify({"error": "Bad Request", "message": "Insufficient loyalty points"}), 400
             
-            # $1 (or Rs. 1) off for every 100 points
-            points_discount = Decimal(str(redeem_points)) / Decimal('100.0')
-            customer.loyalty_points -= redeem_points
-            total = total - points_discount
-            if total < 0:
-                total = Decimal("0.00")
+            # calculate max redeemable points so it doesn't exceed total cost
+            max_redeem_allowed = int(float(total) / redeem_rate)
+            actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
 
+            if actual_redeem > 0:
+                points_discount = Decimal(str(actual_redeem * redeem_rate))
+                customer.loyalty_points -= actual_redeem
+                points_redeemed = actual_redeem
+                total = max(Decimal("0.00"), total - points_discount)
+        
+        points_earned = 0
+        if customer:
+            points_earned = int(float(total) * earn_rate)
+            customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
+
+        import secrets
+        import string
+        new_review_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+        
         order = Order(
             customer_id=customer_id, 
             total_price=total, 
             items=order_items, 
             delivery_address=delivery_address, 
             payment_method=payment_method,
-            applied_coupon_code=coupon.code if coupon else None
+            applied_coupon_code=coupon.code if coupon else None,
+            loyalty_points_earned=points_earned,
+            loyalty_points_redeemed=points_redeemed,
+            delivery_charge=delivery_charge,
+            review_code=new_review_code
         )
         db.session.add(order)
         db.session.flush() # ensure we have order.id
@@ -1296,7 +1353,7 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Updated", "item": item.to_dict()}), 200
 
-    @app.route("/api/admin/menu/<int:item_id>", methods=["DELETE"])
+    @app.route("/api/admin/menu/<int:item_id>", methods=["DELETE", "POST"])
     @department_required("Operations")
     def admin_delete_menu(item_id):
         item = db.session.get(MenuItem, item_id)
@@ -1360,13 +1417,14 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Updated", "outlet": outlet.to_dict()}), 200
 
-    @app.route("/api/admin/outlets/<int:outlet_id>", methods=["DELETE"])
+    @app.route("/api/admin/outlets/<int:outlet_id>", methods=["DELETE", "POST"])
     @department_required("Operations")
     def admin_delete_outlet(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
-        db.session.delete(outlet)
+        # Bypass ORM to allow DB-level ON DELETE CASCADE to handle related non-nullable rows
+        db.session.execute(db.delete(Outlet).where(Outlet.id == outlet_id))
         db.session.commit()
         return jsonify({"message": "Outlet deleted"}), 200
 
@@ -1564,10 +1622,10 @@ The FlavorFlow Team"""
 
     # --- Staff Management ---
     @app.route("/api/admin/staff", methods=["GET"])
-    @department_required("HR")
+    @role_required("admin", "outlet_owner")
     def admin_get_staff():
         staff = db.session.scalars(
-            select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen"])).order_by(User.created_at.desc())
+            select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen", "customer"])).order_by(User.created_at.desc())
         ).all()
         return jsonify([u.to_dict() for u in staff]), 200
 
@@ -1626,13 +1684,13 @@ The FlavorFlow Team"""
                 if not db.session.scalars(select(User).where(User.staff_code == code)).first():
                     user.staff_code = code
                     break
-
-        # Set optional 4-digit PIN for clock-in
-        pin = (data.get("pin") or "").strip()
-        if pin:
-            if not pin.isdigit() or len(pin) != 4:
-                return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
+        # Require 4-digit PIN for staff and kitchen
+        if role in ("staff", "kitchen"):
+            pin = (data.get("pin") or "").strip()
+            if not pin or len(pin) != 4 or not pin.isdigit():
+                return jsonify({"error": "Bad Request", "message": "A 4-digit PIN is required for staff and kitchen accounts"}), 400
             user.set_pin(pin, bcrypt)
+
         db.session.add(user)
         db.session.commit()
 
@@ -1648,7 +1706,7 @@ The FlavorFlow Team"""
     @department_required("HR")
     def admin_edit_staff(user_id):
         user = db.session.get(User, user_id)
-        if not user or user.role not in ("staff", "admin", "outlet_owner"):
+        if not user or user.role not in ("staff", "admin", "outlet_owner", "kitchen", "customer"):
             return jsonify({"error": "Not Found"}), 404
         if getattr(user, 'is_superadmin', False):
             return jsonify({"error": "Forbidden", "message": "Cannot modify a super-admin."}), 403
@@ -1665,6 +1723,8 @@ The FlavorFlow Team"""
             user.outlet_id = data["outlet_id"]
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
+        if "loyalty_points" in data and user.role == "customer":
+            user.loyalty_points = int(data["loyalty_points"])
         if "pin" in data:
             pin = (data["pin"] or "").strip()
             if pin:
@@ -1694,7 +1754,7 @@ The FlavorFlow Team"""
     @department_required("HR")
     def admin_delete_staff(user_id):
         user = db.session.get(User, user_id)
-        if not user:
+        if not user or user.role not in ("staff", "admin", "outlet_owner", "kitchen", "customer"):
             return jsonify({"error": "Not Found"}), 404
 
         if getattr(user, 'is_superadmin', False):
@@ -1926,24 +1986,28 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Request submitted", "stock_request": req.to_dict()}), 201
 
-    @app.route("/api/kitchen/stock-requests/<int:req_id>/fulfill", methods=["PUT"])
+    @app.route("/api/kitchen/stock-requests/<int:req_id>/status", methods=["PUT"])
     @role_required("kitchen", "admin")
-    def fulfill_stock_request(req_id):
+    def update_stock_request_status(req_id):
+        data = request.json or {}
+        new_status = data.get("status")
         req = db.session.get(StockRequest, req_id)
         if not req:
             return jsonify({"error": "Not Found"}), 404
-        req.status = "Fulfilled"
+            
+        req.status = new_status
         
-        # Auto-update outlet stock
-        stock = db.session.scalars(select(OutletStock).where(OutletStock.outlet_id == req.outlet_id, OutletStock.menu_item_id == req.menu_item_id)).first()
-        if stock:
-            stock.current_stock += req.quantity
-        else:
-            stock = OutletStock(outlet_id=req.outlet_id, menu_item_id=req.menu_item_id, current_stock=req.quantity)
-            db.session.add(stock)
+        # Auto-update outlet stock only when dispatched/fulfilled
+        if new_status in ["Dispatched", "Fulfilled"]:
+            stock = db.session.scalars(select(OutletStock).where(OutletStock.outlet_id == req.outlet_id, OutletStock.menu_item_id == req.menu_item_id)).first()
+            if stock:
+                stock.current_stock += req.quantity
+            else:
+                stock = OutletStock(outlet_id=req.outlet_id, menu_item_id=req.menu_item_id, current_stock=req.quantity)
+                db.session.add(stock)
             
         db.session.commit()
-        return jsonify({"message": "Request fulfilled", "stock_request": req.to_dict()}), 200
+        return jsonify({"message": f"Request {new_status.lower()}", "stock_request": req.to_dict()}), 200
 
     @app.route("/api/kitchen/produce", methods=["POST"])
     @role_required("kitchen", "admin")
@@ -2051,6 +2115,16 @@ The FlavorFlow Team"""
             select(func.sum(Order.total_price)).where(*pos_conditions)
         ) or 0
 
+        if role == "outlet_owner" and user_outlet_id:
+            outlet = db.session.get(Outlet, user_outlet_id)
+            share_pct = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage else 100.0
+            if share_pct > 0 and share_pct <= 100:
+                b2c_rev = b2c_rev * (share_pct / 100.0)
+                pos_rev = pos_rev * (share_pct / 100.0)
+            elif share_pct == 0:
+                b2c_rev = 0
+                pos_rev = 0
+
         # Orders count
         b2c_count = db.session.scalar(
             select(func.count(Order.id)).where(*b2c_conditions)
@@ -2109,8 +2183,13 @@ The FlavorFlow Team"""
             date_str = str(row.sale_date)
             if date_str not in sales_map:
                 sales_map[date_str] = {"online": 0, "pos": 0}
+            
+            val = float(row.total_rev or 0)
+            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+                val = val * (share_pct / 100.0)
+
             if row.order_type in sales_map[date_str]:
-                sales_map[date_str][row.order_type] += float(row.total_rev or 0)
+                sales_map[date_str][row.order_type] += val
 
         for i in range(6, -1, -1):
             day = end_date - timedelta(days=i)
@@ -2142,6 +2221,13 @@ The FlavorFlow Team"""
             select(ProductBatch).where(*expiring_cond)
         ).all()
 
+        outlets_res = []
+        for r in outlet_rev:
+            val = float(r.rev)
+            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+                val = val * (share_pct / 100.0)
+            outlets_res.append({"name": r.name, "revenue": val})
+
         return jsonify({
             "summary": {
                 "b2c_revenue": float(b2c_rev),
@@ -2153,7 +2239,7 @@ The FlavorFlow Team"""
             "daily": daily_data,
             "top_b2c_items": [{"name": r.name, "qty": r.qty} for r in top_b2c],
             "top_pos_items": [{"name": r.name, "qty": r.qty} for r in top_pos],
-            "outlet_revenue": [{"name": r.name, "revenue": float(r.rev)} for r in outlet_rev],
+            "outlet_revenue": outlets_res,
             "low_stock_count": len(low_stock),
             "expiring_count": len(expiring)
         }), 200
@@ -2464,13 +2550,28 @@ The FlavorFlow Team"""
                     return jsonify({"error": "Bad Request", "message": "Coupon has expired"}), 400
                 if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
                     return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached"}), 400
-                
+                # Check scope
+                if coupon.scope == 'customer':
+                    return jsonify({"error": "Bad Request", "message": "This coupon is only valid for online delivery orders"}), 400
+
+                # Check min order value
+                if coupon.min_order_value and total < Decimal(str(coupon.min_order_value)):
+                    return jsonify({"error": "Bad Request", "message": f"Minimum order value of ₹{coupon.min_order_value} required"}), 400
+
+                # Check if first order only
+                if coupon.is_first_order_only:
+                    if customer:
+                        has_orders = db.session.scalars(select(Order).where(Order.customer_id == customer.id)).first()
+                        if has_orders:
+                            return jsonify({"error": "Bad Request", "message": "This coupon is only valid for a customer's first order"}), 400
+                    else:
+                        return jsonify({"error": "Bad Request", "message": "This coupon requires a registered customer account"}), 400
+
                 # Check if this customer already used it
                 if customer:
                     used = db.session.scalars(select(Order).where(Order.customer_id == customer.id, Order.applied_coupon_code == coupon.code)).first()
                     if used:
-                        return jsonify({"error": "Bad Request", "message": "the coupon u already used sorry try other options"}), 400
-
+                        return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
                 coupon.usage_count += 1
                 
                 # Apply discount
@@ -2483,20 +2584,25 @@ The FlavorFlow Team"""
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
 
-        # Loyalty points: redemption (1 point = ₹1 discount)
+        earn_rate, redeem_rate = get_loyalty_settings()
+        
+        # Loyalty points: redemption
         points_redeemed = 0
         if customer and redeem_points > 0:
-            max_redeemable = min(redeem_points, customer.loyalty_points, int(total))
-            if max_redeemable > 0:
-                total -= Decimal(str(max_redeemable))
+            max_redeem_allowed = int(float(total) / redeem_rate)
+            actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
+            
+            if actual_redeem > 0:
+                points_discount = Decimal(str(actual_redeem * redeem_rate))
+                total -= points_discount
                 total = max(Decimal("0.00"), total)
-                customer.loyalty_points -= max_redeemable
-                points_redeemed = max_redeemable
+                customer.loyalty_points -= actual_redeem
+                points_redeemed = actual_redeem
 
-        # Loyalty points: earning (1 point per ₹100 spent, rounded down)
+        # Loyalty points: earning
         points_earned = 0
         if customer:
-            points_earned = int(total) // 100
+            points_earned = int(float(total) * earn_rate)
             customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
 
         sale = Order(
@@ -2689,6 +2795,49 @@ The FlavorFlow Team"""
             "top_items": top_items
         }), 200
 
+    @app.route("/api/pos/my-shifts", methods=["GET"])
+    @role_required("staff")
+    def pos_my_shifts():
+        """Returns the staff member's own shifts and sales summary."""
+        staff_id = int(get_jwt_identity())
+        shifts = db.session.scalars(
+            select(StaffShift)
+            .where(StaffShift.staff_id == staff_id)
+            .order_by(StaffShift.clock_in_time.desc())
+        ).all()
+        
+        result = []
+        for s in shifts:
+            s_dict = s.to_dict()
+            end_time = s.clock_out_time or datetime.now(timezone.utc)
+            sales = db.session.execute(
+                select(
+                    OrderItem.menu_item_name,
+                    func.sum(OrderItem.quantity).label("total_qty"),
+                    func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
+                )
+                .join(Order, Order.id == OrderItem.order_id)
+                .where(
+                    Order.staff_id == s.staff_id,
+                    Order.outlet_id == s.outlet_id,
+                    Order.created_at >= s.clock_in_time,
+                    Order.created_at <= end_time,
+                    Order.status != "cancelled"
+                )
+                .group_by(OrderItem.menu_item_name)
+            ).all()
+            
+            s_dict["sales_summary"] = [
+                {
+                    "item_name": row.menu_item_name,
+                    "total_qty": int(row.total_qty),
+                    "total_revenue": float(row.total_revenue)
+                } for row in sales
+            ]
+            result.append(s_dict)
+            
+        return jsonify(result), 200
+
     # --- Admin: Staff Timesheets ---
     @app.route("/api/admin/shifts", methods=["GET"])
     @department_required("HR")
@@ -2697,7 +2846,41 @@ The FlavorFlow Team"""
         shifts = db.session.scalars(
             select(StaffShift).order_by(StaffShift.clock_in_time.desc())
         ).all()
-        return jsonify([s.to_dict() for s in shifts]), 200
+        
+        result = []
+        for s in shifts:
+            s_dict = s.to_dict()
+            
+            # Fetch sales summary for this shift
+            end_time = s.clock_out_time or datetime.now(timezone.utc)
+            sales = db.session.execute(
+                select(
+                    OrderItem.menu_item_name,
+                    func.sum(OrderItem.quantity).label("total_qty"),
+                    func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
+                )
+                .join(Order, Order.id == OrderItem.order_id)
+                .where(
+                    Order.staff_id == s.staff_id,
+                    Order.outlet_id == s.outlet_id,
+                    Order.created_at >= s.clock_in_time,
+                    Order.created_at <= end_time,
+                    Order.status != "cancelled"
+                )
+                .group_by(OrderItem.menu_item_name)
+            ).all()
+            
+            s_dict["sales_summary"] = [
+                {
+                    "item_name": row.menu_item_name,
+                    "total_qty": int(row.total_qty),
+                    "total_revenue": float(row.total_revenue)
+                } for row in sales
+            ]
+            
+            result.append(s_dict)
+            
+        return jsonify(result), 200
 
     @app.route("/api/admin/shifts/<int:shift_id>", methods=["DELETE"])
     @department_required("HR")
@@ -2957,24 +3140,41 @@ The FlavorFlow Team"""
         except ValueError:
             return jsonify({"error": "Bad Request", "message": "Rating must be between 1 and 5"}), 400
         
-        # Ensure user has actually ordered this item before
+        review_code = data.get("review_code", "").strip()
+        if not review_code:
+            return jsonify({"error": "Bad Request", "message": "Review code is required. You can find it in your order history after delivery."}), 400
+
+        # Ensure user has actually ordered this item before and the review_code is valid
         has_ordered = db.session.scalars(
             select(Order).join(OrderItem).where(
                 Order.customer_id == uid,
                 OrderItem.menu_item_id == item_id,
-                Order.is_received == True
+                Order.is_received == True,
+                Order.review_code == review_code
             )
         ).first()
         if not has_ordered:
-            return jsonify({"error": "Forbidden", "message": "You must order this product before you can write a review for it."}), 403
+            return jsonify({"error": "Forbidden", "message": "Invalid review code or you haven't received this product yet."}), 403
         
         review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment)
         db.session.add(review)
+        
+        review_points_setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_review_points')).first()
+        points = int(review_points_setting.setting_value) if review_points_setting and review_points_setting.setting_value.isdigit() else 10
+        if points > 0:
+            user.loyalty_points = (user.loyalty_points or 0) + points
+            history_entry = WalletTransaction(
+                user_id=uid, type='earned', amount=points,
+                description=f"Earned points for reviewing {item.name}"
+            )
+            db.session.add(history_entry)
+            
         db.session.commit()
-        return jsonify({"message": "Review submitted successfully", "review": review.to_dict()}), 201
+        msg = f"Review submitted successfully! You earned {points} loyalty points." if points > 0 else "Review submitted successfully"
+        return jsonify({"message": msg, "review": review.to_dict(), "loyalty_points_earned": points, "new_balance": user.loyalty_points}), 201
 
     @app.route("/api/admin/reviews", methods=["GET"])
-    @department_required("Operations")
+    @role_required("admin", "outlet_owner")
     def admin_get_reviews():
         reviews = db.session.scalars(
             select(Review).order_by(Review.created_at.desc())
@@ -3177,9 +3377,9 @@ The FlavorFlow Team"""
             
             segments["all"].append(c_dict)
             
-            if c_dict['order_count'] > 5:
+            if c_dict['order_count'] >= 5:
                 segments["frequent_buyers"].append(c_dict)
-            if c_dict['total_spent'] > 5000:
+            if c_dict['total_spent'] >= 5000:
                 segments["high_value"].append(c_dict)
             
             if c_dict['last_order_date']:
@@ -3331,12 +3531,18 @@ The FlavorFlow Team"""
     def admin_update_store_settings():
         data = sanitize_input(request.get_json(silent=True)) or {}
         for k, v in data.items():
+            # Convert python booleans to JSON-compatible lowercase strings
+            if isinstance(v, bool):
+                val_str = "true" if v else "false"
+            else:
+                val_str = str(v)
+                
             setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == k)).first()
             if not setting:
-                setting = StoreSetting(setting_key=k, setting_value=str(v))
+                setting = StoreSetting(setting_key=k, setting_value=val_str)
                 db.session.add(setting)
             else:
-                setting.setting_value = str(v)
+                setting.setting_value = val_str
         
         log_admin_action(db.session, get_jwt_identity(), "update_store_settings", "StoreSetting", None, "Updated store settings")
         db.session.commit()
@@ -3966,4 +4172,4 @@ def _start_scheduler(app):
 if __name__ == "__main__":
     app = create_app()
     debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
-    app.run(debug=debug_mode, port=5000)
+    app.run(debug=debug_mode, host="0.0.0.0", port=5000)

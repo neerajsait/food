@@ -98,6 +98,10 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [clockOutLoading, setClockOutLoading] = useState(false);
   const [clockOutResult, setClockOutResult] = useState(null);
 
+  const [showMyShiftsModal, setShowMyShiftsModal] = useState(false);
+  const [myShifts, setMyShifts] = useState([]);
+  const [myShiftsLoading, setMyShiftsLoading] = useState(false);
+
   // ---- NEW: CRM / Loyalty ----
   const [showCrmModal, setShowCrmModal] = useState(false);
   const [crmEmail, setCrmEmail] = useState("");
@@ -246,6 +250,18 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     }
   };
 
+  const loadMyShifts = async () => {
+    setMyShiftsLoading(true);
+    try {
+      const data = await api.posGetMyShifts();
+      setMyShifts(data);
+    } catch (err) {
+      console.error("Failed to load shifts:", err);
+    } finally {
+      setMyShiftsLoading(false);
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -263,6 +279,10 @@ export default function StaffPOS({ onLogout, _dbMode }) {
         setAvailableCoupons(couponsData);
       } catch (err) {
         console.warn("Could not load coupons:", err);
+      }
+    
+      if (showMyShiftsModal) {
+        loadMyShifts();
       }
 
       // Check if any items are critical and trigger sound
@@ -595,7 +615,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     setLoading(true);
     try {
       await api.createStockRequest({
-        outlet_id: user.outlet_id,
+        outlet_id: outlet.id,
         menu_item_id: restockItemId,
         quantity: parseInt(restockQty),
         type: "Restock"
@@ -892,6 +912,14 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             <Package size={14} /> Request Restock
           </button>
           <button
+            onClick={() => { setShowMyShiftsModal(true); loadMyShifts(); }}
+            className="btn"
+            style={{ padding: "0.6rem 1rem", borderRadius: "10px", background: "var(--bg-secondary)", border: "1px solid var(--border-light)" }}
+            title="View my timesheets and sales summary"
+          >
+            <FileText size={14} /> My Shifts
+          </button>
+          <button
             onClick={() => setShowShiftReport(true)}
             
           >
@@ -1177,6 +1205,51 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             <button onClick={() => { setShowShiftReport(false); alert("Shift summary printed!"); }} className="btn btn-primary" style={{ width: "100%", padding: "0.875rem" }}>
               Print Summary
             </button>
+          </div>
+        </div>
+      )}
+      {/* MY SHIFTS MODAL */}
+      {showMyShiftsModal && (
+        <div className="modal-overlay" onClick={() => setShowMyShiftsModal(false)}>
+          <div className="modal-box" style={{ maxWidth: 600, width: "95%", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Clock size={18} style={{ color: "var(--brand)" }} /> My Past Shifts
+              </h2>
+              <button className="modal-close" onClick={() => setShowMyShiftsModal(false)}><X size={16} /></button>
+            </div>
+            {myShiftsLoading ? (
+              <div style={{ textAlign: "center", padding: "2rem" }}>Loading...</div>
+            ) : myShifts.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No shift history found.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                {myShifts.map(s => (
+                  <div key={s.id} style={{ border: "1px solid var(--border-subtle)", borderRadius: "var(--r-md)", padding: "1rem", background: "var(--bg-secondary)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+                      <span style={{ fontWeight: 800 }}>{new Date(s.clock_in_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+                      <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: 700, padding: "0.2rem 0.5rem", borderRadius: "10px", background: s.status === "active" ? "rgba(34, 197, 94, 0.1)" : "rgba(0,0,0,0.05)", color: s.status === "active" ? "#22c55e" : "var(--text-secondary)" }}>{s.status.toUpperCase()}</span>
+                    </div>
+                    <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>
+                      <strong>Clock Out:</strong> {s.clock_out_time ? new Date(s.clock_out_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : "Ongoing"}<br/>
+                      <strong>Discrepancy:</strong> <span style={{ color: s.cash_discrepancy < 0 ? "var(--error)" : s.cash_discrepancy > 0 ? "var(--success)" : "inherit" }}>
+                        {s.cash_discrepancy !== null ? (s.cash_discrepancy > 0 ? "+" : "") + "₹" + s.cash_discrepancy : "N/A"}
+                      </span>
+                    </div>
+                    {s.sales_summary && s.sales_summary.length > 0 && (
+                      <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", borderTop: "1px solid var(--border-light)", paddingTop: "0.5rem" }}>
+                        <strong style={{ color: "var(--text-primary)" }}>Sales Summary:</strong>
+                        <ul style={{ paddingLeft: "1.2rem", margin: "0.3rem 0 0", color: "var(--text-secondary)" }}>
+                          {s.sales_summary.map((ss, idx) => (
+                            <li key={idx}>{ss.total_qty}x {ss.item_name} (₹{ss.total_revenue})</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

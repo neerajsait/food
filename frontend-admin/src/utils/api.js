@@ -7,6 +7,15 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || (
     : `${window.location.protocol}//${window.location.host}/api`
 );
 
+// Override fetch to always append cache-busting timestamp to GET requests
+const originalFetch = window.fetch;
+window.fetch = async (url, options) => {
+  if (typeof url === 'string' && url.includes(API_BASE_URL) && (!options || options.method === 'GET' || !options.method)) {
+    const sep = url.includes('?') ? '&' : '?';
+    url = `${url}${sep}_t=${Date.now()}`;
+  }
+  return originalFetch(url, options);
+};
 // Helper to retrieve auth tokens
 function getAuthHeader() {
   const token = localStorage.getItem("token");
@@ -303,11 +312,11 @@ const mockApi = {
       });
   },
 
-  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null) {
+  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null, redeemLoyaltyPoints = 0, deliveryCharge = 0) {
     const menu = JSON.parse(localStorage.getItem("mock_menu"));
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
 
-    let total = 0;
+    let total = parseFloat(deliveryCharge) || 0;
     const items = itemsData.map(it => {
       const menuItem = menu.find(m => m.id === it.menu_item_id);
       if (!menuItem) throw new Error("Item not found");
@@ -367,11 +376,36 @@ const mockApi = {
       is_received: false,
       feedback_submitted: false,
       delivery_address: deliveryAddress || "",
+      delivery_charge: deliveryCharge,
       payment_method: paymentMethod,
       items,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+    
+    // Process loyalty if logged in as customer
+    const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+    const customer = users.find(u => u.id === userId && u.role === "customer");
+    if (customer) {
+      const earnRate = 0.1;
+      const redeemRate = 0.01;
+      let finalTotal = total;
+      
+      if (redeemLoyaltyPoints > 0) {
+        const maxRedeemAllowed = Math.floor(total / redeemRate);
+        const actualRedeem = Math.min(redeemLoyaltyPoints, customer.loyalty_points || 0, maxRedeemAllowed);
+        const pointsDiscount = actualRedeem * redeemRate;
+        finalTotal = Math.max(0, total - pointsDiscount);
+        customer.loyalty_points = (customer.loyalty_points || 0) - actualRedeem;
+        newOrder.loyalty_points_redeemed = actualRedeem;
+      }
+      
+      const earned = Math.floor(finalTotal * earnRate);
+      customer.loyalty_points = (customer.loyalty_points || 0) + earned;
+      newOrder.loyalty_points_earned = earned;
+      newOrder.total_price = finalTotal;
+      localStorage.setItem("mock_users", JSON.stringify(users));
+    }
 
     orders.push(newOrder);
     localStorage.setItem("mock_orders", JSON.stringify(orders));
@@ -1011,6 +1045,9 @@ export const api = {
     if (data.user) {
       localStorage.setItem("user", JSON.stringify(data.user));
       return data.user;
+    } else if (data.id) {
+      localStorage.setItem("user", JSON.stringify(data));
+      return data;
     }
     return null;
   },
@@ -1027,17 +1064,17 @@ export const api = {
     return safeJson(res);
   },
 
-  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null) {
+  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null, redeemLoyaltyPoints = 0, deliveryCharge = 0) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
-    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode);
+    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode, redeemLoyaltyPoints, deliveryCharge);
 
     const res = await fetch(`${API_BASE_URL}/foods/order`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode })
+      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode, redeem_loyalty_points: redeemLoyaltyPoints, delivery_charge: deliveryCharge })
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to place order");
@@ -1104,7 +1141,7 @@ export const api = {
     }
 
     // FIX: Correct endpoint is /pos/menu
-    const res = await fetch(`${API_BASE_URL}/pos/menu`, { headers: getAuthHeader() });
+    const res = await fetch(`${API_BASE_URL}/pos/menu`, { headers: getAuthHeader(), cache: "no-store" });
     if (!res.ok) throw new Error("Failed to load POS menu");
     return safeJson(res);
   },
@@ -1262,7 +1299,7 @@ export const api = {
       return menu.filter(item => item.is_active);
     }
 
-    const res = await fetch(`${API_BASE_URL}/admin/menu`, { headers: getAuthHeader() });
+    const res = await fetch(`${API_BASE_URL}/admin/menu`, { headers: getAuthHeader(), cache: "no-store" });
     if (!res.ok) throw new Error("Failed to load admin menu catalog");
     return safeJson(res);
   },
@@ -1373,6 +1410,20 @@ export const api = {
 
     const res = await fetch(`${API_BASE_URL}/admin/analytics`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load analytics");
+    return safeJson(res);
+  },
+
+  async posGetMyShifts() {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const user = this.getCurrentUser();
+      if (!user) throw new Error("Unauthorized");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      return shifts.filter(s => s.staff_id === user.id).sort((a,b) => new Date(b.clock_in_time) - new Date(a.clock_in_time));
+    }
+    const res = await fetch(`${API_BASE_URL}/pos/my-shifts`, {
+      headers: getAuthHeader()
+    });
     return safeJson(res);
   },
 
@@ -1886,13 +1937,21 @@ export const api = {
           const total = (result.sale && result.sale.total_amount) ? result.sale.total_amount : 0;
           let finalTotal = total;
           let pointsRedeemed = 0;
+          
+          // dynamic rates default matching backend
+          const earnRate = 0.1;
+          const redeemRate = 0.01;
+          
           if (redeemLoyaltyPoints > 0) {
-            const maxRedeem = Math.min(redeemLoyaltyPoints, customer.loyalty_points || 0, Math.floor(total));
-            finalTotal = total - maxRedeem;
-            customer.loyalty_points = (customer.loyalty_points || 0) - maxRedeem;
-            pointsRedeemed = maxRedeem;
+            const maxRedeemAllowed = Math.floor(total / redeemRate);
+            const actualRedeem = Math.min(redeemLoyaltyPoints, customer.loyalty_points || 0, maxRedeemAllowed);
+            const pointsDiscount = actualRedeem * redeemRate;
+            
+            finalTotal = Math.max(0, total - pointsDiscount);
+            customer.loyalty_points = (customer.loyalty_points || 0) - actualRedeem;
+            pointsRedeemed = actualRedeem;
           }
-          const earned = Math.floor(finalTotal / 100);
+          const earned = Math.floor(finalTotal * earnRate);
           customer.loyalty_points = (customer.loyalty_points || 0) + earned;
           localStorage.setItem("mock_users", JSON.stringify(users));
           result.loyalty_points_earned = earned;
@@ -2059,6 +2118,14 @@ export const api = {
     if (!live) return [];
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load stock requests");
+    return safeJson(res);
+  },
+  async updateStockRequestStatus(id, status) {
+    const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests/${id}/status`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ status })
+    });
     return safeJson(res);
   },
   async createStockRequest(payload) {

@@ -530,11 +530,13 @@ class Order(db.Model):
     is_received = Column(Boolean, default=False)
     cancel_reason = Column(String(255), nullable=True)
     delivery_address = Column(String(500), nullable=True)
+    delivery_charge = Column(Numeric(10, 2), default=0.00, nullable=False)
     payment_method = Column(String(50), nullable=False, default='COD')
     loyalty_points_earned = Column(Integer, default=0, nullable=False)
     loyalty_points_redeemed = Column(Integer, default=0, nullable=False)
     applied_coupon_code = Column(String(50), nullable=True)
     qr_code_base64 = Column(Text, nullable=True)
+    review_code = Column(String(20), unique=True, nullable=True) # Code required to leave a review
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -545,7 +547,7 @@ class Order(db.Model):
 
     def __init__(self, total_price=0.00, status='pending', items=None, payment_method='COD', 
                  order_type='online', customer_id=None, outlet_id=None, staff_id=None, delivery_address=None,
-                 loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None):
+                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None):
         self.order_type = order_type
         self.customer_id = customer_id
         self.outlet_id = outlet_id
@@ -553,6 +555,7 @@ class Order(db.Model):
         self.total_price = total_price
         self.status = status
         self.delivery_address = delivery_address
+        self.delivery_charge = delivery_charge
         self.payment_method = payment_method
         self.loyalty_points_earned = loyalty_points_earned
         self.loyalty_points_redeemed = loyalty_points_redeemed
@@ -576,6 +579,7 @@ class Order(db.Model):
             "loyalty_points_earned": self.loyalty_points_earned,
             "loyalty_points_redeemed": self.loyalty_points_redeemed,
             "qr_code_base64": self.qr_code_base64,
+            "review_code": self.review_code,
             "items": [item.to_dict() for item in self.items],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
@@ -588,6 +592,7 @@ class Order(db.Model):
                 "is_received": self.is_received,
                 "cancel_reason": self.cancel_reason,
                 "delivery_address": self.delivery_address,
+                "delivery_charge": float(self.delivery_charge) if self.delivery_charge else 0,
                 "feedback_submitted": self.review is not None
             })
         return d
@@ -995,7 +1000,7 @@ class Banner(db.Model):
     __tablename__ = 'banners'
     id = Column(Integer, primary_key=True)
     title = Column(String(100), nullable=False)
-    image_url = Column(String(1000), nullable=False)  # Stores path/URL, not raw base64
+    image_url = Column(Text, nullable=False)  # Stores path/URL or raw base64
     target_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
     display_order = Column(Integer, default=0)
@@ -1058,7 +1063,7 @@ class SupportTicket(db.Model):
     description = Column(Text, nullable=False)
     status = Column(String(20), default='Open')  # 'Open', 'Resolved', 'Closed'
     admin_reply = Column(Text, nullable=True)
-    attachment_url = Column(String(255), nullable=True)
+    attachment_url = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

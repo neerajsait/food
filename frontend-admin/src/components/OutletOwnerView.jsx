@@ -97,6 +97,10 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
   const [editGeocodingLoading, setEditGeocodingLoading] = useState(false);
   const [editGeocodingMsg, setEditGeocodingMsg] = useState("");
 
+  const [users, setUsers] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [activeTab, setActiveTab] = useState("inventory");
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -107,6 +111,10 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         const updated = data.find(o => o.id === selectedOutlet.id);
         if (updated) setSelectedOutlet(updated);
       }
+      const usersData = await api.adminGetUsers();
+      setUsers(usersData);
+      const reviewsData = await api.adminGetReviews();
+      setReviews(reviewsData);
     } catch (err) {
       setError(err.message || "Failed to load owner dashboard");
     } finally {
@@ -355,10 +363,65 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <div style={{ width: 40, height: 40, borderRadius: "12px", background: "rgba(141, 78, 39, 0.08)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent-terracotta)" }}><Package size={20} /></div>
           </div>
           <div style={{ fontSize: "2.2rem", fontWeight: 900, color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>{totalStock}</div>
-          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Aggregated across all locations</div>
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: "1rem", marginTop: "1.5rem", marginBottom: "1rem", borderBottom: "1px solid var(--border-light)", paddingBottom: "0.5rem" }}>
+        {["inventory", "users", "reviews"].map(t => (
+          <button key={t} onClick={() => setActiveTab(t)} style={{
+            background: "none", border: "none", fontSize: "1rem", fontWeight: activeTab === t ? 700 : 500,
+            color: activeTab === t ? "var(--brand)" : "var(--text-secondary)", cursor: "pointer",
+            borderBottom: activeTab === t ? "2px solid var(--brand)" : "none", paddingBottom: "0.5rem"
+          }}>
+            {t === "inventory" ? "Inventory" : t === "users" ? "Users & Loyalty" : "Reviews"}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
+          <div className="spinner" style={{ margin: "0 auto 1rem" }}></div>
+          <p>Loading owner dashboard...</p>
+        </div>
+      ) : activeTab === "users" ? (
+        <div className="table-container">
+          <table className="custom-table">
+            <thead>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>Loyalty Points</th></tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td>{u.first_name} {u.last_name}</td>
+                  <td>{u.email}</td>
+                  <td><span className="status-badge" style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}>{u.role}</span></td>
+                  <td><strong>{u.loyalty_points || 0}</strong> pts</td>
+                </tr>
+              ))}
+              {users.length === 0 && <tr><td colSpan="4" style={{ textAlign: "center", padding: "2rem" }}>No users found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : activeTab === "reviews" ? (
+        <div className="table-container">
+          <table className="custom-table">
+            <thead>
+              <tr><th>Date</th><th>Customer</th><th>Rating</th><th>Comment</th></tr>
+            </thead>
+            <tbody>
+              {reviews.map(r => (
+                <tr key={r.id}>
+                  <td>{new Date(r.created_at).toLocaleDateString()}</td>
+                  <td>{r.customer_name}</td>
+                  <td>{"★".repeat(r.rating)}{"☆".repeat(5 - r.rating)}</td>
+                  <td>{r.comment || "-"}</td>
+                </tr>
+              ))}
+              {reviews.length === 0 && <tr><td colSpan="4" style={{ textAlign: "center", padding: "2rem" }}>No reviews found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.6fr", gap: "2rem", alignItems: "start" }}>
         
         {/* ── Left Side: Outlets List ── */}
@@ -460,7 +523,12 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </div>
 
               <h3 style={{ fontSize: "0.95rem", fontWeight: 800, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.4rem", color: "var(--text-primary)" }}>
-                <Package size={15} style={{ color: "var(--brand)" }} /> Station Stock & Safety Limits
+                <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flex: 1 }}>
+                  <Package size={15} style={{ color: "var(--brand)" }} /> Station Stock & Safety Limits
+                </div>
+                <button onClick={loadData} disabled={loading} style={{ background: "none", border: "1px solid var(--border-light)", borderRadius: "var(--r-sm)", padding: "0.3rem 0.6rem", fontSize: "0.75rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.3rem", color: "var(--text-secondary)" }}>
+                  <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh Stock
+                </button>
               </h3>
               <div className="table-container" style={{ border: "1px solid var(--border-light)", borderRadius: "12px", overflow: "hidden" }}>
                 <table className="custom-table" style={{ fontSize: "0.82rem", width: "100%", borderCollapse: "collapse" }}>
@@ -541,8 +609,9 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         </div>
 
       </div>
+      )}
 
-      {/* ── MODALS ── */}
+      {/* 🔹 MODALS 🔹 */}
 
       {/* Register Outlet */}
       <Modal open={showAddOutlet} onClose={() => setShowAddOutlet(false)} title="Register New Outlet">

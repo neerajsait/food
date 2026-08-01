@@ -7,6 +7,15 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || (
     : `${window.location.protocol}//${window.location.host}/api`
 );
 
+// Override fetch to always append cache-busting timestamp to GET requests
+const originalFetch = window.fetch;
+window.fetch = async (url, options) => {
+  if (typeof url === 'string' && url.includes(API_BASE_URL) && (!options || options.method === 'GET' || !options.method)) {
+    const sep = url.includes('?') ? '&' : '?';
+    url = `${url}${sep}_t=${Date.now()}`;
+  }
+  return originalFetch(url, options);
+};
 // Helper to retrieve auth tokens
 function getAuthHeader() {
   const token = localStorage.getItem("token");
@@ -288,22 +297,29 @@ const mockApi = {
   },
 
   async getFoodsMenu() {
-    const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
-    const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
-    return menu
-      .filter(item => (item.business_type === "home_foods" || item.business_type === "both") && item.is_active)
-      .map(item => {
-        const itemReviews = reviews.filter(r => r.menu_item_id === item.id);
-        const avg = itemReviews.length ? parseFloat((itemReviews.reduce((sum, r) => sum + r.rating, 0) / itemReviews.length).toFixed(1)) : 0.0;
-        return {
-          ...item,
-          average_rating: avg,
-          reviews_count: itemReviews.length
-        };
-      });
+    const live = await checkBackendAlive();
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+      return menu
+        .filter(item => (item.business_type === "home_foods" || item.business_type === "both") && item.is_active)
+        .map(item => {
+          const itemReviews = reviews.filter(r => r.menu_item_id === item.id);
+          const avg = itemReviews.length ? parseFloat((itemReviews.reduce((sum, r) => sum + r.rating, 0) / itemReviews.length).toFixed(1)) : 0.0;
+          return {
+            ...item,
+            average_rating: avg,
+            reviews_count: itemReviews.length
+          };
+        });
+    }
+
+    const res = await fetch(`${API_BASE_URL}/foods/menu`, { cache: "no-store" });
+    if (!res.ok) throw new Error("Failed to load menu");
+    return safeJson(res);
   },
 
-  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null) {
+  async placeOrder(userId, itemsData, deliveryAddress, paymentMethod = "COD", couponCode = null, pointsToRedeem = 0, deliveryCharge = 0) {
     const menu = JSON.parse(localStorage.getItem("mock_menu"));
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
 
@@ -375,12 +391,49 @@ const mockApi = {
 
     orders.push(newOrder);
     localStorage.setItem("mock_orders", JSON.stringify(orders));
+
+    // Update customer loyalty points in mock_users
+    const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+    const customerUser = users.find(u => u.id === parseInt(userId));
+    if (customerUser) {
+      const pointsEarned = Math.floor(total * 0.1); // earn 10% of order as points
+      customerUser.loyalty_points = Math.max(0, (customerUser.loyalty_points || 0) - pointsToRedeem) + pointsEarned;
+      customerUser.loyalty_history = customerUser.loyalty_history || [];
+      if (pointsToRedeem > 0) {
+        customerUser.loyalty_history.unshift({ id: Date.now(), type: "redeemed", points: -pointsToRedeem, desc: `Redeemed on order #${newOrder.id}`, date: new Date().toISOString() });
+      }
+      if (pointsEarned > 0) {
+        customerUser.loyalty_history.unshift({ id: Date.now() + 1, type: "earned", points: pointsEarned, desc: `Order #${newOrder.id} reward`, date: new Date().toISOString() });
+      }
+      localStorage.setItem("mock_users", JSON.stringify(users));
+      // Update local user cache
+      const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
+      if (currentUser.id === parseInt(userId)) {
+        currentUser.loyalty_points = customerUser.loyalty_points;
+        currentUser.loyalty_history = customerUser.loyalty_history;
+        localStorage.setItem("user", JSON.stringify(currentUser));
+      }
+    }
+
     return { message: "Order placed successfully", order: newOrder };
   },
 
   async getOrderHistory(userId) {
     const orders = JSON.parse(localStorage.getItem("mock_orders"));
     return orders.filter(o => o.customer_id === parseInt(userId)).reverse();
+  },
+
+  async cancelOrder(orderId) {
+    const orders = JSON.parse(localStorage.getItem("mock_orders"));
+    const orderIdx = orders.findIndex(o => o.id === orderId);
+    if (orderIdx === -1) throw new Error("Order not found");
+    if (!["pending", "processing"].includes(orders[orderIdx].status)) {
+      throw new Error("Order cannot be cancelled");
+    }
+    orders[orderIdx].status = "cancelled";
+    orders[orderIdx].cancel_reason = "Cancelled by customer";
+    localStorage.setItem("mock_orders", JSON.stringify(orders));
+    return { message: "Order cancelled successfully" };
   },
 
   async confirmReceipt(userId, orderId, trackingCode) {
@@ -959,6 +1012,17 @@ export const api = {
     return data;
   },
 
+  async verifyEmail(token) {
+    const res = await fetch(`${API_BASE_URL}/auth/verify-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Verification failed");
+    return data;
+  },
+
   async login(payload) {
     const live = await checkBackendAlive();
     if (!live) {
@@ -992,6 +1056,24 @@ export const api = {
     return userStr ? JSON.parse(userStr) : null;
   },
 
+  async refreshUser() {
+    // Fetch the latest user data from the backend and update localStorage
+    try {
+      const live = await checkBackendAlive(true);
+      if (!live) return this.getCurrentUser();
+      const res = await fetch(`${API_BASE_URL}/auth/me`, { headers: getAuthHeader() });
+      if (!res.ok) return this.getCurrentUser();
+      const data = await safeJson(res);
+      if (data && data.id) {
+        localStorage.setItem("user", JSON.stringify(data));
+        return data;
+      }
+      return this.getCurrentUser();
+    } catch {
+      return this.getCurrentUser();
+    }
+  },
+
   async getMe() {
     const live = await checkBackendAlive();
     if (!live) {
@@ -1010,6 +1092,9 @@ export const api = {
     if (data.user) {
       localStorage.setItem("user", JSON.stringify(data.user));
       return data.user;
+    } else if (data.id) {
+      localStorage.setItem("user", JSON.stringify(data));
+      return data;
     }
     return null;
   },
@@ -1026,17 +1111,17 @@ export const api = {
     return safeJson(res);
   },
 
-  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null) {
+  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null, pointsToRedeem = 0, deliveryCharge = 0) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
-    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode);
+    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode, pointsToRedeem, deliveryCharge);
 
     const res = await fetch(`${API_BASE_URL}/foods/order`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode })
+      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode, redeem_loyalty_points: pointsToRedeem, delivery_charge: deliveryCharge })
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to place order");
@@ -1056,6 +1141,23 @@ export const api = {
     });
     if (!res.ok) throw new Error("Failed to load order history");
     return safeJson(res);
+  },
+
+  async cancelOrder(orderId, reason = "Cancelled by customer") {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!user) throw new Error("Unauthorized");
+
+    if (!live) return mockApi.cancelOrder(orderId);
+
+    const res = await fetch(`${API_BASE_URL}/foods/orders/${orderId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ reason })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to cancel order");
+    return data;
   },
 
   async confirmReceipt(orderId, trackingCode) {
@@ -1676,7 +1778,7 @@ export const api = {
   async getActiveCoupons() {
     const live = await checkBackendAlive();
     if (!live) return mockApi.getActiveCoupons();
-    const res = await fetch(`${API_BASE_URL}/coupons/active`);
+    const res = await fetch(`${API_BASE_URL}/coupons/active?t=${Date.now()}`);
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to fetch active coupons");
     return data;
@@ -1749,21 +1851,21 @@ export const api = {
     return safeJson(res);
   },
 
-  async submitMenuItemReview(itemId, rating, comment) {
+  async submitMenuItemReview(itemId, data) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
-    if (!live) return mockApi.submitMenuItemReview(user.id, itemId, rating, comment);
+    if (!live) return mockApi.submitMenuItemReview(user.id, itemId, data.rating, data.comment);
 
     const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ rating: parseInt(rating), comment })
+      body: JSON.stringify({ rating: parseInt(data.rating), comment: data.comment, review_code: data.review_code })
     });
-    const data = await safeJson(res);
-    if (!res.ok) throw new Error(data.message || data.error || "Review submission failed");
-    return data;
+    const responseData = await safeJson(res);
+    if (!res.ok) throw new Error(responseData.message || responseData.error || "Review submission failed");
+    return responseData;
   },
 
   async adminGetReviews() {
@@ -2251,17 +2353,55 @@ export const api = {
 
   // --- Ticketing ---
   async getCustomerTickets() {
+    const live = await checkBackendAlive(true);
+    if (!live) return [];
     const res = await fetch(`${API_BASE_URL}/customer/tickets`, { headers: getAuthHeader() });
-    if (!res.ok) throw new Error("Failed to load tickets");
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw new Error("Session expired. Please log in again.");
+      throw new Error("Failed to load tickets");
+    }
     return safeJson(res);
   },
   async createTicket(payload) {
+    const live = await checkBackendAlive(true);
+    if (!live) throw new Error("Server is offline. Please try again when the server is running.");
+    const isFormData = payload instanceof FormData;
+    const headers = getAuthHeader();
+    if (!isFormData) {
+      headers["Content-Type"] = "application/json";
+    }
     const res = await fetch(`${API_BASE_URL}/customer/tickets`, {
-      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify(payload)
+      method: "POST", 
+      headers,
+      body: isFormData ? payload : JSON.stringify(payload)
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || "Failed to create ticket");
+    return data;
+  },
+  async updateTicket(id, payload) {
+    const live = await checkBackendAlive(true);
+    if (!live) throw new Error("Server is offline. Please try again when the server is running.");
+    const isFormData = payload instanceof FormData;
+    const headers = getAuthHeader();
+    if (!isFormData) {
+      headers["Content-Type"] = "application/json";
+    }
+    const res = await fetch(`${API_BASE_URL}/customer/tickets/${id}`, {
+      method: "PUT", 
+      headers,
+      body: isFormData ? payload : JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update ticket");
+    return data;
+  },
+  async deleteTicket(id) {
+    const live = await checkBackendAlive(true);
+    if (!live) throw new Error("Server is offline.");
+    const res = await fetch(`${API_BASE_URL}/customer/tickets/${id}`, { method: "DELETE", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to delete ticket");
     return data;
   },
   async adminGetTickets() {

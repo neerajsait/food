@@ -31,6 +31,8 @@ function Modal({ open, onClose, title, children, width = 480 }) {
 
 export default function AdminView({ onLogout, dbMode }) {
   const [toast, setToast] = useState(null);
+  const showToast = (msg, type = "success") => setToast({ message: msg, type });
+  // Legacy alert() wrapper kept for any remaining calls from nested components
   const alert = (msg) => {
     setToast({ message: msg, type: msg.toLowerCase().includes("failed") || msg.toLowerCase().includes("error") ? "error" : "success" });
   };
@@ -164,6 +166,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [staffEmail, setStaffEmail] = useState("");
   const [staffPassword, setStaffPassword] = useState("");
   const [staffPin, setStaffPin] = useState("");
+  const [userLoyaltyPoints, setUserLoyaltyPoints] = useState(0);
   const [staffFirstName, setStaffFirstName] = useState("");
   const [staffLastName, setStaffLastName] = useState("");
   const [staffPhone, setStaffPhone] = useState("");
@@ -171,8 +174,9 @@ export default function AdminView({ onLogout, dbMode }) {
   const [staffRole, setStaffRole] = useState("staff");
   const [staffDepartment, setStaffDepartment] = useState("");
 
-  const loadData = async () => {
-    setLoading(true); setError("");
+  const loadData = async (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
+    setError("");
     try {
       const [ordersData, outletsData, menuData, usersData] = await Promise.allSettled([
         api.adminGetOrders(), api.adminGetOutlets(), api.adminGetMenuItems(), api.adminGetUsers()
@@ -217,7 +221,16 @@ export default function AdminView({ onLogout, dbMode }) {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(() => {
+      // Don't auto-refresh if a modal is open to avoid interrupting user input
+      if (!showAddMenu && !showAddOutlet && !showAddStaff && !showAddCoupon) {
+        loadData(false); // pass false to avoid triggering full loading spinner
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [showAddMenu, showAddOutlet, showAddStaff, showAddCoupon]);
   useEffect(() => { if (outlets.length > 0 && !staffOutletId) setStaffOutletId(outlets[0].id.toString()); }, [outlets, staffOutletId]);
 
   // Load timesheets when active tab changes to timesheets
@@ -225,6 +238,17 @@ export default function AdminView({ onLogout, dbMode }) {
   useEffect(() => {
     if (activeTab === "timesheets") {
       api.adminGetShifts().then(setTimesheets).catch(() => { });
+    }
+  }, [activeTab]);
+
+  // Background polling for POS catalog to ensure fresh menu
+  useEffect(() => {
+    if (activeTab === "pos") {
+      const interval = setInterval(() => {
+        api.adminGetCatalog().then(data => setCatalog(data)).catch(() => {});
+        api.adminGetCoupons().then(setCoupons).catch(() => {});
+      }, 15000);
+      return () => clearInterval(interval);
     }
   }, [activeTab]);
 
@@ -279,6 +303,15 @@ export default function AdminView({ onLogout, dbMode }) {
   const [bannerTargetUrl, setBannerTargetUrl] = useState("");
   const [bannerDisplayLocation, setBannerDisplayLocation] = useState("home");
 
+  // ── Confirm-delete / prompt-replacement modals ──
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState(null); // { message, onConfirm }
+  const [replyTicketModal, setReplyTicketModal] = useState(null); // { id }
+  const [replyText, setReplyText] = useState("");
+  const [restockModal, setRestockModal] = useState(null); // { outletId, menuItemId, itemName }
+  const [restockQty, setRestockQty] = useState("50");
+  const [reviewReplyModal, setReviewReplyModal] = useState(null); // review object
+  const [reviewReplyText, setReviewReplyText] = useState("");
+
 
 
   useEffect(() => {
@@ -315,25 +348,29 @@ export default function AdminView({ onLogout, dbMode }) {
     }
   };
 
-  const handleReplyReview = async (review) => {
-    const reply = window.prompt("Enter admin reply:", review.admin_reply || "");
-    if (reply !== null) {
-      try {
-        await api.adminUpdateReview(review.id, { admin_reply: reply });
-        alert("Reply updated!");
-        const data = await api.adminGetReviews();
-        setReviews(data);
-      } catch (err) { alert("Failed: " + err.message); }
-    }
+  const handleReplyReview = (review) => {
+    setReviewReplyText(review.admin_reply || "");
+    setReviewReplyModal(review);
+  };
+
+  const submitReviewReply = async () => {
+    if (!reviewReplyModal) return;
+    try {
+      await api.adminUpdateReview(reviewReplyModal.id, { admin_reply: reviewReplyText });
+      showToast("Reply updated!", "success");
+      const data = await api.adminGetReviews();
+      setReviews(data);
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
+    finally { setReviewReplyModal(null); setReviewReplyText(""); }
   };
 
   const handleToggleReviewVisibility = async (review) => {
     try {
       await api.adminUpdateReview(review.id, { is_hidden: !review.is_hidden });
-      alert(`Review ${!review.is_hidden ? "hidden" : "made visible"}.`);
+      showToast(`Review ${!review.is_hidden ? "hidden" : "made visible"}.`, "success");
       const data = await api.adminGetReviews();
       setReviews(data);
-    } catch (err) { alert("Failed: " + err.message); }
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
   const _openAddMenuModal = () => { loadData(); setShowAddMenu(true); };
@@ -341,7 +378,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const _openAddStaffModal = () => { loadData(); setShowAddStaff(true); };
 
   const lookupCoordinates = async () => {
-    if (!outletAddress.trim()) { alert("Please enter an address first"); return; }
+    if (!outletAddress.trim()) { showToast("Please enter an address first", "error"); return; }
     setGeocodingLoading(true); setGeocodingMsg("Looking up address…");
     try {
       const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(outletAddress)}&format=json&limit=1`);
@@ -357,22 +394,22 @@ export default function AdminView({ onLogout, dbMode }) {
 
   const handleShipOrder = async (orderId) => {
     const code = trackingCodes[orderId];
-    if (!code?.trim()) { alert("Enter a tracking code first"); return; }
+    if (!code?.trim()) { showToast("Enter a tracking code first", "error"); return; }
     try {
       await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null, trackingLinks[orderId] || null);
-      alert("Marked as shipped!");
+      showToast("Marked as shipped!", "success");
       loadData();
-    } catch (err) { alert("Failed: " + err.message); }
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
   const handleAddMenuItem = async (e) => {
     e.preventDefault();
     try {
       await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
-      alert("Menu item created!"); setShowAddMenu(false);
+      showToast("Product created successfully!", "success"); setShowAddMenu(false);
       setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
       loadData();
-    } catch (err) { alert("Failed: " + err.message); }
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
   const openEditMenuItem = (item) => {
@@ -395,20 +432,28 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
-      alert("Menu item updated!");
+      showToast("Product updated!", "success");
       setShowEditMenu(false);
       setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
       loadData();
-    } catch (err) { alert("Failed to update: " + err.message); }
+    } catch (err) { showToast("Failed to update: " + err.message, "error"); }
   };
 
-  const handleDeleteMenuItem = async (id) => {
-    if (!confirm("Are you sure you want to delete this menu item?")) return;
-    try {
-      await api.adminDeleteMenuItem(id);
-      alert("Menu item deleted!");
-      loadData();
-    } catch (err) { alert("Failed to delete: " + err.message); }
+  const handleDeleteMenuItem = (id) => {
+    setConfirmDeleteModal({
+      message: "Are you sure you want to delete this product? This cannot be undone.",
+      onConfirm: async () => {
+        // Optimistic update — remove from UI immediately
+        setMenu(prev => prev.filter(item => item.id !== id));
+        try {
+          await api.adminDeleteMenuItem(id);
+          showToast("Product deleted.", "success");
+        } catch (err) {
+          showToast("Failed to delete: " + err.message, "error");
+          loadData(); // revert on error
+        }
+      }
+    });
   };
 
   const handleAddOutlet = async (e) => {
@@ -426,7 +471,7 @@ export default function AdminView({ onLogout, dbMode }) {
 
       if (editingOutletId) {
         await api.adminUpdateOutlet(editingOutletId, data);
-        alert("Outlet updated successfully!");
+        showToast("Outlet updated successfully!", "success");
       } else {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
@@ -437,12 +482,12 @@ export default function AdminView({ onLogout, dbMode }) {
           list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [], revenue_share_percentage: parseFloat(outletRevenueShare) || 0 });
           localStorage.setItem("mock_outlets", JSON.stringify(list));
         }
-        alert("Outlet added!");
+        showToast("Outlet registered!", "success");
       }
       setShowAddOutlet(false); setEditingOutletId(null);
       setOutletName(""); setOutletAddress(""); setOutletLatitude(""); setOutletLongitude(""); setOutletRevenueShare("");
       loadData();
-    } catch (err) { alert("Failed: " + err.message); }
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
   const openEditOutlet = (outlet) => {
@@ -455,15 +500,21 @@ export default function AdminView({ onLogout, dbMode }) {
     setShowAddOutlet(true);
   };
 
-  const handleDeleteOutlet = async (outletId) => {
-    if (!confirm("Are you sure you want to delete this outlet?")) return;
-    try {
-      await api.adminDeleteOutlet(outletId);
-      alert("Outlet deleted!");
-      loadData();
-    } catch (err) {
-      alert("Failed to delete: " + err.message);
-    }
+  const handleDeleteOutlet = (outletId) => {
+    setConfirmDeleteModal({
+      message: "Are you sure you want to delete this outlet? All assigned stock items will also be removed. This cannot be undone.",
+      onConfirm: async () => {
+        // Optimistic update — remove from UI immediately
+        setOutlets(prev => prev.filter(o => o.id !== outletId));
+        try {
+          await api.adminDeleteOutlet(outletId);
+          showToast("Outlet deleted.", "success");
+        } catch (err) {
+          showToast("Failed to delete outlet: " + err.message, "error");
+          loadData(); // revert
+        }
+      }
+    });
   };
 
   const handleAssignFormChange = (outletId, field, value) => {
@@ -478,31 +529,49 @@ export default function AdminView({ onLogout, dbMode }) {
 
   const handleAssignItemToOutlet = async (outletId) => {
     const form = assignForms[outletId] || {};
-    if (!form.menuItemId) { alert("Select a food item first"); return; }
+    if (!form.menuItemId) { showToast("Select a food item first", "error"); return; }
     try {
       await api.adminAssignItemToOutlet(outletId, form.menuItemId, form.stock || "20", form.limit || "10");
-      alert("Item assigned!");
+      showToast("Item assigned to outlet!", "success");
       loadData();
     }
-    catch (err) { alert("Failed: " + err.message); }
+    catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
-  const handleRemoveItemFromOutlet = async (outletId, menuItemId) => {
-    if (!confirm("Remove this item from the outlet?")) return;
-    try { await api.adminRemoveItemFromOutlet(outletId, menuItemId); loadData(); }
-    catch (err) { alert("Failed: " + err.message); }
+  const handleRemoveItemFromOutlet = (outletId, menuItemId) => {
+    setConfirmDeleteModal({
+      message: "Remove this item from the outlet? Stock data for this item will be lost.",
+      onConfirm: async () => {
+        // Optimistic update
+        setOutlets(prev => prev.map(o =>
+          o.id === outletId ? { ...o, items: (o.items || []).filter(i => i.menu_item_id !== menuItemId) } : o
+        ));
+        try {
+          await api.adminRemoveItemFromOutlet(outletId, menuItemId);
+          showToast("Item removed from outlet.", "success");
+        }
+        catch (err) { showToast("Failed: " + err.message, "error"); loadData(); }
+      }
+    });
   };
 
-  const handleRequestRestock = async (outletId, menuItemId, itemName) => {
-    const qtyStr = prompt(`How many units of ${itemName} to request from kitchen?`, "50");
-    if (!qtyStr) return;
-    const qty = parseInt(qtyStr);
-    if (isNaN(qty) || qty <= 0) return;
+  const handleRequestRestock = (outletId, menuItemId, itemName) => {
+    setRestockQty("50");
+    setRestockModal({ outletId, menuItemId, itemName });
+  };
+
+  const submitRestockRequest = async () => {
+    if (!restockModal) return;
+    const { outletId, menuItemId, itemName } = restockModal;
+    const qty = parseInt(restockQty);
+    if (isNaN(qty) || qty <= 0) { showToast("Enter a valid quantity", "error"); return; }
     try {
       await api.createStockRequest({ outlet_id: outletId, menu_item_id: menuItemId, quantity: qty, type: "Restock" });
-      setToast({ message: `Restock request for ${qty} ${itemName} sent to kitchen.`, type: "success" });
+      showToast(`Restock request for ${qty}× ${itemName} sent to kitchen.`, "success");
     } catch (err) {
-      setToast({ message: "Request failed: " + err.message, type: "error" });
+      showToast("Request failed: " + err.message, "error");
+    } finally {
+      setRestockModal(null);
     }
   };
 
@@ -520,13 +589,13 @@ export default function AdminView({ onLogout, dbMode }) {
         role: staffRole,
         admin_department: staffRole === "admin" ? staffDepartment : null
       };
+      if (staffRole === "customer") payload.loyalty_points = parseInt(userLoyaltyPoints) || 0;
       if (staffPassword) payload.password = staffPassword;
       if (staffPin) payload.pin = staffPin;
 
       if (editingUserId) {
-        // Updating user
         await api.adminUpdateUser(editingUserId, payload);
-        alert("Account updated successfully!");
+        showToast("Account updated successfully!", "success");
       } else {
         if (!staffPassword) throw new Error("Password is required for new accounts");
         if (live) {
@@ -537,13 +606,17 @@ export default function AdminView({ onLogout, dbMode }) {
           });
           const d = await res.json();
           if (!res.ok) throw new Error(d.message || "Failed to create account");
+          if (d.user && d.user.staff_code) {
+            showToast(`Account created! Staff Login Code: ${d.user.staff_code}`, "success");
+          } else {
+            showToast(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`, "success");
+          }
         } else {
           const list = JSON.parse(localStorage.getItem("mock_users") || "[]");
           if (list.find(u => u.email === staffEmail)) throw new Error("Email already registered");
           if (staffRole === "admin" && list.filter(u => u.role === "admin").length >= 3) {
             throw new Error("Maximum of 3 admin accounts allowed.");
           }
-          // Auto-generate unique 4-digit staff_code for staff/kitchen
           let newUser = { ...payload, id: Date.now() };
           if (staffRole === "staff" || staffRole === "kitchen") {
             const existingCodes = new Set(list.map(u => u.staff_code).filter(Boolean));
@@ -554,15 +627,16 @@ export default function AdminView({ onLogout, dbMode }) {
           list.push(newUser);
           localStorage.setItem("mock_users", JSON.stringify(list));
           if (newUser.staff_code) {
-            alert(`Account created! Staff Login Code: ${newUser.staff_code}`);
+            showToast(`Account created! Staff code: ${newUser.staff_code}`, "success");
+          } else {
+            showToast("Account created!", "success");
           }
         }
-        alert(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`);
       }
       setShowAddStaff(false); setEditingUserId(null);
-      setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment("");
+      setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); setUserLoyaltyPoints(0);
       loadData();
-    } catch (err) { alert("Failed: " + err.message); }
+    } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
 
   const openEditStaff = (user) => {
@@ -572,25 +646,31 @@ export default function AdminView({ onLogout, dbMode }) {
     setStaffFirstName(user.first_name || "");
     setStaffLastName(user.last_name || "");
     setStaffPhone(user.phone || "");
+    setStaffDepartment(user.admin_department || "");
+    setUserLoyaltyPoints(user.loyalty_points || 0);
     setStaffOutletId(user.outlet_id || "");
     setStaffPassword("");
     setStaffPin("");
     setShowAddStaff(true);
   };
 
-  const handleDeleteUser = async (userId) => {
-    if (!confirm("Are you sure you want to delete this user?")) return;
-    try {
-      await api.adminDeleteUser(userId);
-      alert("User deleted!");
-      loadData();
-    } catch (err) { alert("Failed to delete user: " + err.message); }
+  const handleDeleteUser = (userId) => {
+    setConfirmDeleteModal({
+      message: "Are you sure you want to permanently delete this user account? This cannot be undone.",
+      onConfirm: async () => {
+        try {
+          await api.adminDeleteUser(userId);
+          showToast("User deleted.", "success");
+          loadData();
+        } catch (err) { showToast("Failed to delete user: " + err.message, "error"); }
+      }
+    });
   };
 
   const handleCreateCoupon = async (e) => {
     e.preventDefault();
     if (!couponCode.trim() || (!couponDiscount && !couponDiscountAmount)) {
-      alert("Code and either percentage or flat discount are required.");
+      showToast("Coupon code and at least one discount type (% or flat ₹) are required.", "error");
       return;
     }
     try {
@@ -603,9 +683,12 @@ export default function AdminView({ onLogout, dbMode }) {
         applicable_customer_id: couponApplicableCustomer ? parseInt(couponApplicableCustomer) : null,
         is_active: couponIsActive,
         min_order_value: parseFloat(couponMinOrderValue || 0),
-        is_first_order_only: couponIsFirstOrder
+        is_first_order_only: couponIsFirstOrder,
+        scope: couponScope,
+        expiry_date: couponExpiryDate || null,
+        usage_limit: couponUsageLimit ? parseInt(couponUsageLimit) : null
       });
-      alert("Coupon created successfully!");
+      showToast(`Coupon "${couponCode.trim().toUpperCase()}" created!`, "success");
       setShowAddCoupon(false);
       setCouponCode("");
       setCouponDiscount("");
@@ -619,53 +702,63 @@ export default function AdminView({ onLogout, dbMode }) {
       const c = await api.adminGetCoupons();
       setCoupons(c);
     } catch (err) {
-      alert("Failed to create coupon: " + err.message);
+      showToast("Failed to create coupon: " + err.message, "error");
     }
   };
 
   const handleToggleCoupon = async (coupon) => {
     try {
       await api.adminUpdateCoupon(coupon.id, { is_active: !coupon.is_active });
-      alert(`Coupon "${coupon.code}" ${coupon.is_active ? "deactivated" : "activated"} successfully!`);
+      showToast(`Coupon "${coupon.code}" ${coupon.is_active ? "deactivated" : "activated"}.`, "success");
       const c = await api.adminGetCoupons();
       setCoupons(c);
     } catch (err) {
-      alert("Failed to update coupon: " + err.message);
+      showToast("Failed to update coupon: " + err.message, "error");
     }
   };
 
-  const handleDeleteCoupon = async (couponId) => {
-    if (!confirm("Are you sure you want to delete this coupon?")) return;
-    try {
-      await api.adminDeleteCoupon(couponId);
-      alert("Coupon deleted successfully!");
-      const c = await api.adminGetCoupons();
-      setCoupons(c);
-    } catch (err) {
-      alert("Failed to delete coupon: " + err.message);
-    }
+  const handleDeleteCoupon = (couponId) => {
+    setConfirmDeleteModal({
+      message: "Are you sure you want to delete this coupon? Customers will no longer be able to use it.",
+      onConfirm: async () => {
+        try {
+          await api.adminDeleteCoupon(couponId);
+          showToast("Coupon deleted.", "success");
+          const c = await api.adminGetCoupons();
+          setCoupons(c);
+        } catch (err) {
+          showToast("Failed to delete coupon: " + err.message, "error");
+        }
+      }
+    });
   };
 
   const handleToggleUserActive = async (user) => {
     try {
       const nextActive = user.is_active === false;
       await api.adminUpdateUser(user.id, { is_active: nextActive });
-      alert(`User account ${nextActive ? "activated" : "deactivated"} successfully!`);
+      showToast(`User account ${nextActive ? "activated" : "deactivated"}.`, "success");
       loadData();
     } catch (err) {
-      alert("Failed to update user status: " + err.message);
+      showToast("Failed to update user status: " + err.message, "error");
     }
   };
 
-  const handleReplyTicket = async (ticketId) => {
-    const reply = prompt("Enter your reply to the customer:");
-    if (!reply) return;
+  const handleReplyTicket = (ticketId) => {
+    setReplyText("");
+    setReplyTicketModal({ id: ticketId });
+  };
+
+  const submitTicketReply = async () => {
+    if (!replyTicketModal || !replyText.trim()) { showToast("Please enter a reply message.", "error"); return; }
     try {
-      await api.adminReplyTicket(ticketId, { admin_reply: reply, status: "Resolved" });
-      alert("Ticket replied and marked as Resolved.");
+      await api.adminReplyTicket(replyTicketModal.id, { admin_reply: replyText.trim(), status: "Resolved" });
+      showToast("Reply sent and ticket marked Resolved.", "success");
       api.adminGetTickets().then(setTickets).catch(console.error);
     } catch (err) {
-      alert("Failed to reply: " + err.message);
+      showToast("Failed to reply: " + err.message, "error");
+    } finally {
+      setReplyTicketModal(null); setReplyText("");
     }
   };
 
@@ -675,7 +768,7 @@ export default function AdminView({ onLogout, dbMode }) {
     const sup = suppliers.find(s => s.id === parseInt(selectedSupplierId));
     if (!sup) return;
     setDraftPOs(prev => [{ id: Date.now(), supplier_name: sup.name, item: poItem, quantity: poQty, unit: poUnit, date: new Date().toLocaleDateString(), status: "draft" }, ...prev]);
-    alert("Purchase Order drafted!");
+    showToast("Purchase Order drafted!", "success");
   };
 
   const totalRevenue = analytics?.summary?.total_revenue || 0;
@@ -688,13 +781,13 @@ export default function AdminView({ onLogout, dbMode }) {
     try { return JSON.parse(localStorage.getItem("user") || "{}"); }
     catch (e) { return {}; }
   }, []);
-  const userDept = currentUser.admin_department || "SuperAdmin";
+  const userDept = currentUser.role === "admin" ? (currentUser.admin_department || "SuperAdmin") : (currentUser.role || "staff");
 
   const ALL_TABS = [
     { id: "overview", label: "Overview", icon: BarChart3, depts: ["SuperAdmin", "Operations", "HR", "Finance"] },
     { id: "catalog", label: "Master Catalog", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
     { id: "foods", label: "Outlet Stations", icon: Package, depts: ["SuperAdmin", "Operations"] },
-    { id: "finance", label: "Revenue Share", icon: FileText, depts: ["SuperAdmin", "Finance"] },
+    { id: "finance", label: "Revenue Share", icon: FileText, depts: ["SuperAdmin", "Finance", ...(storeSettings.share_revenue_with_outlets === "true" ? ["Operations"] : [])] },
     { id: "analytics", label: "Sales Analytics", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
     { id: "forecast", label: "Demand Forecast", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
     { id: "users", label: "User Accounts", icon: Users, depts: ["SuperAdmin", "HR"] },
@@ -1067,6 +1160,9 @@ export default function AdminView({ onLogout, dbMode }) {
                       <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.2rem" }}>
                         <MapPin size={11} /> {outlet.address}
                       </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.2rem", fontWeight: 600 }}>
+                        Revenue Share: {outlet.revenue_share_percentage || 0}%
+                      </div>
                     </div>
                     {isAlert && <span className="badge-status status-cancelled">⚠ Low Stock</span>}
                   </div>
@@ -1402,18 +1498,27 @@ export default function AdminView({ onLogout, dbMode }) {
                     const discrepancyColor = ts.cash_discrepancy < 0 ? "var(--error)" : ts.cash_discrepancy > 0 ? "var(--success)" : "var(--text-secondary)";
                     const outOutlet = outlets.find(o => o.id === ts.outlet_id);
                     return (
-                      <tr key={ts.id} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                        <td style={{ padding: "1rem", fontWeight: 600 }}>Staff #{ts.staff_id}</td>
-                        <td style={{ padding: "1rem" }}>{outOutlet ? outOutlet.name : `Outlet #${ts.outlet_id}`}</td>
-                        <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{new Date(ts.clock_in_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
-                        <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{ts.clock_out_time ? new Date(ts.clock_out_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : <span style={{ color: "var(--warning-color)", fontWeight: 700 }}>Active</span>}</td>
-                        <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.duration_hours ? `${ts.duration_hours}h` : "—"}</td>
-                        <td style={{ padding: "1rem", color: "var(--text-secondary)" }}>{ts.expected_cash !== null ? `₹${ts.expected_cash.toFixed(2)}` : "—"}</td>
-                        <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.actual_cash !== null ? `₹${ts.actual_cash.toFixed(2)}` : "—"}</td>
-                        <td style={{ padding: "1rem", fontWeight: 800, color: discrepancyColor }}>
-                          {ts.cash_discrepancy !== null ? `${ts.cash_discrepancy > 0 ? '+' : ''}₹${ts.cash_discrepancy.toFixed(2)}` : "—"}
-                        </td>
-                      </tr>
+                      <React.Fragment key={ts.id}>
+                        <tr style={{ borderBottom: ts.sales_summary && ts.sales_summary.length > 0 ? "none" : "1px solid var(--border-subtle)" }}>
+                          <td style={{ padding: "1rem", fontWeight: 600 }}>Staff #{ts.staff_id}</td>
+                          <td style={{ padding: "1rem" }}>{outOutlet ? outOutlet.name : `Outlet #${ts.outlet_id}`}</td>
+                          <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{new Date(ts.clock_in_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
+                          <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{ts.clock_out_time ? new Date(ts.clock_out_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : <span style={{ color: "var(--warning-color)", fontWeight: 700 }}>Active</span>}</td>
+                          <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.duration_hours ? `${ts.duration_hours}h` : "—"}</td>
+                          <td style={{ padding: "1rem", color: "var(--text-secondary)" }}>{ts.expected_cash !== null ? `₹${ts.expected_cash.toFixed(2)}` : "—"}</td>
+                          <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.actual_cash !== null ? `₹${ts.actual_cash.toFixed(2)}` : "—"}</td>
+                          <td style={{ padding: "1rem", fontWeight: 800, color: discrepancyColor }}>
+                            {ts.cash_discrepancy !== null ? `${ts.cash_discrepancy > 0 ? '+' : ''}₹${ts.cash_discrepancy.toFixed(2)}` : "—"}
+                          </td>
+                        </tr>
+                        {ts.sales_summary && ts.sales_summary.length > 0 && (
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.02)" }}>
+                            <td colSpan="8" style={{ padding: "0.5rem 1rem", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                              <strong>Items Sold:</strong> {ts.sales_summary.map(s => `${s.total_qty}x ${s.item_name} (₹${s.total_revenue})`).join(', ')}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })
                 )}
@@ -1635,7 +1740,7 @@ export default function AdminView({ onLogout, dbMode }) {
                 <option value="all">All Roles</option>
                 <option value="customer">Customers</option>
                 <option value="staff">Staff</option>
-                <option value="kitchen">Kitchen</option>
+                <option value="kitchen">Kitchen Staff</option>
                 <option value="outlet_owner">Outlet Owners</option>
               </select>
             </div>
@@ -1736,7 +1841,24 @@ export default function AdminView({ onLogout, dbMode }) {
                           </span>
                         </td>
                         <td style={{ textAlign: "right" }}>
-                          <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                          <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                            {(user.role === "staff" || user.role === "kitchen") && (
+                              <button onClick={async () => {
+                                const newPin = window.prompt(`Enter new 4-digit PIN for ${user.first_name || user.email}:`);
+                                if (newPin && newPin.length === 4 && /^\d+$/.test(newPin)) {
+                                  try {
+                                    await api.adminUpdateUser(user.id, { pin: newPin });
+                                    showToast("PIN reset successfully", "success");
+                                  } catch (err) {
+                                    showToast(err.message, "error");
+                                  }
+                                } else if (newPin !== null) {
+                                  alert("PIN must be exactly 4 digits.");
+                                }
+                              }} style={{ background: "none", border: "1px solid var(--border-light)", cursor: "pointer", color: "var(--text-secondary)", padding: "0.2rem 0.5rem", borderRadius: "4px", fontSize: "0.75rem" }} title="Reset PIN">
+                                Reset PIN
+                              </button>
+                            )}
                             <button onClick={() => openEditStaff(user)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)" }} title="Edit User">
                               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
                             </button>
@@ -2127,11 +2249,17 @@ export default function AdminView({ onLogout, dbMode }) {
                         setBannerDisplayLocation(b.display_location || "home");
                         setShowBannerModal(true);
                       }} style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem" }}>Edit</button>
-                      <button className="btn btn-secondary btn-sm" onClick={async () => {
-                        if (window.confirm("Delete banner?")) {
-                          await api.adminDeleteBanner(b.id);
-                          api.adminGetBanners().then(setBanners);
-                        }
+                      <button className="btn btn-secondary btn-sm" onClick={() => {
+                        setConfirmDeleteModal({
+                          message: "Delete this banner? It will immediately stop showing on the storefront.",
+                          onConfirm: async () => {
+                            try {
+                              await api.adminDeleteBanner(b.id);
+                              showToast("Banner deleted.", "success");
+                              api.adminGetBanners().then(setBanners);
+                            } catch (err) { showToast("Failed: " + err.message, "error"); }
+                          }
+                        });
                       }} style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem", color: "var(--error)", borderColor: "var(--error)" }}>Delete</button>
                     </div>
                   </td>
@@ -2175,6 +2303,19 @@ export default function AdminView({ onLogout, dbMode }) {
                 <div>
                   <strong style={{ display: "block", color: "var(--text-primary)" }}>Holiday Mode (Store Closed)</strong>
                   <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Temporarily close the store and display a holiday banner.</span>
+                </div>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", background: "var(--bg-elevated)", padding: "1rem", borderRadius: "var(--r-md)", border: "1px solid var(--border-subtle)" }}>
+                <input type="checkbox" checked={storeSettings.share_revenue_with_outlets === "true"} onChange={async (e) => {
+                  const val = e.target.checked ? "true" : "false";
+                  await api.adminUpdateStoreSettings({ share_revenue_with_outlets: val });
+                  setStoreSettings(prev => ({ ...prev, share_revenue_with_outlets: val }));
+                  setToast({ message: "Revenue sharing visibility updated", type: "success" });
+                }} style={{ width: "1.2rem", height: "1.2rem", accentColor: "var(--brand)" }} />
+                <div>
+                  <strong style={{ display: "block", color: "var(--text-primary)" }}>Share Revenue Stats with Outlets</strong>
+                  <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>If enabled, Outlet Managers (Operations) can see the Revenue Share tab.</span>
                 </div>
               </label>
             </div>
@@ -2223,6 +2364,39 @@ export default function AdminView({ onLogout, dbMode }) {
                   <button className="btn btn-primary" onClick={async () => {
                     await api.adminUpdateStoreSettings({ tax_percentage: storeSettings.tax_percentage });
                     setToast({ message: "Tax percentage updated", type: "success" });
+                  }}>Save</button>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Loyalty: Earn Rate (e.g. 0.1 for 1 pt per ₹10)</label>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input type="number" step="0.01" className="form-input" value={storeSettings.loyalty_earn_rate || "0.1"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_earn_rate: e.target.value }))} />
+                  <button className="btn btn-primary" onClick={async () => {
+                    await api.adminUpdateStoreSettings({ loyalty_earn_rate: storeSettings.loyalty_earn_rate });
+                    setToast({ message: "Loyalty earn rate updated", type: "success" });
+                  }}>Save</button>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Loyalty: Redeem Rate (e.g. 0.01 for 100 pts = ₹1)</label>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input type="number" step="0.01" className="form-input" value={storeSettings.loyalty_redeem_rate || "0.01"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_redeem_rate: e.target.value }))} />
+                  <button className="btn btn-primary" onClick={async () => {
+                    await api.adminUpdateStoreSettings({ loyalty_redeem_rate: storeSettings.loyalty_redeem_rate });
+                    setToast({ message: "Loyalty redeem rate updated", type: "success" });
+                  }}>Save</button>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Loyalty: Points for Review</label>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input type="number" className="form-input" value={storeSettings.loyalty_review_points || "10"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_review_points: e.target.value }))} />
+                  <button className="btn btn-primary" onClick={async () => {
+                    await api.adminUpdateStoreSettings({ loyalty_review_points: storeSettings.loyalty_review_points });
+                    setToast({ message: "Review points updated", type: "success" });
                   }}>Save</button>
                 </div>
               </div>
@@ -2465,12 +2639,29 @@ export default function AdminView({ onLogout, dbMode }) {
               <button type="button" onClick={lookupCoordinates} disabled={geocodingLoading} className="btn btn-secondary" style={{ padding: "0 0.875rem", flexShrink: 0 }} title="Auto-fetch coordinates">
                 {geocodingLoading ? <div style={{ width: 14, height: 14, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> : <Globe size={15} />}
               </button>
+              {outletAddress && (
+                <a
+                  href={
+                    outletLatitude && outletLongitude
+                      ? `https://www.google.com/maps?q=${encodeURIComponent(outletLatitude)},${encodeURIComponent(outletLongitude)}`
+                      : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(outletAddress)}`
+                  }
+                  target="_blank" rel="noopener noreferrer"
+                  className="btn btn-secondary"
+                  style={{ padding: "0 0.875rem", flexShrink: 0, textDecoration: "none", display: "flex", alignItems: "center", gap: "0.2rem" }}
+                  title={outletLatitude && outletLongitude ? "View exact location on Map" : "Search address on Map"}
+                >
+                  <MapPin size={15} /> Map
+                </a>
+              )}
             </div>
-            {geocodingMsg && (
-              <div style={{ marginTop: "0.3rem", fontSize: "0.75rem", color: geocodingMsg.includes("Failed") ? "var(--error)" : "var(--success)" }}>
-                {geocodingMsg}
-              </div>
-            )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "0.3rem" }}>
+              {geocodingMsg ? (
+                <div style={{ fontSize: "0.75rem", color: geocodingMsg.includes("Failed") || geocodingMsg.includes("not found") ? "var(--error)" : "var(--success)" }}>
+                  {geocodingMsg}
+                </div>
+              ) : <div />}
+            </div>
           </div>
           <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -2494,7 +2685,7 @@ export default function AdminView({ onLogout, dbMode }) {
       </Modal>
 
       {/* Add/Edit Staff */}
-      <Modal open={showAddStaff} onClose={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); }} title={editingUserId ? "Edit Team Account" : "Create Team Account"}>
+      <Modal open={showAddStaff} onClose={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); setUserLoyaltyPoints(0); }} title={editingUserId ? "Edit User Account" : "Create User Account"}>
         <form onSubmit={handleAddStaff} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Role</label>
@@ -2555,9 +2746,17 @@ export default function AdminView({ onLogout, dbMode }) {
               </select>
             </div>
           )}
+
+          {staffRole === "customer" && editingUserId && (
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Loyalty Points</label>
+              <input type="number" className="form-input" value={userLoyaltyPoints} onChange={e => setUserLoyaltyPoints(e.target.value)} />
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: "0.75rem" }}>
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Users size={15} /> {editingUserId ? "Save Changes" : "Create Account"}</button>
-            <button type="button" onClick={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); }} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+            <button type="button" onClick={() => { setShowAddStaff(false); setEditingUserId(null); setStaffEmail(""); setStaffPassword(""); setStaffPin(""); setStaffFirstName(""); setStaffLastName(""); setStaffPhone(""); setStaffRole("staff"); setStaffDepartment(""); setUserLoyaltyPoints(0); }} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
           </div>
         </form>
       </Modal>
@@ -2808,6 +3007,86 @@ export default function AdminView({ onLogout, dbMode }) {
             Save Banner
           </button>
         </form>
+      </Modal>
+
+      {/* ── Confirm Delete Modal ── */}
+      {confirmDeleteModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 99997, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+          <div style={{ background: "var(--bg-card)", padding: "2rem", maxWidth: "440px", width: "100%", borderRadius: "var(--r-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.35)", border: "1px solid var(--border-subtle)" }}>
+            <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+              <span style={{ fontSize: "1.5rem", flexShrink: 0 }}>⚠️</span>
+              <p style={{ margin: 0, color: "var(--text-primary)", fontSize: "0.95rem", lineHeight: 1.6, fontWeight: 500 }}>{confirmDeleteModal.message}</p>
+            </div>
+            <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+              <button onClick={() => setConfirmDeleteModal(null)} className="btn btn-secondary">Cancel</button>
+              <button onClick={() => { confirmDeleteModal.onConfirm(); setConfirmDeleteModal(null); }} className="btn" style={{ background: "var(--error)", color: "#fff", border: "none" }}>Confirm Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reply Ticket Modal ── */}
+      <Modal open={!!replyTicketModal} onClose={() => { setReplyTicketModal(null); setReplyText(""); }} title="Reply & Resolve Ticket" width={500}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--text-secondary)" }}>Write your reply to the customer. The ticket will be marked as <strong>Resolved</strong> after sending.</p>
+          <textarea
+            className="form-input"
+            rows={5}
+            style={{ resize: "vertical" }}
+            placeholder="Hi, we've resolved your issue..."
+            value={replyText}
+            onChange={e => setReplyText(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+            <button className="btn btn-secondary" onClick={() => { setReplyTicketModal(null); setReplyText(""); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitTicketReply}>Send Reply & Resolve</button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Restock Quantity Modal ── */}
+      <Modal open={!!restockModal} onClose={() => setRestockModal(null)} title="Request Restock" width={420}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {restockModal && (
+            <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--text-secondary)" }}>How many units of <strong>{restockModal.itemName}</strong> to request from kitchen?</p>
+          )}
+          <input
+            type="number"
+            min="1"
+            className="form-input"
+            value={restockQty}
+            onChange={e => setRestockQty(e.target.value)}
+            style={{ fontSize: "1.2rem", fontWeight: 700, textAlign: "center" }}
+            autoFocus
+          />
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+            <button className="btn btn-secondary" onClick={() => setRestockModal(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitRestockRequest}>Send Request</button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Review Reply Modal ── */}
+      <Modal open={!!reviewReplyModal} onClose={() => { setReviewReplyModal(null); setReviewReplyText(""); }} title="Reply to Review" width={500}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {reviewReplyModal && (
+            <div style={{ padding: "0.75rem", background: "var(--bg-elevated)", borderRadius: "var(--r-md)", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+              <strong>Customer said:</strong> {reviewReplyModal.comment || <em>No comment</em>}
+            </div>
+          )}
+          <textarea
+            className="form-input"
+            rows={4}
+            style={{ resize: "vertical" }}
+            placeholder="Thank you for your feedback..."
+            value={reviewReplyText}
+            onChange={e => setReviewReplyText(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+            <button className="btn btn-secondary" onClick={() => { setReviewReplyModal(null); setReviewReplyText(""); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitReviewReply}>Save Reply</button>
+          </div>
+        </div>
       </Modal>
 
       {toast && (
