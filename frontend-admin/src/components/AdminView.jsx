@@ -30,6 +30,7 @@ function Modal({ open, onClose, title, children, width = 480 }) {
 }
 
 export default function AdminView({ onLogout, dbMode }) {
+  const [printOrder, setPrintOrder] = useState(null);
   const [toast, setToast] = useState(null);
   const showToast = (msg, type = "success") => setToast({ message: msg, type });
   // Legacy alert() wrapper kept for any remaining calls from nested components
@@ -1234,7 +1235,14 @@ export default function AdminView({ onLogout, dbMode }) {
                   <tr key={o.id}>
                     <td><span style={{ fontWeight: 700, color: "var(--brand)" }}>#{o.id}</span></td>
                     <td style={{ color: "var(--text-secondary)" }}>{new Date(o.created_at).toLocaleDateString()}</td>
-                    <td>{o.customer_email}</td>
+                    <td>
+                      <button 
+                        onClick={() => setPrintOrder(o)}
+                        style={{ background: "none", border: "none", color: "var(--brand)", textDecoration: "underline", cursor: "pointer", padding: 0 }}
+                      >
+                        {o.customer_email || "Guest"}
+                      </button>
+                    </td>
                     <td><strong>₹{o.total_price.toFixed(0)}</strong></td>
                     <td><span className={`badge-status status-${o.status}`}>{o.status}</span></td>
                     <td>
@@ -3087,6 +3095,77 @@ export default function AdminView({ onLogout, dbMode }) {
             <button className="btn btn-primary" onClick={submitReviewReply}>Save Reply</button>
           </div>
         </div>
+      </Modal>
+
+      <Modal open={!!printOrder} onClose={() => setPrintOrder(null)} title={`Order #${printOrder?.id} Details`} width={600}>
+        {printOrder && (
+          <div>
+            <div id="print-bill-section" style={{ padding: "1rem", border: "1px solid var(--border-light)", borderRadius: "var(--r-md)", background: "#fff", color: "#000" }}>
+              <h2 style={{ textAlign: "center", margin: "0 0 1rem 0" }}>INVOICE / BILL</h2>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem", fontSize: "0.9rem" }}>
+                <div>
+                  <strong>Order ID:</strong> #{printOrder.id}<br/>
+                  <strong>Date:</strong> {new Date(printOrder.created_at).toLocaleString()}<br/>
+                  <strong>Status:</strong> {printOrder.status.toUpperCase()}
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <strong>Customer Details:</strong><br/>
+                  {printOrder.customer_name || "N/A"}<br/>
+                  {printOrder.customer_phone || "N/A"}<br/>
+                  {printOrder.customer_email || "N/A"}
+                </div>
+              </div>
+              
+              <div style={{ marginBottom: "1rem", fontSize: "0.9rem" }}>
+                <strong>Delivery Address:</strong><br/>
+                {printOrder.delivery_address || "N/A"}
+              </div>
+
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem", marginBottom: "1rem" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #ccc" }}>
+                    <th style={{ textAlign: "left", padding: "0.5rem 0" }}>Item</th>
+                    <th style={{ textAlign: "center", padding: "0.5rem 0" }}>Qty</th>
+                    <th style={{ textAlign: "right", padding: "0.5rem 0" }}>Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {printOrder.items?.map((it, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #eee" }}>
+                      <td style={{ padding: "0.5rem 0" }}>{it.menu_item_name}</td>
+                      <td style={{ textAlign: "center", padding: "0.5rem 0" }}>{it.quantity}</td>
+                      <td style={{ textAlign: "right", padding: "0.5rem 0" }}>₹{(it.price * it.quantity).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={2} style={{ textAlign: "right", padding: "0.5rem 0", fontWeight: "bold" }}>Delivery Charge:</td>
+                    <td style={{ textAlign: "right", padding: "0.5rem 0", fontWeight: "bold" }}>₹{printOrder.delivery_charge || 0}</td>
+                  </tr>
+                  <tr>
+                    <td colSpan={2} style={{ textAlign: "right", padding: "0.5rem 0", fontWeight: "bold", fontSize: "1.1rem" }}>Total:</td>
+                    <td style={{ textAlign: "right", padding: "0.5rem 0", fontWeight: "bold", fontSize: "1.1rem" }}>₹{printOrder.total_price.toFixed(2)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => {
+                const printWindow = window.open('', '_blank');
+                printWindow.document.write('<html><head><title>Print Bill - Order #' + printOrder.id + '</title>');
+                printWindow.document.write('<style>body{font-family:sans-serif;} table{width:100%;border-collapse:collapse;} th,td{border-bottom:1px solid #ccc;padding:8px;text-align:left;} th:nth-child(2),td:nth-child(2){text-align:center;} th:last-child,td:last-child{text-align:right;} .text-right{text-align:right;}</style>');
+                printWindow.document.write('</head><body>');
+                printWindow.document.write(document.getElementById("print-bill-section").innerHTML);
+                printWindow.document.write('</body></html>');
+                printWindow.document.close();
+                printWindow.focus();
+                setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
+              }}>Print Bill</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setPrintOrder(null)}>Close</button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {toast && (

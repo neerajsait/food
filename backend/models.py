@@ -572,6 +572,8 @@ class Order(db.Model):
             "order_type": self.order_type,
             "customer_id": self.customer_id,
             "customer_email": self.customer.email if self.customer else None,
+            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() if self.customer else None,
+            "customer_phone": self.customer.phone if self.customer else None,
             "outlet_id": self.outlet_id,
             "outlet_name": self.outlet.name if self.outlet else None,
             "staff_id": self.staff_id,
