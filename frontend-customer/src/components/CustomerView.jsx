@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { api } from "../utils/api";
+import { api, API_BASE_URL } from "../utils/api";
 import { jsPDF } from "jspdf";
 import {
   ShoppingCart, Clock, CheckCircle, Star, MessageSquare, X, Lock,
@@ -1105,12 +1105,18 @@ export default function CustomerView({ onLogout, dbMode }) {
                     <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem", margin: "0 0 1rem" }}>{t.description}</p>
                     {t.attachment_url && (
                       <div style={{ marginBottom: "1rem" }}>
-                        <a href={t.attachment_url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", background: "var(--bg-hover)", borderRadius: "var(--r-sm)", color: "var(--brand)", textDecoration: "none", fontSize: "0.85rem", fontWeight: "600" }}>
+                        <a href={t.attachment_url.startsWith('/') ? `${API_BASE_URL.replace('/api', '')}${t.attachment_url}` : t.attachment_url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", background: "var(--bg-hover)", borderRadius: "var(--r-sm)", color: "var(--brand)", textDecoration: "none", fontSize: "0.85rem", fontWeight: "600" }}>
                           <FileText size={14} /> View Attachment
                         </a>
                       </div>
                     )}
-                    <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: "600" }}>{new Date(t.created_at).toLocaleString()}</div>
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: "600", marginBottom: "0.5rem" }}>{new Date(t.created_at).toLocaleString()}</div>
+                    {t.admin_reply && (
+                      <div style={{ background: "rgba(34,197,94,0.1)", borderLeft: "3px solid var(--brand)", padding: "0.75rem", borderRadius: "0 var(--r-sm) var(--r-sm) 0", marginTop: "1rem" }}>
+                        <strong style={{ fontSize: "0.85rem", color: "var(--brand)", textTransform: "uppercase", letterSpacing: "1px", display: "block", marginBottom: "0.25rem" }}>Support Team Reply:</strong>
+                        <p style={{ margin: 0, fontSize: "0.95rem", color: "var(--text-primary)" }}>{t.admin_reply}</p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

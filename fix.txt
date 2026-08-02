@@ -1,8 +1,3 @@
-failed to delete address 
-
-Order failed: An unexpected server error occurred.
-from backend add 4 stars to eevry item 
-
-pls do 3 things without any errors and fully fucntionaaing pls
-
-no its not working and i ahve so many more to fix 
+in admin i added choclate as other catogery product but it was not gtiing reflected in the other catogery biut it can be seen in all products
+as admin i gave 4 stars to choclate but it was not getting refletcted in customer page
+as admin i gave 2 global limit for choclate and after i odered 2 cholates it was not shown in the customer page as it was completely removed insted it should show soldout and notification was sent to the admin or kitchen that itme has sold out .

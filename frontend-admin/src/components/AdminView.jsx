@@ -2123,6 +2123,13 @@ export default function AdminView({ onLogout, dbMode }) {
                       <td>
                         <strong>{ticket.issue_type}</strong>
                         <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginTop: "4px" }}>{ticket.description}</div>
+                        {ticket.attachment_url && (
+                          <div style={{ marginTop: "0.5rem" }}>
+                            <a href={ticket.attachment_url.startsWith('/') ? `${API_BASE_URL.replace('/api', '')}${ticket.attachment_url}` : ticket.attachment_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "var(--brand)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "0.3rem", background: "rgba(34,197,94,0.1)", padding: "0.2rem 0.5rem", borderRadius: "4px" }}>
+                              <FileText size={12} /> View Attachment
+                            </a>
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span className={`badge-status status-${ticket.status === 'Open' ? 'pending' : 'delivered'}`}>{ticket.status}</span>
