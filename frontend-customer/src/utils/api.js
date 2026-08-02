@@ -1207,6 +1207,26 @@ export const api = {
     return data;
   },
 
+  async deleteCustomerReview(reviewId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.deleteCustomerReview(reviewId);
+
+    const res = await fetch(`${API_BASE_URL}/customer/reviews/${reviewId}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    if (!res.ok) throw new Error("Failed to delete review");
+    return safeJson(res);
+  },
+
+  async getCustomerReviews() {
+    const live = await checkBackendAlive();
+    if (!live) return [];
+    const res = await fetch(`${API_BASE_URL}/customer/reviews`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to fetch customer reviews");
+    return safeJson(res);
+  },
+
   async deleteAccount() {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
@@ -1906,7 +1926,7 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ rating: parseInt(data.rating), comment: data.comment, review_code: data.review_code })
+      body: JSON.stringify({ rating: parseInt(data.rating), comment: data.comment, order_id: data.orderId })
     });
     const responseData = await safeJson(res);
     if (!res.ok) throw new Error(responseData.message || responseData.error || "Review submission failed");

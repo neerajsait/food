@@ -988,9 +988,6 @@ The FlavorFlow Team"""
             points_earned = int(float(total) * earn_rate)
             customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
 
-        import random
-        new_review_code = f"TRK-{random.randint(10,99)}-{random.randint(1000,9999)}"
-        
         order = Order(
             customer_id=customer_id, 
             total_price=total, 
@@ -1000,9 +997,7 @@ The FlavorFlow Team"""
             applied_coupon_code=coupon.code if coupon else None,
             loyalty_points_earned=points_earned,
             loyalty_points_redeemed=points_redeemed,
-            delivery_charge=delivery_charge,
-            review_code=new_review_code,
-            tracking_code=new_review_code
+            delivery_charge=delivery_charge
         )
         db.session.add(order)
         db.session.flush() # ensure we have order.id
@@ -1064,14 +1059,17 @@ The FlavorFlow Team"""
     def confirm_receipt(order_id):
         customer_id = int(get_jwt_identity())
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        code = (data.get("tracking_code") or "").strip()
+        code = (data.get("delivery_confirmation_code") or data.get("tracking_code") or "").strip()
 
         order = db.session.get(Order, order_id)
         if not order or order.customer_id != customer_id:
             return jsonify({"error": "Not Found"}), 404
         if order.status != "shipped":
             return jsonify({"error": "Bad Request", "message": "Order is not in shipped status"}), 400
-        if order.tracking_code != code:
+        
+        if order.delivery_confirmation_code and order.delivery_confirmation_code != code:
+            return jsonify({"error": "Unauthorized", "message": "Incorrect Delivery PIN. Please check your email and try again."}), 401
+        elif not order.delivery_confirmation_code and order.tracking_id != code:
             return jsonify({"error": "Unauthorized", "message": "Tracking code does not match"}), 401
 
         order.is_received = True
@@ -1098,6 +1096,7 @@ The FlavorFlow Team"""
             return jsonify({"error": "Bad Request", "message": "Rating must be 1–5"}), 400
 
         fb = Review(order_id=order_id, customer_id=customer_id,
+                      menu_item_id=data.get("menu_item_id"),
                       rating=rating, comment=data.get("comment"))
         db.session.add(fb)
         db.session.commit()
@@ -1621,10 +1620,9 @@ The FlavorFlow Team"""
         data = (sanitize_input(request.get_json(silent=True)) or {})
         tracking_code = (data.get("tracking_code") or "").strip()
         tracking_label = data.get("tracking_label")
-        if not tracking_code:
-            return jsonify({"error": "Bad Request", "message": "tracking_code is required"}), 400
         order.status = "shipped"
-        order.tracking_code = tracking_code
+        order.tracking_id = tracking_code if tracking_code else None
+        order.delivery_confirmation_code = str(random.randint(100000, 999999))
         if tracking_label:
             order.tracking_label = tracking_label
         tracking_link = (data.get("tracking_link") or "").strip()
@@ -3130,7 +3128,7 @@ The FlavorFlow Team"""
     @app.route("/api/foods/menu-items/<int:item_id>/reviews", methods=["GET"])
     def get_menu_item_reviews(item_id):
         reviews = db.session.scalars(
-            select(Review).where(Review.menu_item_id == item_id).order_by(Review.created_at.desc())
+            select(Review).where(Review.menu_item_id == item_id, Review.is_hidden == False).order_by(Review.created_at.desc())
         ).all()
         return jsonify([r.to_dict() for r in reviews]), 200
 
@@ -3149,9 +3147,10 @@ The FlavorFlow Team"""
         data = (sanitize_input(request.get_json(silent=True)) or {})
         rating = data.get("rating")
         comment = data.get("comment", "")
+        order_id = data.get("order_id")
         
-        if rating is None:
-            return jsonify({"error": "Bad Request", "message": "Rating is required"}), 400
+        if rating is None or order_id is None:
+            return jsonify({"error": "Bad Request", "message": "Rating and order_id are required"}), 400
         try:
             rating_val = int(rating)
             if not (1 <= rating_val <= 5):
@@ -3159,23 +3158,28 @@ The FlavorFlow Team"""
         except ValueError:
             return jsonify({"error": "Bad Request", "message": "Rating must be between 1 and 5"}), 400
         
-        review_code = data.get("review_code", "").strip()
-        if not review_code:
-            return jsonify({"error": "Bad Request", "message": "Review code is required. You can find it in your order history after delivery."}), 400
+        existing_review = db.session.scalars(select(Review).where(
+            Review.customer_id == uid,
+            Review.menu_item_id == item_id,
+            Review.order_id == order_id
+        )).first()
+        
+        if existing_review:
+            return jsonify({"error": "Conflict", "message": "You have already reviewed this item for this order"}), 409
 
-        # Ensure user has actually ordered this item before and the review_code is valid
+        # Ensure user has actually ordered this item before and it has been delivered
         has_ordered = db.session.scalars(
             select(Order).join(OrderItem).where(
+                Order.id == order_id,
                 Order.customer_id == uid,
                 OrderItem.menu_item_id == item_id,
-                Order.is_received == True,
-                Order.review_code == review_code
+                Order.is_received == True
             )
         ).first()
         if not has_ordered:
-            return jsonify({"error": "Forbidden", "message": "Invalid review code or you haven't received this product yet."}), 403
+            return jsonify({"error": "Forbidden", "message": "You can only review items you have ordered and received"}), 403
         
-        review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment)
+        review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment, order_id=order_id)
         db.session.add(review)
         
         review_points_setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_review_points')).first()
@@ -3183,7 +3187,7 @@ The FlavorFlow Team"""
         if points > 0:
             user.loyalty_points = (user.loyalty_points or 0) + points
             history_entry = WalletTransaction(
-                user_id=uid, type='earned', amount=points,
+                user_id=uid, transaction_type='credit', amount=points,
                 description=f"Earned points for reviewing {item.name}"
             )
             db.session.add(history_entry)
@@ -3191,6 +3195,15 @@ The FlavorFlow Team"""
         db.session.commit()
         msg = f"Review submitted successfully! You earned {points} loyalty points." if points > 0 else "Review submitted successfully"
         return jsonify({"message": msg, "review": review.to_dict(), "loyalty_points_earned": points, "new_balance": user.loyalty_points}), 201
+
+    @app.route("/api/customer/reviews", methods=["GET"])
+    @role_required("customer")
+    def get_customer_reviews():
+        user_id = int(get_jwt_identity())
+        reviews = db.session.scalars(
+            select(Review).where(Review.customer_id == user_id).order_by(Review.created_at.desc())
+        ).all()
+        return jsonify([r.to_dict() for r in reviews]), 200
 
     @app.route("/api/customer/reviews/<int:review_id>", methods=["DELETE"])
     @role_required("customer")
@@ -3978,16 +3991,22 @@ def _send_order_placed_email(app, order, customer):
 def _send_order_shipped_email(app, order, customer, tracking_code):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
-        msg = Message(subject="Your FlavorFlow Box is on its way! 🚚", sender=sender, recipients=[customer.email])
+        msg = Message(subject="Your FlavorFlow Box is on its way! 📦", sender=sender, recipients=[customer.email])
         content = f"""
-        <h2 style="color: #f97316; margin-top: 0;">Your food is on the way! 🚚</h2>
+        <h2 style="color: #f97316; margin-top: 0;">Your food is on the way! 🛵</h2>
         <p>Hi {customer.first_name or 'there'}, your order #{order.id} has been packed, handed over to our delivery partner, and is officially en route!</p>
         <p>Get ready for a warm, delightful feast.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 25px; text-align: center;">
-            <div style="font-size: 13px; color: #64748b;">SHIPPING TRACKING CODE</div>
+            <div style="font-size: 13px; color: #64748b; margin-bottom: 5px;">SHIPPING TRACKING CODE</div>
             <div style="font-size: 22px; font-weight: 800; color: #f97316; letter-spacing: 1px; margin: 5px 0;">{tracking_code}</div>
-            <div style="font-size: 12px; color: #94a3b8;">Use this code to track delivery with our logistics partner.</div>
+            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Use this code to track delivery with our logistics partner.</div>
+            
+            <div style="border-top: 1px dashed #cbd5e1; margin: 15px 0;"></div>
+            
+            <div style="font-size: 13px; color: #64748b; margin-bottom: 5px;">DELIVERY CONFIRMATION PIN</div>
+            <div style="font-size: 26px; font-weight: 900; color: #22c55e; letter-spacing: 3px; margin: 5px 0;">{order.delivery_confirmation_code}</div>
+            <div style="font-size: 12px; color: #94a3b8;">Enter this PIN in your order history to confirm receipt!</div>
         </div>
         
         <p>If you have any questions or need to make last-minute changes, please contact our support team immediately.</p>

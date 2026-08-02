@@ -88,7 +88,10 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [filterSpice, setFilterSpice] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null); // detail modal
   const [showReviewsModal, setShowReviewsModal] = useState(false);
-  const [reviewForm, setReviewForm] = useState(null); // { itemId: null, itemName: "", rating: 5, comment: "" }
+  const [reviewForm, setReviewForm] = useState(null); // { itemId: null, itemName: "", orderId: null, rating: 5, comment: "" }
+  
+  // My Reviews
+  const [myReviews, setMyReviews] = useState([]);
   
   // Favorites (persisted via API)
   const [favorites, setFavorites] = useState([]);
@@ -193,6 +196,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       const settingsData = await api.getPublicStoreSettings().catch(() => ({}));
 
       api.getCustomerTickets().then(setTickets).catch(() => { });
+      api.getCustomerReviews().then(setMyReviews).catch(() => { });
 
       // We don't have an authMe in api.js currently, skip it
       let profileData = null;
@@ -604,7 +608,7 @@ export default function CustomerView({ onLogout, dbMode }) {
   const handleReviewSubmit = async (e) => {
     e.preventDefault();
     try {
-      await api.submitMenuItemReview(reviewForm.itemId, { rating: reviewForm.rating, comment: reviewForm.comment, review_code: reviewForm.review_code });
+      await api.submitMenuItemReview(reviewForm.itemId, { rating: reviewForm.rating, comment: reviewForm.comment, orderId: reviewForm.orderId });
       alert("Review submitted successfully!");
       setReviewForm(null);
     } catch (err) {
@@ -636,6 +640,18 @@ export default function CustomerView({ onLogout, dbMode }) {
     } catch (err) {
       alert("Failed to delete account: " + err.message);
     }
+  };
+
+  const handleDeleteMyReview = (id) => {
+    confirm("Are you sure you want to delete this review?", async () => {
+      try {
+        await api.deleteCustomerReview(id);
+        setMyReviews(prev => prev.filter(r => r.id !== id));
+        alert("Review deleted successfully");
+      } catch (err) {
+        alert("Failed to delete review: " + err.message);
+      }
+    });
   };
 
   const handleReportIssue = (orderId) => {
@@ -1027,29 +1043,23 @@ export default function CustomerView({ onLogout, dbMode }) {
                         <span style={{ fontWeight: "900", fontSize: "1.2rem", color: "var(--text-primary)" }}>₹{parseFloat(order.total_price).toFixed(0)}</span>
                       </div>
                     </div>
-                    {order.status === 'delivered' && order.review_code && (
-                      <div style={{ padding: "0.75rem", background: "var(--bg-hover)", borderLeft: "2px solid var(--brand)", marginBottom: "1rem", fontSize: "0.85rem", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span>Tracking / Review Code (Required to rate items):</span>
-                        <strong style={{ color: "var(--text-primary)", letterSpacing: "1px", fontSize: "1rem" }}>{order.review_code}</strong>
-                      </div>
-                    )}
                     <div>
                       {order.items.map((it, i) => (
                         <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "0.5rem 0", fontSize: "0.95rem", alignItems: "center" }}>
                           <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                             <span><span style={{ color: "var(--text-secondary)", marginRight: "0.5rem", fontWeight: "700" }}>{it.quantity}x</span> {it.menu_item_name}</span>
                             {order.status === 'delivered' && (
-                              <button onClick={() => setReviewForm({ itemId: it.menu_item_id, itemName: it.menu_item_name, rating: 5, comment: "" })} style={{ background: "none", border: "1px solid var(--border-light)", color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.75rem", padding: "0.2rem 0.5rem", borderRadius: "var(--r-sm)" }}>Rate</button>
+                              <button onClick={() => setReviewForm({ itemId: it.menu_item_id, itemName: it.menu_item_name, orderId: order.id, rating: 5, comment: "" })} style={{ background: "none", border: "1px solid var(--border-light)", color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.75rem", padding: "0.2rem 0.5rem", borderRadius: "var(--r-sm)" }}>Rate</button>
                             )}
                           </span>
                           <span style={{ fontWeight: "700" }}>₹{(it.price * it.quantity).toFixed(0)}</span>
                         </div>
                       ))}
                     </div>
-                    {order.status === 'delivered' && !order.receipt_confirmed && (
+                    {order.status === 'shipped' && !order.receipt_confirmed && (
                       <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px dashed var(--border-light)", display: "flex", gap: "0.5rem" }}>
-                        <input type="text" placeholder="Tracking code" value={trackingCodes[order.id] || ""} onChange={e => setTrackingCodes({...trackingCodes, [order.id]: e.target.value})} className="form-input" style={{ flex: 1, background: "transparent" }} />
-                        <button onClick={() => handleConfirmReceipt(order.id)} className="btn btn-success" style={{ background: "var(--text-primary)", color: "#fff", borderRadius: 0 }}>Confirm</button>
+                        <input type="text" placeholder="Enter PIN from Driver" value={trackingCodes[order.id] || ""} onChange={e => setTrackingCodes({...trackingCodes, [order.id]: e.target.value})} className="form-input" style={{ flex: 1, background: "transparent" }} />
+                        <button onClick={() => handleConfirmReceipt(order.id)} className="btn btn-success" style={{ background: "var(--text-primary)", color: "#fff", borderRadius: 0 }}>Confirm Delivery</button>
                       </div>
                     )}
                     <div style={{ marginTop: "1.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
@@ -1410,6 +1420,48 @@ export default function CustomerView({ onLogout, dbMode }) {
                 )}
               </div>
 
+              {/* My Reviews Section */}
+              <div style={{ background: "transparent", borderRadius: "0", padding: "2.5rem 0", borderTop: "1px solid var(--border-default)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 2rem" }}>
+                  <h3 style={{ margin: 0, fontSize: "1.5rem", fontWeight: "900", fontFamily: "var(--font-heading)", color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                    <Star size={22} color="var(--text-primary)" /> My Reviews
+                  </h3>
+                </div>
+                {myReviews.length === 0 ? (
+                  <div style={{ padding: "2rem", textAlign: "center", border: "1px dashed var(--border-default)", color: "var(--text-muted)" }}>
+                    You haven't submitted any reviews yet.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+                    {myReviews.map(r => (
+                      <div key={r.id} style={{ padding: "1.5rem", border: "1px solid var(--border-default)", display: "flex", flexDirection: "column", gap: "0.5rem", background: "var(--bg-canvas)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontWeight: "800", fontSize: "1.1rem", color: "var(--text-primary)" }}>{r.menu_item_name}</div>
+                            <div style={{ display: "flex", gap: "0.2rem", color: "var(--brand)", fontSize: "1rem", marginTop: "0.25rem" }}>
+                              {Array.from({ length: 5 }).map((_, i) => (
+                                <span key={i}>{i < r.rating ? "★" : "☆"}</span>
+                              ))}
+                            </div>
+                          </div>
+                          <button onClick={() => handleDeleteMyReview(r.id)} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", padding: "0.25rem" }}><Trash2 size={16} /></button>
+                        </div>
+                        {r.comment && <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem", lineHeight: "1.5", marginTop: "0.5rem" }}>{r.comment}</p>}
+                        <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
+                          {new Date(r.created_at).toLocaleDateString()}
+                        </div>
+                        {r.admin_reply && (
+                          <div style={{ marginTop: "1rem", padding: "1rem", background: "rgba(0,0,0,0.03)", borderLeft: "3px solid var(--brand)" }}>
+                            <div style={{ fontSize: "0.85rem", fontWeight: "700", marginBottom: "0.25rem" }}>Admin Reply:</div>
+                            <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--text-secondary)" }}>{r.admin_reply}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Address Book Section */}
               <div style={{ background: "transparent", borderRadius: "0", padding: "2.5rem 0", borderTop: "1px solid var(--border-default)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 2rem" }}>
@@ -1582,7 +1634,6 @@ export default function CustomerView({ onLogout, dbMode }) {
                   ))}
                 </div>
               </div>
-              <input type="text" required className="form-input" placeholder="Enter TRK-... Code from your Order History" value={reviewForm.review_code || ""} onChange={e => setReviewForm({ ...reviewForm, review_code: e.target.value })} style={{ background: "var(--bg-canvas)", marginTop: "0.5rem" }} />
               <textarea className="form-input" rows="4" value={reviewForm.comment} onChange={e => setReviewForm({ ...reviewForm, comment: e.target.value })} placeholder="Write your review here (optional)..." style={{ background: "var(--bg-canvas)", resize: "none" }} />
               <button type="submit" className="btn btn-primary" style={{ background: "var(--brand)", marginTop: "1rem", padding: "1rem", borderRadius: "var(--r-full)" }}>
                 Submit Review

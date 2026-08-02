@@ -185,11 +185,7 @@ export default function AdminView({ onLogout, dbMode }) {
         setOrders(ordersData.value);
         const generatedCodes = {};
         ordersData.value.forEach(o => {
-          if (o.status === "pending" || o.status === "processing") {
-            generatedCodes[o.id] = `TRK-${o.id}-${Math.floor(1000 + Math.random() * 9000)}`;
-          } else {
-            generatedCodes[o.id] = o.tracking_code || "";
-          }
+          generatedCodes[o.id] = o.tracking_id || "";
         });
         setTrackingCodes(prev => ({ ...generatedCodes, ...prev }));
       }
@@ -392,11 +388,10 @@ export default function AdminView({ onLogout, dbMode }) {
     finally { setGeocodingLoading(false); }
   };
 
-  const handleShipOrder = async (orderId) => {
-    const code = trackingCodes[orderId];
-    if (!code?.trim()) { showToast("Enter a tracking code first", "error"); return; }
-    try {
-      await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null, trackingLinks[orderId] || null);
+    const handleShipOrder = async (orderId) => {
+      const code = trackingCodes[orderId] || "";
+      try {
+        await api.adminShipOrder(orderId, code.trim(), trackingLabels[orderId] || null, trackingLinks[orderId] || null);
       showToast("Marked as shipped!", "success");
       loadData();
     } catch (err) { showToast("Failed: " + err.message, "error"); }
@@ -1286,6 +1281,11 @@ export default function AdminView({ onLogout, dbMode }) {
                           <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
                             {o.tracking_code ? `Code: ${o.tracking_code}` : "Done"}
                           </span>
+                          {o.delivery_confirmation_code && (
+                            <span style={{ fontSize: "0.78rem", color: "var(--brand)", fontWeight: 600 }}>
+                              PIN: {o.delivery_confirmation_code}
+                            </span>
+                          )}
                           {o.tracking_label && (
                             <span style={{ fontSize: "0.68rem", color: "var(--brand)" }}>
                               🖼️ Label Uploaded

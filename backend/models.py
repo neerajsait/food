@@ -254,13 +254,13 @@ class MenuItem(db.Model):
     def average_rating(self):
         if self.admin_rating is not None:
             return float(self.admin_rating)
-        if not self.reviews:
-            return 0.0
+        if not getattr(self, 'reviews', None) or len(self.reviews) == 0:
+            return 4.0
         return round(sum(r.rating for r in self.reviews) / len(self.reviews), 1)
 
     @property
     def reviews_count(self):
-        return len(self.reviews)
+        return len(self.reviews) if getattr(self, 'reviews', None) else 0
 
     def to_dict(self):
         return {
@@ -537,6 +537,7 @@ class Order(db.Model):
     applied_coupon_code = Column(String(50), nullable=True)
     qr_code_base64 = Column(Text, nullable=True)
     review_code = Column(String(20), unique=True, nullable=True) # Code required to leave a review
+    delivery_confirmation_code = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -561,6 +562,7 @@ class Order(db.Model):
         self.loyalty_points_redeemed = loyalty_points_redeemed
         self.applied_coupon_code = applied_coupon_code
         self.review_code = review_code
+        self.delivery_confirmation_code = None
         if items:
             self.items = items
 
@@ -581,6 +583,7 @@ class Order(db.Model):
             "loyalty_points_redeemed": self.loyalty_points_redeemed,
             "qr_code_base64": self.qr_code_base64,
             "review_code": self.review_code,
+            "delivery_confirmation_code": self.delivery_confirmation_code,
             "items": [item.to_dict() for item in self.items],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
