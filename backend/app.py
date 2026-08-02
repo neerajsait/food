@@ -209,8 +209,8 @@ class SanitizedRequest(Request):
 def create_app(config_override=None):
     app = Flask(__name__)
     app.request_class = SanitizedRequest
-    frontend_url = os.getenv("FRONTEND_URL", "https://flavorflow.local").split(",")
-    CORS(app, resources={r"/api/*": {"origins": frontend_url}})
+    frontend_url = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # --- Config ---
     import logging
@@ -336,11 +336,13 @@ def create_app(config_override=None):
 
     @app.errorhandler(Exception)
     def handle_exception(e):
+        import traceback
+        tb = traceback.format_exc()
         from werkzeug.exceptions import HTTPException
         if isinstance(e, HTTPException):
             return jsonify({"error": e.name, "message": e.description}), e.code
         logger.exception(f"Unhandled exception: {e}")
-        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred."}), 500
+        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred.", "traceback": tb}), 500
 
     @app.after_request
     def add_security_headers(response):
@@ -409,31 +411,12 @@ def create_app(config_override=None):
             
         user.set_password(password, bcrypt)
         
-        # --- Referral Logic ---
-        import random, string
-        user.referral_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        
-        ref_code = (data.get("referral_code") or "").strip().upper()
-        if ref_code:
-            referrer = db.session.scalars(select(User).where(User.referral_code == ref_code)).first()
-            if referrer:
-                user.referred_by_id = referrer.id
-                
         db.session.add(user)
         db.session.flush()
 
-        if getattr(user, 'referred_by_id', None):
-            from decimal import Decimal
-            # pyrefly: ignore [unexpected-keyword]
-            c_ref = Coupon(code=f"REF-{user.referred_by_id}-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.referred_by_id, description="Referral Reward")
-            # pyrefly: ignore [unexpected-keyword]
-            c_new = Coupon(code=f"WEL-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.id, description="Welcome Referral Reward", is_first_order_only=True)
-            db.session.add(c_ref)
-            db.session.add(c_new)
-
         db.session.commit()
 
-        # Send welcome email if customer role
+        # Send verification email if customer role
         if getattr(user, 'role', '') == "customer":
             _send_verification_email(app, user)
 
@@ -790,6 +773,42 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Address deleted"}), 200
 
+    @app.route("/api/customer/account", methods=["DELETE"])
+    @role_required("customer")
+    def delete_customer_account():
+        user_id = int(get_jwt_identity())
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        try:
+            # We can use ORM to delete user and it should cascade,
+            # but if it fails due to IntegrityError, we catch it.
+            db.session.delete(user)
+            db.session.commit()
+            return jsonify({"message": "Account deleted successfully"}), 200
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.error(f"Error deleting account {user_id}: {str(e)}")
+            
+            # Fallback: manual deletion of known related records to bypass missing cascade
+            try:
+                from sqlalchemy import text
+                db.session.execute(text("DELETE FROM reviews WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM addresses WHERE user_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM support_tickets WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM favorites WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM orders WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
+                db.session.commit()
+                return jsonify({"message": "Account deleted successfully (manual cascade)"}), 200
+            except Exception as e2:
+                db.session.rollback()
+                logging.error(f"Error during manual cascade delete: {str(e2)}")
+                return jsonify({"error": "Delete Failed", "message": str(e2)}), 500
+
 
     # ============================================================
     # 2. CUSTOMER ROUTES (role: customer)
@@ -873,7 +892,7 @@ The FlavorFlow Team"""
         delivery_address = data.get("delivery_address")
         payment_method = data.get("payment_method", "COD")
         coupon_code = data.get("coupon_code")
-        delivery_charge = Decimal(str(data.get("delivery_charge", 0.00)))
+        delivery_charge = Decimal(str(data.get("delivery_charge") or 0.00))
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items in order"}), 400
@@ -948,7 +967,7 @@ The FlavorFlow Team"""
 
         earn_rate, redeem_rate = get_loyalty_settings()
         
-        redeem_points = int(data.get("redeem_loyalty_points", 0))
+        redeem_points = int(data.get("redeem_loyalty_points") or 0)
         points_redeemed = 0
         if redeem_points > 0:
             if not customer:
@@ -969,9 +988,8 @@ The FlavorFlow Team"""
             points_earned = int(float(total) * earn_rate)
             customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
 
-        import secrets
-        import string
-        new_review_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+        import random
+        new_review_code = f"TRK-{random.randint(10,99)}-{random.randint(1000,9999)}"
         
         order = Order(
             customer_id=customer_id, 
@@ -983,7 +1001,8 @@ The FlavorFlow Team"""
             loyalty_points_earned=points_earned,
             loyalty_points_redeemed=points_redeemed,
             delivery_charge=delivery_charge,
-            review_code=new_review_code
+            review_code=new_review_code,
+            tracking_code=new_review_code
         )
         db.session.add(order)
         db.session.flush() # ensure we have order.id
@@ -3172,6 +3191,20 @@ The FlavorFlow Team"""
         db.session.commit()
         msg = f"Review submitted successfully! You earned {points} loyalty points." if points > 0 else "Review submitted successfully"
         return jsonify({"message": msg, "review": review.to_dict(), "loyalty_points_earned": points, "new_balance": user.loyalty_points}), 201
+
+    @app.route("/api/customer/reviews/<int:review_id>", methods=["DELETE"])
+    @role_required("customer")
+    def delete_customer_review(review_id):
+        user_id = int(get_jwt_identity())
+        review = db.session.get(Review, review_id)
+        if not review:
+            return jsonify({"error": "Not Found", "message": "Review not found"}), 404
+        if review.customer_id != user_id:
+            return jsonify({"error": "Forbidden", "message": "You can only delete your own reviews"}), 403
+            
+        db.session.delete(review)
+        db.session.commit()
+        return jsonify({"message": "Review deleted successfully"}), 200
 
     @app.route("/api/admin/reviews", methods=["GET"])
     @role_required("admin", "outlet_owner")

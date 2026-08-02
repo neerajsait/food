@@ -45,28 +45,7 @@ let cachedLive = null;
 let lastCheckTime = 0;
 
 async function checkBackendAlive(bypassThrow = false) {
-  const now = Date.now();
-  if (cachedLive !== null && (now - lastCheckTime < 10000)) {
-    if (!cachedLive && !bypassThrow && (import.meta.env.PROD && import.meta.env.VITE_DEMO_MODE !== "true")) {
-      throw new Error("Unable to connect to the backend server. Please verify the server is running.");
-    }
-    return cachedLive;
-  }
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    const isJson = response.headers.get("content-type")?.includes("application/json");
-    cachedLive = response.ok && isJson;
-  } catch (err) {
-    cachedLive = false;
-  }
-  lastCheckTime = Date.now();
-  if (!cachedLive && !bypassThrow && (import.meta.env.PROD && import.meta.env.VITE_DEMO_MODE !== "true")) {
-    throw new Error("Unable to connect to the backend server. Please verify the server is running.");
-  }
-  return cachedLive;
+  return true; // Forced Real Mode
 }
 
 // ----------------------------------------------------------------
@@ -344,6 +323,8 @@ const mockApi = {
         price: menuItem.price
       };
     });
+    
+    total += deliveryCharge;
 
     // Save updated menu to persist mock stock decrements
     localStorage.setItem("mock_menu", JSON.stringify(menu));
@@ -386,7 +367,11 @@ const mockApi = {
       payment_method: paymentMethod,
       items,
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      delivery_charge: deliveryCharge,
+      loyalty_points_earned: Math.floor(total * 0.1),
+      loyalty_points_redeemed: pointsToRedeem,
+      review_code: "MOCK" + Math.floor(Math.random() * 1000)
     };
 
     orders.push(newOrder);
@@ -817,6 +802,34 @@ const mockApi = {
     return outlet;
   },
 
+  async getLoyaltyTransactions(userId) {
+    const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+    const u = users.find(x => x.id === parseInt(userId));
+    return u?.loyalty_history || [];
+  },
+
+  async deleteAccount(userId) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      let users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      users = users.filter(u => u.id !== parseInt(userId));
+      localStorage.setItem("mock_users", JSON.stringify(users));
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
+      return { message: "Account deleted successfully" };
+    }
+  },
+
+  async deleteCustomerReview(reviewId) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      let reviews = JSON.parse(localStorage.getItem("mock_menu_item_reviews") || "[]");
+      reviews = reviews.filter(r => r.id !== parseInt(reviewId));
+      localStorage.setItem("mock_menu_item_reviews", JSON.stringify(reviews));
+      return { message: "Review deleted successfully" };
+    }
+  },
+
   async forgotPassword(email) {
     const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
     const user = users.find(u => u.email === email);
@@ -1191,6 +1204,38 @@ export const api = {
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Feedback submission failed");
+    return data;
+  },
+
+  async deleteAccount() {
+    const live = await checkBackendAlive();
+    const user = this.getCurrentUser();
+    if (!user) throw new Error("Unauthorized");
+    
+    if (!live) return mockApi.deleteAccount(user.id);
+    
+    const res = await fetch(`${API_BASE_URL}/customer/account`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete account");
+    
+    localStorage.removeItem("user");
+    localStorage.removeItem("token");
+    return data;
+  },
+
+  async deleteCustomerReview(reviewId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.deleteCustomerReview(reviewId);
+
+    const res = await fetch(`${API_BASE_URL}/customer/reviews/${reviewId}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete review");
     return data;
   },
 
@@ -1866,6 +1911,19 @@ export const api = {
     const responseData = await safeJson(res);
     if (!res.ok) throw new Error(responseData.message || responseData.error || "Review submission failed");
     return responseData;
+  },
+
+  async deleteCustomerReview(reviewId) {
+    const live = await checkBackendAlive();
+    if (!live) return mockApi.deleteCustomerReview(reviewId);
+    
+    const res = await fetch(`${API_BASE_URL}/customer/reviews/${reviewId}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete review");
+    return data;
   },
 
   async adminGetReviews() {

@@ -547,7 +547,7 @@ class Order(db.Model):
 
     def __init__(self, total_price=0.00, status='pending', items=None, payment_method='COD', 
                  order_type='online', customer_id=None, outlet_id=None, staff_id=None, delivery_address=None,
-                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None):
+                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None, review_code=None):
         self.order_type = order_type
         self.customer_id = customer_id
         self.outlet_id = outlet_id
@@ -560,6 +560,7 @@ class Order(db.Model):
         self.loyalty_points_earned = loyalty_points_earned
         self.loyalty_points_redeemed = loyalty_points_redeemed
         self.applied_coupon_code = applied_coupon_code
+        self.review_code = review_code
         if items:
             self.items = items
 

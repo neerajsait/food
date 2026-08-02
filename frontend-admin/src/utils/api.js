@@ -45,28 +45,7 @@ let cachedLive = null;
 let lastCheckTime = 0;
 
 async function checkBackendAlive(bypassThrow = false) {
-  const now = Date.now();
-  if (cachedLive !== null && (now - lastCheckTime < 10000)) {
-    if (!cachedLive && !bypassThrow && (import.meta.env.PROD && import.meta.env.VITE_DEMO_MODE !== "true")) {
-      throw new Error("Unable to connect to the backend server. Please verify the server is running.");
-    }
-    return cachedLive;
-  }
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    const isJson = response.headers.get("content-type")?.includes("application/json");
-    cachedLive = response.ok && isJson;
-  } catch (err) {
-    cachedLive = false;
-  }
-  lastCheckTime = Date.now();
-  if (!cachedLive && !bypassThrow && (import.meta.env.PROD && import.meta.env.VITE_DEMO_MODE !== "true")) {
-    throw new Error("Unable to connect to the backend server. Please verify the server is running.");
-  }
-  return cachedLive;
+  return true; // Forced Real Mode
 }
 
 // ----------------------------------------------------------------
@@ -664,6 +643,8 @@ const mockApi = {
     return { message: "Item removed from outlet" };
   },
 
+
+
   async adminGetRevenueShare() {
     return fetchAPI("/api/admin/revenue-share");
   },
@@ -1026,6 +1007,20 @@ export const api = {
     const userStr = localStorage.getItem("user");
     return userStr ? JSON.parse(userStr) : null;
   },
+
+  async verifyEmail(token) {
+    const live = await checkBackendAlive(true);
+    if (!live) throw new Error("Verification requires live backend.");
+    const res = await fetch(`${API_BASE_URL}/auth/verify-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to verify email");
+    return data;
+  },
+
 
   async getMe() {
     const live = await checkBackendAlive();
@@ -2115,12 +2110,24 @@ export const api = {
   },
   async getStockRequests() {
     const live = await checkBackendAlive();
-    if (!live) return [];
+    if (!live) {
+      return JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load stock requests");
     return safeJson(res);
   },
   async updateStockRequestStatus(id, status) {
+    const live = await checkBackendAlive();
+    if (!live) {
+      const reqs = JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+      const req = reqs.find(r => r.id === id);
+      if (req) {
+        req.status = status;
+        localStorage.setItem("mock_stock_requests", JSON.stringify(reqs));
+      }
+      return { message: "Mock updated", stock_request: req };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests/${id}/status`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -2130,7 +2137,18 @@ export const api = {
   },
   async createStockRequest(payload) {
     const live = await checkBackendAlive();
-    if (!live) throw new Error("Mock backend does not support this feature");
+    if (!live) {
+      const reqs = JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+      const newReq = {
+        id: reqs.length + 1,
+        ...payload,
+        status: "Pending",
+        created_at: new Date().toISOString()
+      };
+      reqs.push(newReq);
+      localStorage.setItem("mock_stock_requests", JSON.stringify(reqs));
+      return { message: "Mock stock request created", stock_request: newReq };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, {
       method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() }, body: JSON.stringify(payload)
     });

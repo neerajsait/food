@@ -23,8 +23,8 @@ const CATEGORIES = [
 
 // Delivery address book templates
 const DEFAULT_ADDRESSES = [
-  { id: 1, title: "Home", address_line: "123 Food Street, Tasty City" },
-  { id: 2, title: "Work", address_line: "456 Office Tower, Biz District" }
+  { id: "default-1", title: "Home", address_line: "123 Food Street, Tasty City" },
+  { id: "default-2", title: "Work", address_line: "456 Office Tower, Biz District" }
 ];
 
 function getDiscountPct(price, originalPrice) {
@@ -441,10 +441,13 @@ export default function CustomerView({ onLogout, dbMode }) {
   const handleDeleteAddress = async (id, e) => {
     e.stopPropagation();
     try {
-      await api.deleteAddress(id);
+      if (typeof id !== 'string' || !id.toString().startsWith('default')) {
+        await api.deleteAddress(id);
+      }
       setAddresses(prev => prev.filter(a => a.id !== id));
       if (selectedAddressId === id) {
-        setSelectedAddressId(addresses.length > 1 ? addresses.find(a => a.id !== id).id : null);
+        const remaining = addresses.filter(a => a.id !== id);
+        setSelectedAddressId(remaining.length > 0 ? remaining[0].id : null);
       }
     } catch (err) {
       alert("Failed to delete address");
@@ -597,14 +600,41 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
   const [ticketForm, setTicketForm] = useState({ id: null, issue_type: "", description: "", order_id: null, attachment: null });
+  
   const handleReviewSubmit = async (e) => {
     e.preventDefault();
     try {
       await api.submitMenuItemReview(reviewForm.itemId, { rating: reviewForm.rating, comment: reviewForm.comment, review_code: reviewForm.review_code });
-      showToast("Review submitted successfully!", "success");
+      alert("Review submitted successfully!");
       setReviewForm(null);
     } catch (err) {
-      showToast(err.message || "Failed to submit review", "error");
+      alert("Error: " + err.message);
+    }
+  };
+
+  const handleDeleteReview = async (reviewId) => {
+    if (!window.confirm("Are you sure you want to delete this review?")) return;
+    try {
+      await api.deleteCustomerReview(reviewId);
+      alert("Review deleted successfully!");
+      // Refresh the reviews list if it's currently open
+      if (selectedItem) {
+        const itemRes = await api.getMenuItemReviews(selectedItem.id);
+        setItemReviews(itemRes);
+      }
+    } catch (err) {
+      alert("Error: " + err.message);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!window.confirm("Are you sure you want to delete your account? This action is irreversible.")) return;
+    try {
+      await api.deleteAccount();
+      alert("Account deleted successfully.");
+      window.location.reload();
+    } catch (err) {
+      alert("Failed to delete account: " + err.message);
     }
   };
 
@@ -999,7 +1029,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                     </div>
                     {order.status === 'delivered' && order.review_code && (
                       <div style={{ padding: "0.75rem", background: "var(--bg-hover)", borderLeft: "2px solid var(--brand)", marginBottom: "1rem", fontSize: "0.85rem", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span>Review Code (Required to rate items):</span>
+                        <span>Tracking / Review Code (Required to rate items):</span>
                         <strong style={{ color: "var(--text-primary)", letterSpacing: "1px", fontSize: "1rem" }}>{order.review_code}</strong>
                       </div>
                     )}
@@ -1026,7 +1056,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                       {order.status === "pending" && (
                         <button onClick={() => handleCancelOrder(order.id)} className="btn btn-outline" style={{ borderColor: "var(--error)", color: "var(--error)", borderRadius: 0, background: "transparent" }}>Cancel Order</button>
                       )}
-                      {["pending", "accepted", "preparing", "dispatched"].includes(order.status) && (
+                      {["pending", "processing", "ready", "shipped"].includes(order.status) && (
                         <button onClick={() => setTrackingOrder(order)} className="btn btn-outline" style={{ borderColor: "var(--brand)", color: "var(--brand)", borderRadius: 0, background: "transparent" }}>Track Order</button>
                       )}
                       <button onClick={() => handleReportIssue(order.id)} className="btn btn-outline" style={{ borderColor: "var(--text-secondary)", color: "var(--text-secondary)", borderRadius: 0, background: "transparent" }}>Contact Support</button>
@@ -1475,6 +1505,32 @@ export default function CustomerView({ onLogout, dbMode }) {
                 )}
               </div>
 
+              {/* Danger Zone */}
+              <div style={{ marginTop: "3rem", paddingTop: "2rem", borderTop: "2px solid var(--error)", background: "rgba(239, 68, 68, 0.05)", padding: "1.5rem", borderRadius: "var(--r-md)" }}>
+                <h3 style={{ margin: "0 0 1rem", fontSize: "1.2rem", fontWeight: "900", fontFamily: "var(--font-heading)", color: "var(--error)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <ShieldAlert size={20} /> Danger Zone
+                </h3>
+                <p style={{ margin: "0 0 1.5rem", fontSize: "0.95rem", color: "var(--text-secondary)", lineHeight: "1.5" }}>
+                  Deleting your account is permanent. All your data, order history, and loyalty points will be erased and cannot be recovered.
+                </p>
+                <button 
+                  onClick={() => setConfirmModal({
+                    message: "Are you absolutely sure you want to delete your account? This action cannot be undone.",
+                    onConfirm: async () => {
+                      try {
+                        await api.deleteAccount();
+                        window.location.reload();
+                      } catch (err) {
+                        alert("Error: " + err.message);
+                      }
+                    }
+                  })} 
+                  className="hover-lift" 
+                  style={{ background: "var(--error)", color: "#fff", border: "none", padding: "0.75rem 1.5rem", fontWeight: "800", cursor: "pointer", fontSize: "1rem", borderRadius: "var(--r-sm)" }}>
+                  Delete My Account
+                </button>
+              </div>
+
             </div>
           </div>
         </div>
@@ -1526,7 +1582,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                   ))}
                 </div>
               </div>
-              <input type="text" required className="form-input" placeholder="Enter Review Code from your Order History" value={reviewForm.review_code || ""} onChange={e => setReviewForm({ ...reviewForm, review_code: e.target.value })} style={{ background: "var(--bg-canvas)", marginTop: "0.5rem" }} />
+              <input type="text" required className="form-input" placeholder="Enter TRK-... Code from your Order History" value={reviewForm.review_code || ""} onChange={e => setReviewForm({ ...reviewForm, review_code: e.target.value })} style={{ background: "var(--bg-canvas)", marginTop: "0.5rem" }} />
               <textarea className="form-input" rows="4" value={reviewForm.comment} onChange={e => setReviewForm({ ...reviewForm, comment: e.target.value })} placeholder="Write your review here (optional)..." style={{ background: "var(--bg-canvas)", resize: "none" }} />
               <button type="submit" className="btn btn-primary" style={{ background: "var(--brand)", marginTop: "1rem", padding: "1rem", borderRadius: "var(--r-full)" }}>
                 Submit Review
@@ -1563,7 +1619,14 @@ export default function CustomerView({ onLogout, dbMode }) {
                   <div key={review.id} style={{ padding: "1rem", background: "var(--bg-canvas)", borderRadius: "var(--r-md)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
                       <div style={{ fontWeight: "700" }}>{review.customer_name || "Customer"}</div>
-                      <div style={{ color: "var(--brand)", fontSize: "0.9rem" }}>{"★".repeat(review.rating)}{"☆".repeat(5-review.rating)}</div>
+                      <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+                        <div style={{ color: "var(--brand)", fontSize: "0.9rem" }}>{"★".repeat(review.rating)}{"☆".repeat(5-review.rating)}</div>
+                        {review.customer_id === user?.id && (
+                          <button onClick={() => handleDeleteReview(review.id)} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", padding: "0.25rem", display: "flex", alignItems: "center" }}>
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {review.comment && <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", margin: "0 0 0.5rem" }}>{review.comment}</p>}
                     <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{new Date(review.created_at).toLocaleDateString()}</div>
@@ -1605,12 +1668,12 @@ export default function CustomerView({ onLogout, dbMode }) {
             <div style={{ position: "relative", paddingLeft: "2rem", borderLeft: "2px solid var(--border-default)", display: "flex", flexDirection: "column", gap: "2rem" }}>
               {[
                 { status: "pending", label: "Order Placed", desc: "We've received your order." },
-                { status: "accepted", label: "Confirmed", desc: "The kitchen is preparing your order." },
-                { status: "preparing", label: "Preparing", desc: "Your food is almost ready." },
-                { status: "dispatched", label: "Out for Delivery", desc: "Your order is on the way!" },
+                { status: "processing", label: "Preparing", desc: "The kitchen is preparing your order." },
+                { status: "ready", label: "Ready", desc: "Your order is ready for dispatch." },
+                { status: "shipped", label: "Out for Delivery", desc: "Your order is on the way!" },
                 { status: "delivered", label: "Delivered", desc: "Enjoy your food!" }
               ].map((step, idx, arr) => {
-                const statuses = ["pending", "accepted", "preparing", "dispatched", "delivered"];
+                const statuses = ["pending", "processing", "ready", "shipped", "delivered"];
                 const currentStatusIdx = statuses.indexOf(trackingOrder.status);
                 const isCompleted = idx <= currentStatusIdx;
                 const isCurrent = idx === currentStatusIdx;
@@ -1629,7 +1692,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                 )
               })}
             </div>
-            {trackingOrder.status === "dispatched" && (
+            {trackingOrder.status === "shipped" && (
               <div style={{ marginTop: "2rem", padding: "1rem", background: "rgba(var(--brand-rgb), 0.1)", borderRadius: "var(--r-sm)", border: "1px dashed var(--brand)" }}>
                 <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--brand)", fontWeight: "600", textAlign: "center" }}>
                   Delivery partner is arriving soon. Please keep your confirmation code ready if required.
