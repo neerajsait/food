@@ -3,14 +3,15 @@ import { createPortal } from "react-dom";
 import { api, API_BASE_URL } from "../utils/api";
 import { jsPDF } from "jspdf";
 import {
-  ShoppingCart, Clock, CheckCircle, Star, MessageSquare, X, Lock,
+  ShoppingCart, Clock, CheckCircle, Star, StarHalf, MessageSquare, X, Lock,
   Search, Minus, Plus, Heart, Leaf, Paperclip, Edit2,
   Sparkles, MapPin, Truck, RefreshCw, Home, Briefcase, PlusCircle, FileText, Trash2, ShoppingBag, LogOut, QrCode, User, Gift, ShieldAlert, Tag
 } from "lucide-react";
 import QRScanner from "./QRScanner";
+import BannerZone from "./BannerZone";
 
 // Category configuration
-const CATEGORIES = [
+const DEFAULT_CATEGORIES = [
   { id: "all", label: "All Products", emoji: "", color: "#a855f7" },
   { id: "favs", label: "My Favorites", emoji: "❤️", color: "#ec4899" },
   { id: "Spice Powders", label: "Spice Powders", emoji: "", color: "#ef4444" },
@@ -53,6 +54,20 @@ const PAIRINGS = {
   ]
 };
 
+const StarRating = ({ rating, size = 10 }) => {
+  const fullStars = Math.floor(rating);
+  const hasHalfStar = rating - fullStars >= 0.5;
+  const emptyStars = Math.max(0, 5 - fullStars - (hasHalfStar ? 1 : 0));
+
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: "0.1rem" }}>
+      {[...Array(fullStars)].map((_, i) => <Star key={`full-${i}`} size={size} fill="currentColor" />)}
+      {hasHalfStar && <StarHalf key="half" size={size} fill="currentColor" />}
+      {[...Array(emptyStars)].map((_, i) => <Star key={`empty-${i}`} size={size} />)}
+    </span>
+  );
+};
+
 export default function CustomerView({ onLogout, dbMode }) {
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null); // { message, onConfirm }
@@ -60,6 +75,8 @@ export default function CustomerView({ onLogout, dbMode }) {
   const alert = (msg) => {
     setToast({ message: msg, type: msg.toLowerCase().includes("failed") || msg.toLowerCase().includes("error") || msg.toLowerCase().includes("offline") ? "error" : "success" });
   };
+
+
 
   const confirm = (message, onConfirm) => {
     setConfirmModal({ message, onConfirm });
@@ -74,6 +91,26 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   const [activeTab, setActiveTab] = useState("menu");
   const [menu, setMenu] = useState([]);
+
+  const dynamicCategories = useMemo(() => {
+    const base = [...DEFAULT_CATEGORIES];
+    const existingIds = new Set(base.map(c => c.id));
+    
+    if (menu) {
+      menu.forEach(item => {
+        if (item.category && !existingIds.has(item.category)) {
+          base.push({
+            id: item.category,
+            label: item.category,
+            emoji: "🛒", 
+            color: "#6b7280"
+          });
+          existingIds.add(item.category);
+        }
+      });
+    }
+    return base;
+  }, [menu]);
   const [orders, setOrders] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [cart, setCart] = useState({});
@@ -257,7 +294,6 @@ export default function CustomerView({ onLogout, dbMode }) {
   // Filtered menu logic
   const filteredMenu = useMemo(() => {
     return menu.filter(item => {
-      if (item.global_stock === 0) return false;
       const matchesCat =
         activeCategory === "all" ||
         (activeCategory === "favs" && favorites.includes(item.id)) ||
@@ -811,7 +847,7 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   const _currentSelectedAddress = addresses.find(a => a.id === selectedAddressId) || addresses[0];
 
-  const catConfig = (catId) => CATEGORIES.find(c => c.id === catId) || { emoji: "", color: "#6b7280", label: catId };
+  const catConfig = (catId) => dynamicCategories.find(c => c.id === catId) || { emoji: "", color: "#6b7280", label: catId };
 
   const user = liveUser || api.getCurrentUser();
   const discountAmount = appliedCoupon ? (getCartTotal() * appliedCoupon.discount_pct / 100) : 0;
@@ -904,7 +940,7 @@ export default function CustomerView({ onLogout, dbMode }) {
             {/* Categories */}
             <div style={{ marginBottom: "3rem", display: "flex", justifyContent: "center" }}>
               <div style={{ display: "flex", gap: "1rem", overflowX: "auto", paddingBottom: "1rem", scrollbarWidth: "none", maxWidth: "100%" }}>
-                {CATEGORIES.map(cat => (
+                {dynamicCategories.map(cat => (
                   <button 
                     key={cat.id}
                     onClick={() => setActiveCategory(cat.id)}
@@ -961,35 +997,54 @@ export default function CustomerView({ onLogout, dbMode }) {
                       </div>
 
                       {/* Product Details */}
-                      <div style={{ display: "flex", flexDirection: "column", flex: 1, padding: "0" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "0.25rem" }}>
-                          <h4 style={{ fontSize: "1.1rem", fontWeight: "700", margin: 0, fontFamily: "var(--font-heading)", color: "var(--text-primary)", lineHeight: 1.3 }}>{item.name}</h4>
-                          <span style={{ fontSize: "1.1rem", fontWeight: "800", color: "var(--text-primary)" }}>₹{item.price.toFixed(0)}</span>
-                        </div>
-                        {item.reviews_count > 0 && (
-                          <button onClick={() => { setSelectedItem(item); setShowReviewsModal(true); }} style={{ display: "flex", alignItems: "center", gap: "0.25rem", marginBottom: "0.5rem", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                            <span style={{ color: "var(--brand)", fontSize: "0.85rem" }}>★</span>
-                            <span style={{ fontSize: "0.85rem", fontWeight: "700", color: "var(--text-primary)" }}>{parseFloat(item.average_rating || 0).toFixed(1)}</span>
-                            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", textDecoration: "underline" }}>({item.reviews_count} reviews)</span>
-                          </button>
-                        )}
-                        <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", margin: "0 0 1rem", flex: 1, lineHeight: 1.5 }}>
-                          {item.description || "Authentic traditional recipe, made with the finest ingredients."}
-                        </p>
-                        
-                        <div style={{ marginTop: "auto" }}>
-                          {(cart[item.id] || 0) > 0 ? (
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "1px solid var(--text-primary)", borderRadius: "0", overflow: "hidden" }}>
-                              <button onClick={() => removeFromCart(item.id)} style={{ background: "none", border: "none", color: "var(--text-primary)", padding: "0.75rem 1rem", cursor: "pointer", fontWeight: "bold" }}><Minus size={14}/></button>
-                              <span style={{ padding: "0", fontWeight: "800", fontSize: "0.95rem", color: "var(--text-primary)" }}>{cart[item.id]} in basket</span>
-                              <button onClick={() => addToCart(item.id)} style={{ background: "none", border: "none", color: "var(--text-primary)", padding: "0.75rem 1rem", cursor: "pointer", fontWeight: "bold" }}><Plus size={14}/></button>
+                      <div style={{ padding: "1.5rem", display: "flex", flexDirection: "column", flex: 1 }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.25rem" }}>
+                              <h3 style={{ margin: 0, fontSize: "1.15rem", fontWeight: "800", fontFamily: "var(--font-heading)" }}>
+                                {item.name}
+                              </h3>
+                              {item.global_stock === 0 ? (
+                                <span style={{ fontSize: "0.75rem", background: "var(--error)", color: "#fff", padding: "0.2rem 0.5rem", borderRadius: "4px", fontWeight: "700" }}>Sold Out</span>
+                              ) : (
+                                <span style={{ fontSize: "1.15rem", fontWeight: "800", color: "var(--brand)" }}>
+                                  ₹{item.price}
+                                </span>
+                              )}
                             </div>
-                          ) : (
-                            <button onClick={() => addToCart(item.id)} style={{ width: "100%", background: "transparent", color: "var(--text-primary)", border: "1px solid var(--text-primary)", padding: "0.75rem", fontWeight: "700", cursor: "pointer", transition: "all 0.2s" }} onMouseOver={e => {e.currentTarget.style.background="var(--text-primary)"; e.currentTarget.style.color="#fff"}} onMouseOut={e => {e.currentTarget.style.background="transparent"; e.currentTarget.style.color="var(--text-primary)"}}>
-                              Add to Basket
-                            </button>
-                          )}
-                        </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                              <span style={{ fontSize: "0.75rem", background: "var(--bg-hover)", padding: "0.2rem 0.5rem", borderRadius: "4px", color: "var(--text-secondary)", fontWeight: "600" }}>
+                                {item.category}
+                              </span>
+                              {item.average_rating > 0 && (
+                                <button onClick={() => { setSelectedItem(item); setShowReviewsModal(true); }} style={{ display: "flex", alignItems: "center", gap: "0.2rem", fontSize: "0.75rem", background: "rgba(234, 179, 8, 0.1)", padding: "0.2rem 0.5rem", borderRadius: "4px", color: "var(--warning)", fontWeight: "700", border: "none", cursor: "pointer" }}>
+                                  <StarRating rating={item.average_rating} size={10} />
+                                  <span style={{ marginLeft: "0.1rem" }}>{parseFloat(item.average_rating).toFixed(1)}</span>
+                                  {item.reviews_count > 0 && <span style={{ fontSize: "0.7rem", color: "var(--warning)", textDecoration: "underline", marginLeft: "0.2rem" }}>({item.reviews_count})</span>}
+                                </button>
+                              )}
+                            </div>
+                            <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", margin: "0 0 1rem", flex: 1, lineHeight: 1.5 }}>
+                              {item.description}
+                            </p>
+                          </div>
+                          
+                          <div style={{ marginTop: "auto" }}>
+                            {item.global_stock === 0 ? (
+                               <button disabled style={{ width: "100%", background: "var(--bg-hover)", color: "var(--text-muted)", border: "1px solid var(--border-light)", padding: "0.75rem", fontWeight: "700", cursor: "not-allowed" }}>
+                                 Sold Out
+                               </button>
+                            ) : cart[item.id] ? (
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "1px solid var(--text-primary)", borderRadius: "0", overflow: "hidden" }}>
+                                <button onClick={() => removeFromCart(item.id)} style={{ background: "none", border: "none", color: "var(--text-primary)", padding: "0.75rem 1rem", cursor: "pointer", fontWeight: "bold" }}><Minus size={14}/></button>
+                                <span style={{ padding: "0", fontWeight: "800", fontSize: "0.95rem", color: "var(--text-primary)" }}>{cart[item.id]} in basket</span>
+                                <button onClick={() => addToCart(item.id)} style={{ background: "none", border: "none", color: "var(--text-primary)", padding: "0.75rem 1rem", cursor: "pointer", fontWeight: "bold" }}><Plus size={14}/></button>
+                              </div>
+                            ) : (
+                              <button onClick={() => addToCart(item.id)} style={{ width: "100%", background: "transparent", color: "var(--text-primary)", border: "1px solid var(--text-primary)", padding: "0.75rem", fontWeight: "700", cursor: "pointer", transition: "all 0.2s" }} onMouseOver={e => {e.currentTarget.style.background="var(--text-primary)"; e.currentTarget.style.color="#fff"}} onMouseOut={e => {e.currentTarget.style.background="transparent"; e.currentTarget.style.color="var(--text-primary)"}}>
+                                Add to Basket
+                              </button>
+                            )}
+                          </div>
                       </div>
                     </div>
                   ))}
@@ -1185,6 +1240,9 @@ export default function CustomerView({ onLogout, dbMode }) {
                     );
                   })}
                 </div>
+
+                {/* Cart Upsell Banner */}
+                <BannerZone zoneId="cart_upsell" userId={user?.id} onApplyCoupon={handleApplyCoupon} />
 
                 {/* Coupon */}
                 <div style={{ marginTop: "2rem", paddingTop: "2rem", borderTop: "1px solid var(--border-light)" }}>
@@ -1661,7 +1719,7 @@ export default function CustomerView({ onLogout, dbMode }) {
               Reviews for {selectedItem.name}
             </h2>
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.5rem" }}>
-              <span style={{ color: "var(--brand)", fontSize: "1.2rem" }}>★</span>
+              <StarRating rating={selectedItem.average_rating || 0} size={20} />
               <span style={{ fontSize: "1.2rem", fontWeight: "800", color: "var(--text-primary)" }}>{parseFloat(selectedItem.average_rating || 0).toFixed(1)}</span>
               <span style={{ fontSize: "0.9rem", color: "var(--text-secondary)" }}>({selectedItem.reviews_count} reviews)</span>
             </div>

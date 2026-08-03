@@ -915,6 +915,9 @@ The FlavorFlow Team"""
                     db.session.rollback()
                     return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is out of stock (only {menu_item.global_stock} left)"}), 400
                 menu_item.global_stock -= qty
+                
+                if menu_item.global_stock == 0:
+                    print(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!", flush=True)
 
             price = menu_item.price
             total += price * qty
@@ -3495,12 +3498,86 @@ The FlavorFlow Team"""
 
     @app.route("/api/public/banners", methods=["GET"])
     def get_public_banners():
-        location = request.args.get("location")
+        zone = request.args.get("zone")
+        location = request.args.get("location") # Keeping location for backward compatibility
+        user_id = request.args.get("user_id", type=int)
+        
+        now = datetime.now(timezone.utc)
+        
+        # Base query
         query = select(Banner).where(Banner.is_active == True)
-        if location:
+        
+        # Time logic
+        query = query.where(
+            db.or_(
+                Banner.start_date == None,
+                Banner.start_date <= now
+            )
+        ).where(
+            db.or_(
+                Banner.end_date == None,
+                Banner.end_date >= now
+            )
+        )
+        
+        # Zone/Location logic
+        if zone:
+            query = query.where(Banner.placement_zone == zone)
+        elif location:
             query = query.where(Banner.display_location == location)
+            
+        # Execute to get initial list
         banners = db.session.scalars(query.order_by(Banner.display_order.asc())).all()
-        return jsonify([b.to_dict() for b in banners]), 200
+        
+        # Audience logic
+        filtered_banners = []
+        is_new_user = False
+        is_inactive = False
+        
+        if user_id:
+            # Check user stats
+            user_orders_count = db.session.query(Order).filter(Order.customer_id == user_id).count()
+            if user_orders_count == 0:
+                is_new_user = True
+            else:
+                last_order = db.session.query(Order).filter(Order.customer_id == user_id).order_by(Order.created_at.desc()).first()
+                if last_order and (now - last_order.created_at.replace(tzinfo=timezone.utc)).days > 30:
+                    is_inactive = True
+                    
+        for banner in banners:
+            # Check audience
+            if banner.target_audience == 'new_user' and not is_new_user:
+                continue
+            if banner.target_audience == 'inactive_30_days' and not is_inactive:
+                continue
+                
+            # Check inventory if linked to a product
+            if banner.linked_product_id:
+                product = db.session.get(MenuItem, banner.linked_product_id)
+                if not product or not product.is_active:
+                    continue
+                if product.global_stock is not None and product.global_stock <= 0:
+                    continue
+            
+            filtered_banners.append(banner)
+            
+        return jsonify([b.to_dict() for b in filtered_banners]), 200
+
+    @app.route("/api/public/banners/<int:id>/impression", methods=["POST"])
+    def track_banner_impression(id):
+        banner = db.session.get(Banner, id)
+        if banner:
+            banner.impressions = (banner.impressions or 0) + 1
+            db.session.commit()
+        return jsonify({"success": True}), 200
+
+    @app.route("/api/public/banners/<int:id>/click", methods=["POST"])
+    def track_banner_click(id):
+        banner = db.session.get(Banner, id)
+        if banner:
+            banner.clicks = (banner.clicks or 0) + 1
+            db.session.commit()
+        return jsonify({"success": True}), 200
 
     @app.route("/api/admin/banners", methods=["GET"])
     @role_required("admin")
@@ -3517,13 +3594,27 @@ The FlavorFlow Team"""
         if not title or not image_url:
             return jsonify({"error": "Bad Request", "message": "title and image_url are required"}), 400
             
+        # Parse dates
+        start_date = datetime.fromisoformat(data["start_date"].replace('Z', '+00:00')) if data.get("start_date") else None
+        end_date = datetime.fromisoformat(data["end_date"].replace('Z', '+00:00')) if data.get("end_date") else None
+        countdown_end_time = datetime.fromisoformat(data["countdown_end_time"].replace('Z', '+00:00')) if data.get("countdown_end_time") else None
+
         banner = Banner(
             title=title,
             image_url=image_url,
             target_url=data.get("target_url"),
             is_active=data.get("is_active", True),
             display_order=data.get("display_order", 0),
-            display_location=data.get("display_location", "home")
+            display_location=data.get("display_location", "home"),
+            start_date=start_date,
+            end_date=end_date,
+            target_audience=data.get("target_audience", "all"),
+            placement_zone=data.get("placement_zone", "hero_carousel"),
+            display_style=data.get("display_style", "cinematic_21_9"),
+            has_countdown=data.get("has_countdown", False),
+            countdown_end_time=countdown_end_time,
+            linked_product_id=data.get("linked_product_id"),
+            linked_coupon_code=data.get("linked_coupon_code")
         )
         db.session.add(banner)
         log_admin_action(db.session, get_jwt_identity(), "create_banner", "Banner", None, f"Created banner {title}")
@@ -3544,10 +3635,22 @@ The FlavorFlow Team"""
         if "is_active" in data: banner.is_active = data["is_active"]
         if "display_order" in data: banner.display_order = data["display_order"]
         if "display_location" in data: banner.display_location = data["display_location"]
+        if "target_audience" in data: banner.target_audience = data["target_audience"]
+        if "placement_zone" in data: banner.placement_zone = data["placement_zone"]
+        if "display_style" in data: banner.display_style = data["display_style"]
+        if "has_countdown" in data: banner.has_countdown = data["has_countdown"]
+        if "linked_product_id" in data: banner.linked_product_id = data["linked_product_id"]
+        if "linked_coupon_code" in data: banner.linked_coupon_code = data["linked_coupon_code"]
+
+        if "start_date" in data:
+            banner.start_date = datetime.fromisoformat(data["start_date"].replace('Z', '+00:00')) if data["start_date"] else None
+        if "end_date" in data:
+            banner.end_date = datetime.fromisoformat(data["end_date"].replace('Z', '+00:00')) if data["end_date"] else None
+        if "countdown_end_time" in data:
+            banner.countdown_end_time = datetime.fromisoformat(data["countdown_end_time"].replace('Z', '+00:00')) if data["countdown_end_time"] else None
         
         db.session.commit()
         return jsonify(banner.to_dict()), 200
-
 
     @app.route("/api/admin/banners/<int:id>", methods=["DELETE"])
     @role_required("admin")

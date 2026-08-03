@@ -251,16 +251,28 @@ class MenuItem(db.Model):
         self.admin_rating = admin_rating
 
     @property
+    def visible_reviews(self):
+        if getattr(self, 'reviews', None):
+            return [r for r in self.reviews if not r.is_hidden]
+        return []
+
+    @property
     def average_rating(self):
+        v_reviews = self.visible_reviews
+        print(f"DEBUG: calculating average_rating for {self.name}, visible_reviews: {len(v_reviews)}")
+        if v_reviews:
+            avg = round(sum(r.rating for r in v_reviews) / len(v_reviews), 1)
+            print(f"DEBUG: calculated avg {avg}")
+            return avg
         if self.admin_rating is not None:
+            print(f"DEBUG: returning admin_rating {self.admin_rating}")
             return float(self.admin_rating)
-        if not getattr(self, 'reviews', None) or len(self.reviews) == 0:
-            return 4.0
-        return round(sum(r.rating for r in self.reviews) / len(self.reviews), 1)
+        print("DEBUG: returning default 4.0")
+        return 4.0
 
     @property
     def reviews_count(self):
-        return len(self.reviews) if getattr(self, 'reviews', None) else 0
+        return len(self.visible_reviews)
 
     def to_dict(self):
         return {
@@ -1011,15 +1023,43 @@ class Banner(db.Model):
     is_active = Column(Boolean, default=True)
     display_order = Column(Integer, default=0)
     display_location = Column(String(100), nullable=False, default='home')
+    
+    # --- Advanced Marketing Fields ---
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    target_audience = Column(String(50), default='all') # 'all', 'new_user', 'inactive_30_days'
+    placement_zone = Column(String(50), default='hero_carousel') # 'hero_carousel', 'mid_feed', 'cart_upsell', 'top_bar'
+    display_style = Column(String(50), default='cinematic_21_9') # 'cinematic_21_9', 'square_1_1', 'pill_text', 'story_circle', 'popup_modal'
+    has_countdown = Column(Boolean, default=False)
+    countdown_end_time = Column(DateTime, nullable=True)
+    linked_product_id = Column(Integer, ForeignKey('menu_items.id', ondelete='SET NULL'), nullable=True)
+    linked_coupon_code = Column(String(50), nullable=True)
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0, display_location='home'):
+    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0, display_location='home',
+                 start_date=None, end_date=None, target_audience='all', placement_zone='hero_carousel', 
+                 display_style='cinematic_21_9', has_countdown=False, countdown_end_time=None, 
+                 linked_product_id=None, linked_coupon_code=None):
         self.title = title
         self.image_url = image_url
         self.target_url = target_url
         self.is_active = is_active
         self.display_order = display_order
         self.display_location = display_location
+        self.start_date = start_date
+        self.end_date = end_date
+        self.target_audience = target_audience
+        self.placement_zone = placement_zone
+        self.display_style = display_style
+        self.has_countdown = has_countdown
+        self.countdown_end_time = countdown_end_time
+        self.linked_product_id = linked_product_id
+        self.linked_coupon_code = linked_coupon_code
+        self.impressions = 0
+        self.clicks = 0
 
     def to_dict(self):
         return {
@@ -1030,6 +1070,17 @@ class Banner(db.Model):
             "is_active": self.is_active,
             "display_order": self.display_order,
             "display_location": self.display_location,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "target_audience": self.target_audience,
+            "placement_zone": self.placement_zone,
+            "display_style": self.display_style,
+            "has_countdown": self.has_countdown,
+            "countdown_end_time": self.countdown_end_time.isoformat() if self.countdown_end_time else None,
+            "linked_product_id": self.linked_product_id,
+            "linked_coupon_code": self.linked_coupon_code,
+            "impressions": self.impressions,
+            "clicks": self.clicks,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
 

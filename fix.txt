@@ -1,3 +1,23 @@
-in admin i added choclate as other catogery product but it was not gtiing reflected in the other catogery biut it can be seen in all products
-as admin i gave 4 stars to choclate but it was not getting refletcted in customer page
-as admin i gave 2 global limit for choclate and after i odered 2 cholates it was not shown in the customer page as it was completely removed insted it should show soldout and notification was sent to the admin or kitchen that itme has sold out .
+Here are some powerful features we could add to the banner system to make it a more robust marketing tool for your food business:
+
+**1. Time-Based Scheduling (Start & Expiry Dates)**
+Instead of manually toggling banners on and off, you could set an automatic start and end date/time. 
+* *Use Case:* You want to run a "Weekend Special" or "Happy Hour" promotion that automatically goes live on Friday evening and disappears on Sunday night without you having to touch the dashboard.
+
+**2. Audience Targeting (Segmentation)**
+Show specific banners only to specific types of customers rather than everyone.
+* *Use Case:* Show a "Welcome! Get 10% off your first order" banner **only** to new users. Or, show a "We Miss You!" discount banner **only** to customers who haven't placed an order in the last 30 days.
+
+**3. Analytics & Click Tracking (CTR)**
+Track the performance of your marketing campaigns. The system would record how many times a banner was viewed (impressions) and how many times it was clicked.
+* *Use Case:* You run two different banner designs for a new pizza and can check the dashboard to see which one generated more clicks.
+
+**4. Different Banner Types (Formats)**
+Right now, banners are just images in a carousel. We could add different formats:
+* **Announcement/Top Bar:** A thin, text-only dismissible bar at the very top of the screen (e.g., "Store is closing in 30 minutes!").
+* **Popup Modals:** A banner that pops up on the screen the very first time a user opens the app that day.
+* **Video/GIF Support:** Allowing looping videos instead of just static images to make the food look more appetizing.
+
+**5. Automated Coupon Linking**
+Instead of just linking to a URL, you could link a banner directly to a Coupon code in your database. 
+* *Use Case:* A customer clicks the banner, and it automatically applies the promo code to their cart so they don't have to type it out at checkout.

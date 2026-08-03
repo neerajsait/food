@@ -137,6 +137,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [menuPrice, setMenuPrice] = useState("");
   const [menuOriginalPrice, setMenuOriginalPrice] = useState("");
   const [menuCategory, setMenuCategory] = useState("Pickles");
+  const [menuCustomCategory, setMenuCustomCategory] = useState("");
   const [menuType, setMenuType] = useState("home_foods");
   const [menuDesc, setMenuDesc] = useState("");
   const [menuImageUrl, setMenuImageUrl] = useState("");
@@ -299,6 +300,17 @@ export default function AdminView({ onLogout, dbMode }) {
   const [bannerImageUrl, setBannerImageUrl] = useState("");
   const [bannerTargetUrl, setBannerTargetUrl] = useState("");
   const [bannerDisplayLocation, setBannerDisplayLocation] = useState("home");
+  
+  // Advanced Banner Fields
+  const [bannerStartDate, setBannerStartDate] = useState("");
+  const [bannerEndDate, setBannerEndDate] = useState("");
+  const [bannerTargetAudience, setBannerTargetAudience] = useState("all");
+  const [bannerPlacementZone, setBannerPlacementZone] = useState("hero_carousel");
+  const [bannerDisplayStyle, setBannerDisplayStyle] = useState("cinematic_21_9");
+  const [bannerHasCountdown, setBannerHasCountdown] = useState(false);
+  const [bannerCountdownEndTime, setBannerCountdownEndTime] = useState("");
+  const [bannerLinkedProductId, setBannerLinkedProductId] = useState("");
+  const [bannerLinkedCouponCode, setBannerLinkedCouponCode] = useState("");
 
   // ── Confirm-delete / prompt-replacement modals ──
   const [confirmDeleteModal, setConfirmDeleteModal] = useState(null); // { message, onConfirm }
@@ -319,7 +331,7 @@ export default function AdminView({ onLogout, dbMode }) {
     } else if (activeTab === "tickets") {
       api.adminGetTickets().then(setTickets).catch(console.error);
     } else if (activeTab === "banners") {
-      api.adminGetBanners().then(setBanners).catch(() => { });
+      api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
     } else if (activeTab === "settings") {
       api.adminGetStoreSettings().then(setStoreSettings).catch(() => { });
     } else if (activeTab === "stock_requests") {
@@ -401,9 +413,10 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleAddMenuItem = async (e) => {
     e.preventDefault();
     try {
-      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
+      const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
+      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
       showToast("Product created successfully!", "success"); setShowAddMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
       loadData();
     } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
@@ -414,11 +427,18 @@ export default function AdminView({ onLogout, dbMode }) {
     setMenuCode(item.code || "");
     setMenuPrice(item.price || "");
     setMenuOriginalPrice(item.original_price || "");
-    setMenuCategory(item.category || "Pickles");
+    const defaultCats = ["Pickles", "Spice Powders", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"];
+    if (item.category && !defaultCats.includes(item.category)) {
+      setMenuCategory("Other");
+      setMenuCustomCategory(item.category);
+    } else {
+      setMenuCategory(item.category || "Pickles");
+      setMenuCustomCategory("");
+    }
     setMenuType(item.business_type || "home_foods");
     setMenuDesc(item.description || "");
     setMenuImageUrl(item.image_url || "");
-    setMenuGlobalStock(item.global_stock || "");
+    setMenuGlobalStock(item.global_stock !== null ? item.global_stock : "");
     setMenuTag(item.tag || "");
     setMenuAdminRating(item.admin_rating || "");
     setShowEditMenu(true);
@@ -427,10 +447,11 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleUpdateMenuItem = async (e) => {
     e.preventDefault();
     try {
-      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: menuCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
+      const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
+      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
       showToast("Product updated!", "success");
       setShowEditMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuTag(""); setMenuAdminRating("");
       loadData();
     } catch (err) { showToast("Failed to update: " + err.message, "error"); }
   };
@@ -880,23 +901,29 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleSaveBanner = async (e) => {
     e.preventDefault();
     try {
+      const bannerPayload = {
+        title: bannerTitle,
+        image_url: bannerImageUrl,
+        target_url: bannerTargetUrl,
+        display_location: bannerDisplayLocation,
+        start_date: bannerStartDate || null,
+        end_date: bannerEndDate || null,
+        target_audience: bannerTargetAudience,
+        placement_zone: bannerPlacementZone,
+        display_style: bannerDisplayStyle,
+        has_countdown: bannerHasCountdown,
+        countdown_end_time: bannerCountdownEndTime || null,
+        linked_product_id: bannerLinkedProductId || null,
+        linked_coupon_code: bannerLinkedCouponCode || null
+      };
+
       if (editingBannerId) {
-        await api.adminUpdateBanner(editingBannerId, {
-          title: bannerTitle,
-          image_url: bannerImageUrl,
-          target_url: bannerTargetUrl,
-          display_location: bannerDisplayLocation
-        });
+        await api.adminUpdateBanner(editingBannerId, bannerPayload);
       } else {
-        await api.adminCreateBanner({
-          title: bannerTitle,
-          image_url: bannerImageUrl,
-          target_url: bannerTargetUrl,
-          display_location: bannerDisplayLocation
-        });
+        await api.adminCreateBanner(bannerPayload);
       }
       setShowBannerModal(false);
-      api.adminGetBanners().then(setBanners).catch(() => { });
+      api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
       showToast("Banner saved!", "success");
     } catch (err) {
       showToast(err.message || "Failed to save banner", "error");
@@ -2218,6 +2245,10 @@ export default function AdminView({ onLogout, dbMode }) {
             <button className="btn btn-primary" onClick={() => {
               setEditingBannerId(null);
               setBannerTitle(""); setBannerImageUrl(""); setBannerTargetUrl(""); setBannerDisplayLocation("home");
+              setBannerStartDate(""); setBannerEndDate(""); setBannerTargetAudience("all");
+              setBannerPlacementZone("hero_carousel"); setBannerDisplayStyle("cinematic_21_9");
+              setBannerHasCountdown(false); setBannerCountdownEndTime("");
+              setBannerLinkedProductId(""); setBannerLinkedCouponCode("");
               setShowBannerModal(true);
             }}>
               <Plus size={16} /> Add Banner
@@ -2229,13 +2260,15 @@ export default function AdminView({ onLogout, dbMode }) {
                 <th style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>Image</th>
                 <th style={{ padding: "1rem" }}>Title</th>
                 <th style={{ padding: "1rem" }}>Target URL</th>
-                <th style={{ padding: "1rem" }}>Display Location</th>
+                <th style={{ padding: "1rem" }}>Placement / Style</th>
+                <th style={{ padding: "1rem" }}>Targeting</th>
+                <th style={{ padding: "1rem" }}>Performance</th>
                 <th style={{ padding: "1rem" }}>Active</th>
                 <th style={{ padding: "1rem", borderRadius: "0 var(--r-md) var(--r-md) 0" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {banners.map(b => (
+              {(Array.isArray(banners) ? banners : []).map(b => (
                 <tr key={b.id} style={{ background: "var(--bg-card)", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
                   <td style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>
                     <div style={{ width: "120px", height: "60px", borderRadius: "8px", overflow: "hidden", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2245,9 +2278,22 @@ export default function AdminView({ onLogout, dbMode }) {
                   <td style={{ padding: "1rem", fontWeight: 600 }}>{b.title}</td>
                   <td style={{ padding: "1rem", color: "var(--text-secondary)", fontSize: "0.85rem" }}>{b.target_url || "-"}</td>
                   <td style={{ padding: "1rem" }}>
+                    <div style={{ fontSize: "0.85rem" }}>
+                      <strong>Zone:</strong> {b.placement_zone?.replace(/_/g, ' ') || 'N/A'}<br/>
+                      <strong>Style:</strong> {b.display_style?.replace(/_/g, ' ') || 'N/A'}
+                    </div>
+                  </td>
+                  <td style={{ padding: "1rem" }}>
                     <span style={{ background: "var(--bg-elevated)", padding: "0.25rem 0.75rem", borderRadius: "1rem", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-primary)", textTransform: "capitalize" }}>
-                      {(b.display_location || "home").replace(/_/g, ' ')}
+                      {b.target_audience?.replace(/_/g, ' ') || 'All'}
                     </span>
+                  </td>
+                  <td style={{ padding: "1rem" }}>
+                    <div style={{ fontSize: "0.85rem" }}>
+                      <div><span style={{ color: "var(--text-secondary)" }}>Views:</span> <strong>{b.impressions || 0}</strong></div>
+                      <div><span style={{ color: "var(--text-secondary)" }}>Clicks:</span> <strong>{b.clicks || 0}</strong></div>
+                      <div><span style={{ color: "var(--text-secondary)" }}>CTR:</span> <strong>{b.impressions ? ((b.clicks || 0) / b.impressions * 100).toFixed(1) : 0}%</strong></div>
+                    </div>
                   </td>
                   <td style={{ padding: "1rem" }}>
                     <span className={`status-pill ${b.is_active ? 'status-shipped' : 'status-cancelled'}`}>
@@ -2262,6 +2308,15 @@ export default function AdminView({ onLogout, dbMode }) {
                         setBannerImageUrl(b.image_url);
                         setBannerTargetUrl(b.target_url || "");
                         setBannerDisplayLocation(b.display_location || "home");
+                        setBannerStartDate(b.start_date ? b.start_date.substring(0, 16) : "");
+                        setBannerEndDate(b.end_date ? b.end_date.substring(0, 16) : "");
+                        setBannerTargetAudience(b.target_audience || "all");
+                        setBannerPlacementZone(b.placement_zone || "hero_carousel");
+                        setBannerDisplayStyle(b.display_style || "cinematic_21_9");
+                        setBannerHasCountdown(b.has_countdown || false);
+                        setBannerCountdownEndTime(b.countdown_end_time ? b.countdown_end_time.substring(0, 16) : "");
+                        setBannerLinkedProductId(b.linked_product_id || "");
+                        setBannerLinkedCouponCode(b.linked_coupon_code || "");
                         setShowBannerModal(true);
                       }} style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem" }}>Edit</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => {
@@ -2271,7 +2326,7 @@ export default function AdminView({ onLogout, dbMode }) {
                             try {
                               await api.adminDeleteBanner(b.id);
                               showToast("Banner deleted.", "success");
-                              api.adminGetBanners().then(setBanners);
+                              api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
                             } catch (err) { showToast("Failed: " + err.message, "error"); }
                           }
                         });
@@ -2538,6 +2593,9 @@ export default function AdminView({ onLogout, dbMode }) {
               <select className="form-select" value={menuCategory} onChange={e => setMenuCategory(e.target.value)}>
                 {["Pickles", "Spice Powders", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"].map(c => <option key={c} value={c}>{c}</option>)}
               </select>
+              {menuCategory === "Other" && (
+                <input type="text" className="form-input" placeholder="Enter custom category" value={menuCustomCategory} onChange={e => setMenuCustomCategory(e.target.value)} style={{ marginTop: "0.5rem" }} required />
+              )}
             </div>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Business Segment</label>
@@ -2605,6 +2663,9 @@ export default function AdminView({ onLogout, dbMode }) {
               <select className="form-select" value={menuCategory} onChange={e => setMenuCategory(e.target.value)}>
                 {["Pickles", "Spice Powders", "Snacks & Savories", "Sweets & Treats", "Mixes & Instant", "Special Products", "Other"].map(c => <option key={c} value={c}>{c}</option>)}
               </select>
+              {menuCategory === "Other" && (
+                <input type="text" className="form-input" placeholder="Enter custom category" value={menuCustomCategory} onChange={e => setMenuCustomCategory(e.target.value)} style={{ marginTop: "0.5rem" }} required />
+              )}
             </div>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Business Segment</label>
@@ -3017,6 +3078,71 @@ export default function AdminView({ onLogout, dbMode }) {
               <option value="popup_after_login">Popup After Login</option>
             </select>
           </div>
+          
+          <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Placement Zone</label>
+              <select className="form-input" value={bannerPlacementZone} onChange={e => setBannerPlacementZone(e.target.value)}>
+                <option value="hero_carousel">Hero Carousel (Top)</option>
+                <option value="mid_feed">Mid Feed (Between categories)</option>
+                <option value="cart_upsell">Cart Upsell</option>
+                <option value="top_bar">Top Bar (Announcement)</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Display Style</label>
+              <select className="form-input" value={bannerDisplayStyle} onChange={e => setBannerDisplayStyle(e.target.value)}>
+                <option value="cinematic_21_9">Cinematic 21:9</option>
+                <option value="square_1_1">Square 1:1</option>
+                <option value="pill_text">Pill Text (No Image)</option>
+                <option value="story_circle">Story Circle</option>
+                <option value="popup_modal">Popup Modal</option>
+              </select>
+            </div>
+          </div>
+          
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Target Audience</label>
+            <select className="form-input" value={bannerTargetAudience} onChange={e => setBannerTargetAudience(e.target.value)}>
+              <option value="all">All Users</option>
+              <option value="new_user">New Users (0 Orders)</option>
+              <option value="inactive_30_days">Inactive Users (No orders in 30 days)</option>
+            </select>
+          </div>
+          
+          <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Start Date (Optional)</label>
+              <input type="datetime-local" className="form-input" value={bannerStartDate} onChange={e => setBannerStartDate(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">End Date (Optional)</label>
+              <input type="datetime-local" className="form-input" value={bannerEndDate} onChange={e => setBannerEndDate(e.target.value)} />
+            </div>
+          </div>
+          
+          <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Linked Product ID (Optional)</label>
+              <input type="number" className="form-input" value={bannerLinkedProductId} onChange={e => setBannerLinkedProductId(e.target.value)} placeholder="e.g. 15" />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Linked Coupon Code (Optional)</label>
+              <input type="text" className="form-input" value={bannerLinkedCouponCode} onChange={e => setBannerLinkedCouponCode(e.target.value.toUpperCase())} placeholder="e.g. SAVE20" />
+            </div>
+          </div>
+          
+          <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
+            <input type="checkbox" id="bannerHasCountdown" checked={bannerHasCountdown} onChange={e => setBannerHasCountdown(e.target.checked)} style={{ cursor: "pointer" }} />
+            <label htmlFor="bannerHasCountdown" className="form-label" style={{ margin: 0, cursor: "pointer" }}>Show visual countdown timer?</label>
+          </div>
+          {bannerHasCountdown && (
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Countdown End Time</label>
+              <input type="datetime-local" className="form-input" required={bannerHasCountdown} value={bannerCountdownEndTime} onChange={e => setBannerCountdownEndTime(e.target.value)} />
+            </div>
+          )}
+          
           <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
 
             Save Banner
