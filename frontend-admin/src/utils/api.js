@@ -999,6 +999,23 @@ export const api = {
   },
 
   logout() {
+    try {
+      const userStr = localStorage.getItem("user");
+      if (userStr) {
+        const user = JSON.parse(userStr);
+        if (['staff', 'kitchen', 'outlet_owner'].includes(user.role)) {
+          // Fire and forget auto-clockout
+          fetch(`${API_BASE_URL}/pos/shift/clock-out`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${localStorage.getItem("token")}`
+            },
+            body: JSON.stringify({}) // Backend defaults actual_cash to expected_cash
+          }).catch(() => {});
+        }
+      }
+    } catch(e) {}
     localStorage.removeItem("token");
     localStorage.removeItem("user");
   },
@@ -1637,7 +1654,7 @@ export const api = {
     const live = await checkBackendAlive();
     if (!live) return { success: true }; // Mock implementation
     const res = await fetch(`${API_BASE_URL}/admin/staff/${userId}`, {
-      method: "POST",
+      method: "DELETE",
       headers: getAuthHeader()
     });
     const result = await safeJson(res);

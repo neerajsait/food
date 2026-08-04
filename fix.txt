@@ -1,23 +1,58 @@
-Here are some powerful features we could add to the banner system to make it a more robust marketing tool for your food business:
+**JWT config audit**
 
-**1. Time-Based Scheduling (Start & Expiry Dates)**
-Instead of manually toggling banners on and off, you could set an automatic start and end date/time. 
-* *Use Case:* You want to run a "Weekend Special" or "Happy Hour" promotion that automatically goes live on Friday evening and disappears on Sunday night without you having to touch the dashboard.
+### 1. Access token expiry — OK
 
-**2. Audience Targeting (Segmentation)**
-Show specific banners only to specific types of customers rather than everyone.
-* *Use Case:* Show a "Welcome! Get 10% off your first order" banner **only** to new users. Or, show a "We Miss You!" discount banner **only** to customers who haven't placed an order in the last 30 days.
+```python
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+```
 
-**3. Analytics & Click Tracking (CTR)**
-Track the performance of your marketing campaigns. The system would record how many times a banner was viewed (impressions) and how many times it was clicked.
-* *Use Case:* You run two different banner designs for a new pizza and can check the dashboard to see which one generated more clicks.
+- **8 hours** is reasonable for this kind of app (food ordering / admin).
+- Set once in `create_app`; production also requires `JWT_SECRET_KEY` to be set (fails hard if missing).
 
-**4. Different Banner Types (Formats)**
-Right now, banners are just images in a carousel. We could add different formats:
-* **Announcement/Top Bar:** A thin, text-only dismissible bar at the very top of the screen (e.g., "Store is closing in 30 minutes!").
-* **Popup Modals:** A banner that pops up on the screen the very first time a user opens the app that day.
-* **Video/GIF Support:** Allowing looping videos instead of just static images to make the food look more appetizing.
+### 2. Refresh tokens — **not implemented**
 
-**5. Automated Coupon Linking**
-Instead of just linking to a URL, you could link a banner directly to a Coupon code in your database. 
-* *Use Case:* A customer clicks the banner, and it automatically applies the promo code to their cart so they don't have to type it out at checkout.
+| Item | Status |
+|------|--------|
+| `create_refresh_token` | Not used |
+| `JWT_REFRESH_TOKEN_EXPIRES` | Not configured |
+| `/api/auth/refresh` (or similar) | Does not exist |
+| Login response | Returns only `access_token` + `user` |
+
+There is **no refresh-token flow**. Clients use a single access token until it expires (or is cleared client-side).
+
+### 3. Logout / revocation / blacklist — **not implemented server-side**
+
+| Item | Status |
+|------|--------|
+| `/api/auth/logout` | **Does not exist** |
+| JWT blocklist / blacklist (`token_in_blocklist_loader`, Redis/DB store of `jti`) | **Not present** |
+| Revoke on password change | **No** — password is updated; existing JWTs stay valid until expiry |
+| Revoke on profile password change | **No** — same |
+| Frontend “logout” | Only `localStorage.removeItem("token")` / `user` — **client-only** |
+
+So:
+
+- “Logout” only drops the token in the browser.
+- Anyone who still has a copy of the JWT can use it for up to **8 hours**.
+- After password change / account disable, old tokens remain valid until they expire (unless you also check `is_active` / `deleted_at` / `is_banned` on every request — login checks those, but existing tokens are not re-validated against DB state beyond what the JWT claims already contain).
+
+### Summary
+
+| Check | Result |
+|--------|--------|
+| `JWT_ACCESS_TOKEN_EXPIRES` = 8 hours | ✅ Reasonable |
+| Refresh tokens | ❌ None |
+| Server-side logout / token blacklist | ❌ None |
+| Token revoked on password change | ❌ No |
+
+**Verdict for this item:** partial pass on expiry; **fail** on refresh tokens and on logout / password-change revocation.
+
+### Recommended hardening (if you want to fix it)
+
+1. Add a blocklist (e.g. Redis or a `revoked_tokens` table keyed by JWT `jti`).
+2. Register `@jwt.token_in_blocklist_loader`.
+3. Add `POST /api/auth/logout` that puts the current `jti` in the blocklist.
+4. On password change (and ideally ban/deactivate), revoke all tokens for that user (or bump a `token_version` claim and store it on the user).
+5. Optionally add short-lived access tokens + refresh tokens if you want sessions longer than 8 hours without keeping a long-lived access token.
+
+I can add a small `test_jwt_security.py` and/or sketch the logout + blocklist code if you want that next.

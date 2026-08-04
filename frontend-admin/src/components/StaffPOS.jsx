@@ -94,6 +94,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   // ---- NEW: Clock-Out ----
   const [showClockOutModal, setShowClockOutModal] = useState(false);
+  const [showClockInModal, setShowClockInModal] = useState(false);
   const [actualCashInput, setActualCashInput] = useState("");
   const [clockOutLoading, setClockOutLoading] = useState(false);
   const [clockOutResult, setClockOutResult] = useState(null);
@@ -155,7 +156,9 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       const res = await api.posClockIn(clockInEmail.trim().toLowerCase(), clockInPin);
       setActiveShift(res.shift);
       setClockInPin("");
-      alert("Shift started! You are now clocked in.");
+      setShowClockInModal(false);
+      setSuccessMsg("Shift started! You are now clocked in.");
+      loadData();
     } catch (err) {
       setClockInError(err.message || "Clock-in failed");
     } finally {
@@ -254,9 +257,10 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     setMyShiftsLoading(true);
     try {
       const data = await api.posGetMyShifts();
-      setMyShifts(data);
+      setMyShifts(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Failed to load shifts:", err);
+      setMyShifts([]);
     } finally {
       setMyShiftsLoading(false);
     }
@@ -637,8 +641,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   // Compute stats for EOD Report
   const shiftTotals = useMemo(() => {
-    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
-    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
+    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
+    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
     const count = salesHistory.length;
     return { cash, upi, total: cash + upi, count };
   }, [salesHistory]);
@@ -651,12 +655,12 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     <div className="pos-container">
 
       {/* ================================================================
-          CLOCK-IN GATE: Block POS until staff starts their shift
+          CLOCK-IN MODAL
       ================================================================ */}
-      {false && (
+      {showClockInModal && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-          background: "rgba(13, 17, 23, 0.97)",
+          background: "rgba(13, 17, 23, 0.90)", backdropFilter: "blur(4px)",
           display: "flex", alignItems: "center", justifyContent: "center",
           zIndex: 9998
         }}>
@@ -665,8 +669,9 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             border: "1px solid var(--brand)",
             boxShadow: "0 0 60px var(--brand-glow)",
             borderRadius: "1.5rem", padding: "2.75rem 2.5rem",
-            width: "100%", maxWidth: 460, textAlign: "center"
+            width: "100%", maxWidth: 460, textAlign: "center", position: "relative"
           }}>
+            <button className="modal-close" onClick={() => setShowClockInModal(false)} style={{ position: "absolute", top: "1rem", right: "1rem" }}><X size={16} /></button>
             <div style={{
               width: 72, height: 72,
               background: "var(--brand-glow)", borderRadius: "50%",
@@ -879,16 +884,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           </div>
         </div>
         <div className="pos-header-actions">
-          {activeShift && (
-            <button
-              id="clock-out-btn"
-              onClick={() => setShowClockOutModal(true)}
-              className="clock-out"
-              title="Clock out and close shift"
-            >
-              <Clock size={14} /> Clock Out
-            </button>
-          )}
+
 
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
@@ -1368,28 +1364,18 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                   <div>
                     <div style={{ fontWeight: 800, fontSize: "1.1rem", color: "var(--text-primary)" }}>{crmResult.customer.name}</div>
                     <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{crmResult.customer.email}</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.5rem" }}>
-                      <Gift size={14} style={{ color: "#f59e0b" }} />
-                      <span style={{ fontSize: "0.9rem", color: "#f59e0b", fontWeight: 700 }}>
-                        {crmResult.customer.loyalty_points} loyalty points available
-                      </span>
+                    <div style={{ background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.2)", borderRadius: "var(--r-md)", padding: "1rem", marginTop: "1rem", display: "flex", alignItems: "center", gap: "1rem" }}>
+                      <div style={{ background: "#f59e0b", color: "#fff", width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Gift size={20} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em" }}>Points Balance</div>
+                        <div style={{ fontSize: "1.5rem", color: "#f59e0b", fontWeight: 900 }}>{crmResult.customer.loyalty_points}</div>
+                      </div>
                     </div>
                   </div>
                   <button onClick={clearCrm} className="btn-icon" title="Remove Customer"><X size={16} /></button>
                 </div>
-
-                {crmResult.top_items && crmResult.top_items.length > 0 && (
-                  <div style={{ marginBottom: "1.5rem", padding: "1rem", background: "var(--bg-hover)", borderRadius: "var(--r-md)" }}>
-                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em", marginBottom: "0.5rem" }}>Upsell: Frequently Buys</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
-                      {crmResult.top_items.map((item, i) => (
-                        <span key={i} style={{ background: "var(--brand-dim)", color: "var(--brand)", fontSize: "0.8rem", padding: "0.3rem 0.6rem", borderRadius: "999px", fontWeight: 700 }}>
-                          {item.name} ×{item.total_ordered}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 
                 <button onClick={() => setShowCrmModal(false)} className="btn btn-primary" style={{ width: "100%", padding: "0.75rem" }}>
                   <CheckCircle size={15} /> Attach Customer & Close

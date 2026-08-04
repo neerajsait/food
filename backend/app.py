@@ -468,6 +468,21 @@ def create_app(config_override=None):
             "is_superadmin": getattr(user, 'is_superadmin', False)
         }
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
+
+        # Automatic Login-Based Clock-In
+        if user.role in ("staff", "kitchen", "outlet_owner") and user.outlet_id:
+            active_shift = db.session.scalars(
+                select(StaffShift).where(
+                    StaffShift.staff_id == user.id,
+                    StaffShift.status == "active"
+                )
+            ).first()
+            if not active_shift:
+                new_shift = StaffShift(staff_id=user.id, outlet_id=user.outlet_id)
+                db.session.add(new_shift)
+                db.session.commit()
+                logger.info(f"Auto-clocked in {user.role} user {user.id} during login")
+
         return jsonify({"access_token": token, "user": user.to_dict()}), 200
 
     @app.route("/api/auth/me", methods=["GET"])
@@ -861,11 +876,12 @@ The FlavorFlow Team"""
     @app.route("/api/foods/menu", methods=["GET"])
     def get_foods_menu():
         """Public: home foods menu."""
+        from sqlalchemy.orm import selectinload
         items = db.session.scalars(
             select(MenuItem).where(
                 MenuItem.is_active == True,
                 MenuItem.business_type.in_(["home_foods", "both"])
-            ).order_by(MenuItem.category, MenuItem.name)
+            ).options(selectinload(MenuItem.reviews)).order_by(MenuItem.category, MenuItem.name)
         ).all()
         return jsonify([i.to_dict() for i in items]), 200
 
@@ -883,7 +899,9 @@ The FlavorFlow Team"""
     @role_required("customer", "outlet_owner")
     def place_order():
         customer_id = int(get_jwt_identity())
-        customer = db.session.get(User, customer_id)
+        customer = db.session.scalars(
+            select(User).where(User.id == customer_id).with_for_update()
+        ).first()
         if customer and not getattr(customer, 'is_email_verified', False):
             return jsonify({"error": "Forbidden", "message": "Please verify your email before placing an order."}), 403
 
@@ -1053,6 +1071,22 @@ The FlavorFlow Team"""
             coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
             if coupon and coupon.usage_count > 0:
                 coupon.usage_count -= 1
+
+        if order.customer_id:
+            customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+            if customer:
+                if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                    customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
+                        description=f"Points deducted due to cancellation of Order #{order.id}"
+                    ))
+                if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
+                    customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
+                        description=f"Points refunded due to cancellation of Order #{order.id}"
+                    ))
 
         db.session.commit()
         return jsonify({"message": "Order cancelled", "order": order.to_dict()}), 200
@@ -1608,6 +1642,22 @@ The FlavorFlow Team"""
                     coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
                     if coupon and coupon.usage_count > 0:
                         coupon.usage_count -= 1
+
+                if order.customer_id:
+                    customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                    if customer:
+                        if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                            customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
+                            db.session.add(WalletTransaction(
+                                user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
+                                description=f"Points deducted due to cancellation of Order #{order.id}"
+                            ))
+                        if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
+                            customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
+                            db.session.add(WalletTransaction(
+                                user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
+                                description=f"Points refunded due to cancellation of Order #{order.id}"
+                            ))
         if "tracking_code" in data:
             order.tracking_code = data["tracking_code"]
         db.session.commit()
@@ -2530,7 +2580,7 @@ The FlavorFlow Team"""
         customer = None
         if customer_email:
             customer = db.session.scalars(
-                select(User).where(User.email == customer_email, User.role == "customer")
+                select(User).where(User.email == customer_email, User.role == "customer").with_for_update()
             ).first()
             # Silently ignore if not found — sale still proceeds
 
@@ -2723,6 +2773,39 @@ The FlavorFlow Team"""
         ).first()
         return jsonify({"shift": shift.to_dict() if shift else None}), 200
 
+    @app.route("/api/pos/sales/history", methods=["GET"])
+    @role_required("staff")
+    def pos_sales_history():
+        """Returns sales for the currently active shift to compute shift totals."""
+        staff_id = int(get_jwt_identity())
+        shift = db.session.scalars(
+            select(StaffShift).where(
+                StaffShift.staff_id == staff_id,
+                StaffShift.status == "active"
+            )
+        ).first()
+        
+        if not shift:
+            return jsonify([]), 200
+
+        orders = db.session.scalars(
+            select(Order).where(
+                Order.staff_id == staff_id,
+                Order.created_at >= shift.clock_in_time,
+                Order.order_type == "pos",
+                Order.status != "cancelled"
+            ).order_by(Order.created_at.desc())
+        ).all()
+        
+        # Format for frontend expecting total_amount instead of total_price just to be safe
+        result = []
+        for o in orders:
+            d = o.to_dict()
+            d["total_amount"] = d["total_price"]
+            result.append(d)
+        
+        return jsonify(result), 200
+
     @app.route("/api/pos/shift/clock-out", methods=["POST"])
     @role_required("staff")
     def pos_clock_out():
@@ -2732,16 +2815,7 @@ The FlavorFlow Team"""
         oid = int(claims.get("outlet_id", 0))
 
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        actual_cash_raw = data.get("actual_cash")
-        if actual_cash_raw is None:
-            return jsonify({"error": "Bad Request", "message": "actual_cash is required"}), 400
-        try:
-            actual_cash = Decimal(str(actual_cash_raw))
-            if actual_cash < 0:
-                raise ValueError()
-        except (ValueError, Exception):
-            return jsonify({"error": "Bad Request", "message": "actual_cash must be a non-negative number"}), 400
-
+        
         shift = db.session.scalars(
             select(StaffShift).where(
                 StaffShift.staff_id == staff_id,
@@ -2762,6 +2836,17 @@ The FlavorFlow Team"""
                 Order.status != "cancelled"
             )
         ) or Decimal("0.00")
+
+        actual_cash_raw = data.get("actual_cash")
+        if actual_cash_raw is None:
+            actual_cash = expected_cash  # Auto-clockout assumes expected cash
+        else:
+            try:
+                actual_cash = Decimal(str(actual_cash_raw))
+                if actual_cash < 0:
+                    raise ValueError()
+            except (ValueError, Exception):
+                return jsonify({"error": "Bad Request", "message": "actual_cash must be a non-negative number"}), 400
 
         shift.close_shift(actual_cash=actual_cash, expected_cash=expected_cash)
         if data.get("notes"):
@@ -2862,9 +2947,39 @@ The FlavorFlow Team"""
     @app.route("/api/admin/shifts", methods=["GET"])
     @department_required("HR")
     def admin_get_shifts():
-        """Returns all staff shifts for timesheet management."""
+        """Returns all staff shifts for timesheet management with pagination and filtering."""
+        page = request.args.get("page", 1, type=int)
+        limit = request.args.get("limit", 20, type=int)
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        outlet_id = request.args.get("outlet_id")
+
+        query = select(StaffShift)
+        
+        if outlet_id and str(outlet_id).lower() != "all" and str(outlet_id).strip() != "":
+            query = query.where(StaffShift.outlet_id == int(outlet_id))
+            
+        if start_date:
+            try:
+                sd = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                query = query.where(StaffShift.clock_in_time >= sd)
+            except ValueError:
+                pass
+                
+        if end_date:
+            try:
+                ed = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                ed = ed + timedelta(days=1)
+                query = query.where(StaffShift.clock_in_time < ed)
+            except ValueError:
+                pass
+                
+        total = db.session.scalar(select(func.count()).select_from(query.subquery())) or 0
+        
         shifts = db.session.scalars(
-            select(StaffShift).order_by(StaffShift.clock_in_time.desc())
+            query.order_by(StaffShift.clock_in_time.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
         ).all()
         
         result = []
@@ -2900,7 +3015,12 @@ The FlavorFlow Team"""
             
             result.append(s_dict)
             
-        return jsonify(result), 200
+        return jsonify({
+            "shifts": result,
+            "total": total,
+            "pages": (total + limit - 1) // limit if limit > 0 else 1,
+            "current_page": page
+        }), 200
 
     @app.route("/api/admin/shifts/<int:shift_id>", methods=["DELETE"])
     @department_required("HR")
@@ -3056,19 +3176,6 @@ The FlavorFlow Team"""
         _check_and_send_alert(app, int(oid))
         return jsonify({"message": f"Successfully logged disposal of {qty} units", "new_stock": stock.current_stock}), 200
 
-
-    @app.route("/api/pos/sales/history", methods=["GET"])
-    @role_required("staff")
-    def pos_sales_history():
-        claims = get_jwt()
-        oid = claims.get("outlet_id")
-        if not oid:
-            return jsonify({"error": "Forbidden"}), 403
-        sales = db.session.scalars(
-            select(Order).where(Order.outlet_id == int(oid), Order.order_type == 'pos')
-            .order_by(Order.created_at.desc()).limit(50)
-        ).unique().all()
-        return jsonify([s.to_dict() for s in sales]), 200
 
 
 
@@ -4086,9 +4193,17 @@ def _send_order_placed_email(app, order, customer):
         <p>We'll notify you as soon as your delicious box is dispatched and on its way!</p>
         """
         msg.html = _get_email_html_wrapper("Order Confirmed", content)
-        mail.send(msg)
+        
+        import threading
+        def send_async():
+            with app.app_context():
+                try:
+                    mail.send(msg)
+                except Exception as ex:
+                    logger.warning(f"Failed to send order placed email async: {ex}")
+        threading.Thread(target=send_async).start()
     except Exception as e:
-        logger.warning(f"Failed to send order placed email: {e}")
+        logger.warning(f"Failed to setup order placed email: {e}")
 
 
 def _send_order_shipped_email(app, order, customer, tracking_code):

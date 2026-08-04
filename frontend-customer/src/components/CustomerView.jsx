@@ -232,6 +232,8 @@ export default function CustomerView({ onLogout, dbMode }) {
       const bannersData = await api.getPublicBanners().catch(() => []);
       const settingsData = await api.getPublicStoreSettings().catch(() => ({}));
 
+      api.refreshUser().then(user => { if (user) setLiveUser(user); }).catch(() => {});
+
       api.getCustomerTickets().then(setTickets).catch(() => { });
       api.getCustomerReviews().then(setMyReviews).catch(() => { });
 
@@ -510,6 +512,8 @@ export default function CustomerView({ onLogout, dbMode }) {
       try {
         await api.cancelOrder(orderId);
         loadData();
+        const freshUser = await api.refreshUser();
+        if (freshUser) setLiveUser(freshUser);
         alert("Order cancelled successfully.");
       } catch (err) { alert("Error: " + err.message); }
     });
@@ -1118,7 +1122,7 @@ export default function CustomerView({ onLogout, dbMode }) {
                       </div>
                     )}
                     <div style={{ marginTop: "1.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                      {order.status === "pending" && (
+                      {["pending", "processing"].includes(order.status) && (
                         <button onClick={() => handleCancelOrder(order.id)} className="btn btn-outline" style={{ borderColor: "var(--error)", color: "var(--error)", borderRadius: 0, background: "transparent" }}>Cancel Order</button>
                       )}
                       {["pending", "processing", "ready", "shipped"].includes(order.status) && (
@@ -1127,6 +1131,11 @@ export default function CustomerView({ onLogout, dbMode }) {
                       <button onClick={() => handleReportIssue(order.id)} className="btn btn-outline" style={{ borderColor: "var(--text-secondary)", color: "var(--text-secondary)", borderRadius: 0, background: "transparent" }}>Contact Support</button>
                       <button onClick={(e) => handleQuickReorder(order.items, e)} className="btn btn-outline" style={{ borderColor: "var(--text-primary)", color: "var(--text-primary)", borderRadius: 0, background: "transparent" }}>Reorder Items</button>
                       <button onClick={() => handleDownloadReceipt(order)} className="btn btn-secondary" style={{ background: "transparent", borderRadius: 0, borderColor: "var(--text-primary)", color: "var(--text-primary)" }}><FileText size={16}/> Invoice</button>
+                      {["shipped", "delivered"].includes(order.status) && (
+                        <p className="text-muted" style={{fontSize: "0.85rem", width: "100%", marginTop: "0.5rem"}}>
+                          Note: Orders cannot be cancelled or returned once delivery has started or completed.
+                        </p>
+                      )}
                     </div>
                   </div>
                 ))}

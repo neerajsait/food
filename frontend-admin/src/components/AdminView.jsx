@@ -46,6 +46,7 @@ export default function AdminView({ onLogout, dbMode }) {
   }, [toast]);
 
   const [activeTab, setActiveTab] = useState("overview");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [orders, setOrders] = useState([]);
   const [outlets, setOutlets] = useState([]);
   const [menu, setMenu] = useState([]);
@@ -233,11 +234,25 @@ export default function AdminView({ onLogout, dbMode }) {
 
   // Load timesheets when active tab changes to timesheets
   const [timesheets, setTimesheets] = useState([]);
+  const [timesheetsPage, setTimesheetsPage] = useState(1);
+  const [timesheetsTotalPages, setTimesheetsTotalPages] = useState(1);
+  const [timesheetsFilterOutlet, setTimesheetsFilterOutlet] = useState("all");
+  const [timesheetsStartDate, setTimesheetsStartDate] = useState("");
+  const [timesheetsEndDate, setTimesheetsEndDate] = useState("");
+
   useEffect(() => {
     if (activeTab === "timesheets") {
-      api.adminGetShifts().then(setTimesheets).catch(() => { });
+      api.adminGetShifts({ 
+        page: timesheetsPage, 
+        outlet_id: timesheetsFilterOutlet, 
+        start_date: timesheetsStartDate, 
+        end_date: timesheetsEndDate 
+      }).then(data => {
+        setTimesheets(data.shifts || []);
+        setTimesheetsTotalPages(data.pages || 1);
+      }).catch(() => { });
     }
-  }, [activeTab]);
+  }, [activeTab, timesheetsPage, timesheetsFilterOutlet, timesheetsStartDate, timesheetsEndDate]);
 
   // Background polling for POS catalog to ensure fresh menu
   useEffect(() => {
@@ -803,7 +818,9 @@ export default function AdminView({ onLogout, dbMode }) {
   const ALL_TABS = [
     { id: "overview", label: "Overview", icon: BarChart3, depts: ["SuperAdmin", "Operations", "HR", "Finance"] },
     { id: "catalog", label: "Master Catalog", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
-    { id: "foods", label: "Outlet Stations", icon: Package, depts: ["SuperAdmin", "Operations"] },
+    { id: "customer_orders", label: "Customer Orders", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
+    { id: "outlet_orders", label: "Outlet Orders", icon: Store, depts: ["SuperAdmin", "Operations"] },
+    { id: "outlet_stations", label: "Outlet Stations", icon: MapPin, depts: ["SuperAdmin", "Operations"] },
     { id: "finance", label: "Revenue Share", icon: FileText, depts: ["SuperAdmin", "Finance", ...(storeSettings.share_revenue_with_outlets === "true" ? ["Operations"] : [])] },
     { id: "analytics", label: "Sales Analytics", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
     { id: "forecast", label: "Demand Forecast", icon: TrendingUp, depts: ["SuperAdmin", "Finance", "Operations"] },
@@ -932,9 +949,66 @@ export default function AdminView({ onLogout, dbMode }) {
 
 
   return (
-    <div className="animate-fade-in" style={{ padding: "1rem" }}>
-      {/* ── Page Header ── */}
-      <div className="page-header">
+    <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-base)" }}>
+      {/* ── Fixed Sidebar ── */}
+      <div style={{
+        position: "fixed", top: 0, left: 0, bottom: 0,
+        width: sidebarOpen ? "250px" : "70px",
+        background: "var(--bg-card)",
+        borderRight: "1px solid var(--border-subtle)",
+        transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        zIndex: 100,
+        display: "flex", flexDirection: "column",
+        overflow: "hidden"
+      }}>
+        {/* Sidebar Header */}
+        <div style={{ padding: "1.25rem", display: "flex", alignItems: "center", borderBottom: "1px solid var(--border-subtle)", gap: sidebarOpen ? "1rem" : "0", justifyContent: sidebarOpen ? "flex-start" : "center" }}>
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: "none", border: "none", color: "var(--text-primary)", cursor: "pointer", display: "flex", padding: "0.25rem" }}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+          </button>
+          {sidebarOpen && <span style={{ fontWeight: 800, fontSize: "1.1rem", whiteSpace: "nowrap", color: "var(--brand)" }}>ERP Admin</span>}
+        </div>
+
+        {/* Sidebar Links */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "1rem 0", display: "flex", flexDirection: "column", gap: "0.25rem" }} className="sidebar-scroll">
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} title={t.label} style={{
+              display: "flex", alignItems: "center", gap: "0.75rem",
+              width: "100%", padding: sidebarOpen ? "0.75rem 1.25rem" : "0.75rem",
+              justifyContent: sidebarOpen ? "flex-start" : "center",
+              background: activeTab === t.id ? "var(--brand-glow)" : "transparent",
+              color: activeTab === t.id ? "var(--brand)" : "var(--text-secondary)",
+              border: "none", borderRight: activeTab === t.id ? "3px solid var(--brand)" : "3px solid transparent",
+              cursor: "pointer", fontSize: "0.9rem", fontWeight: activeTab === t.id ? 700 : 500,
+              transition: "all 0.2s",
+              position: "relative"
+            }}>
+              <t.icon size={18} style={{ flexShrink: 0 }} />
+              {sidebarOpen && <span style={{ whiteSpace: "nowrap" }}>{t.label}</span>}
+              
+              {/* Badges */}
+              {sidebarOpen && (t.id === "customer_orders" || t.id === "outlet_orders") && pendingOrders > 0 && <span style={{ background: "var(--brand)", color: "#fff", padding: "2px 6px", borderRadius: "99px", fontSize: "0.7rem", marginLeft: "auto" }}>{pendingOrders}</span>}
+              {sidebarOpen && t.id === "outlet_stations" && lowStockOutlets > 0 && <span style={{ background: "var(--error)", color: "#fff", padding: "2px 6px", borderRadius: "99px", fontSize: "0.7rem", marginLeft: "auto" }}>{lowStockOutlets}</span>}
+              {!sidebarOpen && (
+                ((t.id === "customer_orders" || t.id === "outlet_orders") && pendingOrders > 0) || (t.id === "outlet_stations" && lowStockOutlets > 0)
+              ) && <div style={{ width: 8, height: 8, background: (t.id === "outlet_stations") ? "var(--error)" : "var(--brand)", borderRadius: "50%", position: "absolute", right: "0.5rem", top: "0.5rem" }} />}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Main Content Area ── */}
+      <div style={{ 
+        flex: 1, 
+        marginLeft: sidebarOpen ? "250px" : "70px",
+        transition: "margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        padding: "1.5rem 2rem",
+        minWidth: 0,
+        overflowX: "hidden"
+      }}>
+        <div className="animate-fade-in">
+          {/* ── Page Header ── */}
+          <div className="page-header" style={{ marginBottom: "2rem" }}>
         <div className="page-header-left">
           <h1>Admin Dashboard</h1>
           <p>Manage your food business — catalog, outlets, orders & analytics</p>
@@ -972,16 +1046,7 @@ export default function AdminView({ onLogout, dbMode }) {
 
       {error && <div className="alert alert-error" style={{ marginBottom: "1.5rem" }}><AlertTriangle size={15} /> {error}</div>}
 
-      {/* ── Tab Bar ── */}
-      <div className="tab-nav" style={{ marginBottom: "2rem" }}>
-        {TABS.map(t => (
-          <button key={t.id} className={`tab-btn ${activeTab === t.id ? "active" : ""}`} onClick={() => setActiveTab(t.id)}>
-            <t.icon size={14} /> {t.label}
-            {t.id === "foods" && pendingOrders > 0 && <span className="nav-badge">{pendingOrders}</span>}
-            {t.id === "foods" && lowStockOutlets > 0 && <span className="nav-badge" style={{ background: "var(--error)" }}>{lowStockOutlets}</span>}
-          </button>
-        ))}
-      </div>
+
 
       {/* ══════════ OVERVIEW ══════════ */}
       {activeTab === "overview" && (
@@ -1152,7 +1217,7 @@ export default function AdminView({ onLogout, dbMode }) {
       )}
 
       {/* ══════════ OUTLET STATIONS ══════════ */}
-      {activeTab === "foods" && (
+      {activeTab === "outlet_stations" && (
         <div className="animate-fade-in">
           {/* Action Row */}
           <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.75rem", flexWrap: "wrap" }}>
@@ -1238,9 +1303,15 @@ export default function AdminView({ onLogout, dbMode }) {
             })}
           </div>
 
-          {/* Orders table */}
+        </div>
+      )}
+
+      {/* ══════════ ORDERS ══════════ */}
+      {(activeTab === "customer_orders" || activeTab === "outlet_orders") && (
+        <div className="animate-fade-in">
           <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1rem" }}>
-            B2C Customer Shipments <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— pending dispatch</span>
+            {activeTab === "customer_orders" ? "B2C Customer Shipments" : "Outlet POS Orders"} 
+            <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— pending dispatch</span>
           </h3>
           <div className="table-container">
             <table className="custom-table">
@@ -1255,10 +1326,10 @@ export default function AdminView({ onLogout, dbMode }) {
                 </tr>
               </thead>
               <tbody>
-                {orders.length === 0 && (
+                {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).length === 0 && (
                   <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No orders yet.</td></tr>
                 )}
-                {orders.map(o => (
+                {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).map(o => (
                   <tr key={o.id}>
                     <td><span style={{ fontWeight: 700, color: "var(--brand)" }}>#{o.id}</span></td>
                     <td style={{ color: "var(--text-secondary)" }}>{new Date(o.created_at).toLocaleDateString()}</td>
@@ -1499,7 +1570,7 @@ export default function AdminView({ onLogout, dbMode }) {
       {/* ══ TIMESHEETS ══ */}
       {activeTab === "timesheets" && (
         <div className="animate-fade-in">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.5rem", flexWrap: "wrap", gap: "1rem" }}>
             <div>
               <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.5rem", fontWeight: 900, color: "var(--text-primary)", margin: 0 }}>
                 Staff Timesheets & Shifts
@@ -1508,7 +1579,24 @@ export default function AdminView({ onLogout, dbMode }) {
                 Monitor staff clock-in/out times, hours worked, and cash drawer discrepancies.
               </p>
             </div>
-            <button className="btn btn-secondary" onClick={() => api.adminGetShifts().then(setTimesheets)}><RefreshCw size={14} /> Refresh</button>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label" style={{ fontSize: "0.75rem", marginBottom: "0.2rem" }}>Outlet</label>
+                <select className="form-input" style={{ padding: "0.5rem", fontSize: "0.85rem", height: "auto", minWidth: "120px" }} value={timesheetsFilterOutlet} onChange={e => { setTimesheetsFilterOutlet(e.target.value); setTimesheetsPage(1); }}>
+                  <option value="all">All Outlets</option>
+                  {outlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label" style={{ fontSize: "0.75rem", marginBottom: "0.2rem" }}>Start Date</label>
+                <input type="date" className="form-input" style={{ padding: "0.5rem", fontSize: "0.85rem", height: "auto" }} value={timesheetsStartDate} onChange={e => { setTimesheetsStartDate(e.target.value); setTimesheetsPage(1); }} />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label" style={{ fontSize: "0.75rem", marginBottom: "0.2rem" }}>End Date</label>
+                <input type="date" className="form-input" style={{ padding: "0.5rem", fontSize: "0.85rem", height: "auto" }} value={timesheetsEndDate} onChange={e => { setTimesheetsEndDate(e.target.value); setTimesheetsPage(1); }} />
+              </div>
+              <button className="btn btn-secondary" style={{ padding: "0.5rem 0.75rem", height: "35px" }} onClick={() => api.adminGetShifts({ page: timesheetsPage, outlet_id: timesheetsFilterOutlet, start_date: timesheetsStartDate, end_date: timesheetsEndDate }).then(data => { setTimesheets(data.shifts || []); setTimesheetsTotalPages(data.pages || 1); })}><RefreshCw size={14} /> Refresh</button>
+            </div>
           </div>
 
           <div className="glass-panel" style={{ overflowX: "auto" }}>
@@ -1559,6 +1647,30 @@ export default function AdminView({ onLogout, dbMode }) {
                 )}
               </tbody>
             </table>
+          </div>
+          
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem", padding: "1rem", background: "var(--bg-elevated)", borderRadius: "var(--r-md)" }}>
+            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", fontWeight: "600" }}>
+              Page {timesheetsPage} of {timesheetsTotalPages}
+            </span>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button 
+                className="btn btn-outline" 
+                style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem", borderRadius: "var(--r-sm)" }}
+                disabled={timesheetsPage <= 1} 
+                onClick={() => setTimesheetsPage(p => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button 
+                className="btn btn-outline" 
+                style={{ padding: "0.4rem 0.8rem", fontSize: "0.85rem", borderRadius: "var(--r-sm)" }}
+                disabled={timesheetsPage >= timesheetsTotalPages} 
+                onClick={() => setTimesheetsPage(p => Math.min(timesheetsTotalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3317,6 +3429,8 @@ export default function AdminView({ onLogout, dbMode }) {
         </div>
       )}
 
+      </div>
+      </div>
     </div>
   );
 }
