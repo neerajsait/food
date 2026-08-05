@@ -114,7 +114,10 @@ class User(db.Model):
 
     def set_password(self, password: str, bcrypt):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
-        if not hasattr(self, 'token_version') or self.token_version is None:
+        self.bump_token_version()
+
+    def bump_token_version(self):
+        if getattr(self, 'token_version', None) is None:
             self.token_version = 0
         self.token_version += 1
 

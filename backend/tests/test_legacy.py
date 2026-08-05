@@ -134,6 +134,8 @@ class BackendTestCase(unittest.TestCase):
         self.assertEqual(resp.json["order"]["status"], "shipped")
         self.assertEqual(resp.json["order"]["tracking_code"], "TRACK_XYZ_789")
 
+        delivery_code = resp.json["order"]["delivery_confirmation_code"]
+
         # 4. Customer attempts to submit feedback before confirming delivery -> Should still be Forbidden (403)
         resp = self.client.post(f"/api/foods/orders/{order_id}/feedback", json=feedback_payload, headers=customer_headers)
         self.assertEqual(resp.status_code, 403)
@@ -142,8 +144,8 @@ class BackendTestCase(unittest.TestCase):
         resp = self.client.post(f"/api/foods/orders/{order_id}/confirm", json={"tracking_code": "WRONG_CODE"}, headers=customer_headers)
         self.assertEqual(resp.status_code, 401)
 
-        # 6. Customer confirms receipt with MATCHING tracking code -> Should be OK (200)
-        resp = self.client.post(f"/api/foods/orders/{order_id}/confirm", json={"tracking_code": "TRACK_XYZ_789"}, headers=customer_headers)
+        # 6. Customer confirms receipt with MATCHING delivery confirmation code -> Should be OK (200)
+        resp = self.client.post(f"/api/foods/orders/{order_id}/confirm", json={"tracking_code": delivery_code}, headers=customer_headers)
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json["order"]["is_received"])
         self.assertEqual(resp.json["order"]["status"], "delivered")
@@ -221,15 +223,19 @@ class BackendTestCase(unittest.TestCase):
         admin_staff_payload = {
             "email": "real_staff@brand.com",
             "password": "staffpassword",
+            "first_name": "Real",
+            "last_name": "Staff",
             "outlet_id": self.outlet.id,
-            "first_name": "John",
-            "last_name": "Staff"
+            "phone": "1234567890",
+            "pin": "1234"
         }
         resp = self.client.post("/api/admin/staff", json=admin_staff_payload, headers=customer_headers)
         self.assertEqual(resp.status_code, 403)
 
         # 3. Admin creates a staff member successfully -> Should be Created (201)
         resp = self.client.post("/api/admin/staff", json=admin_staff_payload, headers=admin_headers)
+        if resp.status_code != 201:
+            print("ERROR response:", resp.get_json(), flush=True)
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.json["user"]["role"], "staff")
         self.assertEqual(resp.json["user"]["outlet_id"], self.outlet.id)

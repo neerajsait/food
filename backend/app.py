@@ -67,25 +67,19 @@ def check_if_token_revoked(jwt_header, jwt_payload):
     try:
         from models import User
         user = db.session.get(User, int(user_id)) if user_id else None
-        print('LOADER DEBUG:', 'user_id', user_id, 'user', user, 'jwt_token_version', token_version, flush=True)
         if user:
             db_tv = getattr(user, 'token_version', 0)
-            print('DB_TV:', db_tv, flush=True)
             if db_tv != token_version:
-                print(f"Token version mismatch! DB: {db_tv} JWT: {token_version}", flush=True)
                 return True
             if getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
-                print('User is banned or deleted', flush=True)
                 return True
         else:
-            print("User not found in blocklist check", flush=True)
             return True
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        import logging
+        logging.error(f"Error during blocklist db check: {e}")
         return True
 
-    print('RETURNING FALSE FROM LOADER', flush=True)
     return False
 
 mail = Mail()
@@ -321,6 +315,12 @@ def create_app(config_override=None):
             raise RuntimeError("SECRET_KEY must be set in production")
         if not jwt_secret_key:
             raise RuntimeError("JWT_SECRET_KEY must be set in production")
+        
+        from redis_client import get_redis
+        if not get_redis():
+            import logging
+            logging.error("Redis is unreachable. REDIS_URL is required in production.")
+            raise RuntimeError("Redis is required in production for JWT blocklist.")
             
     app.config["SECRET_KEY"] = secret_key or os.urandom(24).hex()
     app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
@@ -533,20 +533,6 @@ def create_app(config_override=None):
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
         refresh_token = create_refresh_token(identity=str(user.id), additional_claims=additional_claims)
 
-        # Automatic Login-Based Clock-In
-        if user.role in ("staff", "kitchen", "outlet_owner") and user.outlet_id:
-            active_shift = db.session.scalars(
-                select(StaffShift).where(
-                    StaffShift.staff_id == user.id,
-                    StaffShift.status == "active"
-                )
-            ).first()
-            if not active_shift:
-                new_shift = StaffShift(staff_id=user.id, outlet_id=user.outlet_id)
-                db.session.add(new_shift)
-                db.session.commit()
-                logger.info(f"Auto-clocked in {user.role} user {user.id} during login")
-
         return jsonify({"access_token": token, "refresh_token": refresh_token, "user": user.to_dict()}), 200
 
     
@@ -555,15 +541,21 @@ def create_app(config_override=None):
     @jwt_required(refresh=True)
     def refresh():
         identity = get_jwt_identity()
-        claims = get_jwt()
+        user = db.session.get(User, int(identity))
         
+        if not user or getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
+            return jsonify({"error": "Unauthorized", "message": "User not found or banned"}), 401
+            
         additional_claims = {
-            "role": claims.get("role"),
-            "outlet_id": claims.get("outlet_id"),
-            "admin_department": claims.get("admin_department"),
-            "is_superadmin": claims.get("is_superadmin", False),
-            "token_version": claims.get("token_version", 0)
+            "role": user.role,
+            "token_version": getattr(user, 'token_version', 0)
         }
+        
+        if user.role in ("staff", "kitchen"):
+            additional_claims["outlet_id"] = getattr(user, 'outlet_id', None)
+        elif user.role == "admin":
+            additional_claims["admin_department"] = getattr(user, 'admin_department', None)
+            additional_claims["is_superadmin"] = getattr(user, 'is_superadmin', False)
         
         access_token = create_access_token(identity=identity, additional_claims=additional_claims)
         return jsonify({"access_token": access_token}), 200
@@ -685,7 +677,6 @@ FlavorFlow Team
         user.password_reset_token = None
         user.password_reset_expiry = None
         user.is_first_login = False
-        user.token_version = getattr(user, 'token_version', 0) + 1
         db.session.commit()
 
         return jsonify({"message": "Password has been reset successfully"}), 200
@@ -772,7 +763,6 @@ The FlavorFlow Team"""
         user.is_first_login = False
         user.password_reset_token = None
         user.password_reset_expiry = None
-        user.token_version = getattr(user, 'token_version', 0) + 1
         db.session.commit()
 
         return jsonify({"message": "Password changed successfully"}), 200
@@ -1832,7 +1822,7 @@ The FlavorFlow Team"""
         tracking_code = (data.get("tracking_code") or "").strip()
         tracking_label = data.get("tracking_label")
         order.status = "shipped"
-        order.tracking_id = tracking_code if tracking_code else None
+        order.tracking_code = tracking_code if tracking_code else None
         order.delivery_confirmation_code = str(random.randint(100000, 999999))
         if tracking_label:
             order.tracking_label = tracking_label

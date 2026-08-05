@@ -8,13 +8,65 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || (
 );
 
 // Override fetch to always append cache-busting timestamp to GET requests
+// and handle 401 Unauthorized by attempting a token refresh.
 const originalFetch = window.fetch;
+let isRefreshing = false;
+let refreshPromise = null;
+
 window.fetch = async (url, options) => {
   if (typeof url === 'string' && url.includes(API_BASE_URL) && (!options || options.method === 'GET' || !options.method)) {
     const sep = url.includes('?') ? '&' : '?';
     url = `${url}${sep}_t=${Date.now()}`;
   }
-  return originalFetch(url, options);
+  
+  let res = await originalFetch(url, options);
+  
+  if (res.status === 401 && typeof url === 'string' && url.includes(API_BASE_URL) && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
+    const refreshToken = localStorage.getItem("refresh_token");
+    if (refreshToken) {
+      if (!isRefreshing) {
+        isRefreshing = true;
+        refreshPromise = originalFetch(`${API_BASE_URL}/auth/refresh`, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${refreshToken}` }
+        }).then(async refreshRes => {
+          isRefreshing = false;
+          if (refreshRes.ok) {
+            const data = await refreshRes.json();
+            localStorage.setItem("token", data.access_token);
+            if (data.refresh_token) {
+              localStorage.setItem("refresh_token", data.refresh_token);
+            }
+            return data.access_token;
+          } else {
+            localStorage.removeItem("token");
+            localStorage.removeItem("refresh_token");
+            window.location.href = "/login";
+            throw new Error("Session expired");
+          }
+        }).catch(err => {
+          isRefreshing = false;
+          localStorage.removeItem("token");
+          localStorage.removeItem("refresh_token");
+          window.location.href = "/login";
+          throw err;
+        });
+      }
+      
+      const newToken = await refreshPromise;
+      if (newToken) {
+        // Retry original request
+        const newOptions = { ...options };
+        newOptions.headers = { ...newOptions.headers, "Authorization": `Bearer ${newToken}` };
+        res = await originalFetch(url, newOptions);
+      }
+    } else {
+      localStorage.removeItem("token");
+      window.location.href = "/login";
+    }
+  }
+  
+  return res;
 };
 // Helper to retrieve auth tokens
 function getAuthHeader() {
@@ -994,6 +1046,9 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
     localStorage.setItem("token", data.access_token);
+    if (data.refresh_token) {
+      localStorage.setItem("refresh_token", data.refresh_token);
+    }
     localStorage.setItem("user", JSON.stringify(data.user));
     return data;
   },
@@ -1016,7 +1071,17 @@ export const api = {
         }
       }
     } catch(e) {}
+    
+    const refreshToken = localStorage.getItem("refresh_token");
+    if (refreshToken) {
+      originalFetch(`${API_BASE_URL}/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      }).catch(() => {});
+    }
     localStorage.removeItem("token");
+    localStorage.removeItem("refresh_token");
     localStorage.removeItem("user");
   },
 
