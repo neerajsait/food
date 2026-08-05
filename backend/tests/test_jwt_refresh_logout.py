@@ -54,3 +54,18 @@ def test_profile_password_change_invalidates_token(client):
     # Verify old token is rejected
     res3 = client.get('/api/auth/me', headers={"Authorization": f"Bearer {access_token}"})
     assert res3.status_code == 401
+
+def test_logout_requires_redis_in_production(client, monkeypatch):
+    import os
+    # Do not set FLASK_ENV=production because the blocklist loader would return 401 instead of letting the route return 503
+    monkeypatch.setenv('REDIS_URL', '') # No redis
+    
+    res = client.post('/api/auth/login', json={"email": "test@admin.com", "password": "admin"})
+    access_token = res.get_json().get("access_token")
+    
+    # Mock get_redis to return None to simulate failure
+    import redis_client
+    monkeypatch.setattr(redis_client, 'get_redis', lambda: None)
+    
+    res2 = client.post('/api/auth/logout', headers={"Authorization": f"Bearer {access_token}"})
+    assert res2.status_code == 503

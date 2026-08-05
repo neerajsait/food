@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from decimal import Decimal
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.orm import joinedload
 from flask import Flask, request, jsonify, Request
 from flask_bcrypt import Bcrypt
@@ -155,7 +155,14 @@ def sanitize_input(data, skip_keys=None):
         skip_keys = ["password", "new_password", "old_password", "image_url", "target_url", "icon", "attachment"]
         
     if isinstance(data, dict):
-        return {k: (v if k in skip_keys else sanitize_input(v, skip_keys)) for k, v in data.items()}
+        result = {}
+        for k, v in data.items():
+            if k in ["image_url", "target_url", "icon"] and isinstance(v, str) and v.strip():
+                if not v.strip().startswith(("http://", "https://")):
+                    from werkzeug.exceptions import BadRequest
+                    raise BadRequest(f"Invalid URL scheme for {k}. Must start with http:// or https://")
+            result[k] = v if k in skip_keys else sanitize_input(v, skip_keys)
+        return result
     elif isinstance(data, list):
         return [sanitize_input(i, skip_keys) for i in data]
     elif isinstance(data, str):
@@ -316,6 +323,9 @@ def create_app(config_override=None):
         if not jwt_secret_key:
             raise RuntimeError("JWT_SECRET_KEY must be set in production")
         
+        if not os.getenv("REDIS_URL"):
+            raise RuntimeError("REDIS_URL must be set in production for JWT blocklist.")
+            
         from redis_client import get_redis
         if not get_redis():
             import logging
@@ -568,7 +578,10 @@ def create_app(config_override=None):
         from redis_client import get_redis
         
         redis_client = get_redis()
-        if redis_client:
+        if not redis_client:
+            return jsonify({"error": "Service Unavailable", "message": "Logout temporarily unavailable"}), 503
+            
+        try:
             exp = get_jwt().get("exp")
             now = int(datetime.now(timezone.utc).timestamp())
             ttl = max(1, exp - now) if exp else 3600
@@ -586,6 +599,8 @@ def create_app(config_override=None):
                     redis_client.setex(f"revoked:{rt_jti}", rt_ttl, "1")
                 except Exception:
                     pass
+        except Exception:
+            return jsonify({"error": "Service Unavailable", "message": "Logout temporarily unavailable"}), 503
 
         return jsonify({"message": "Logged out"}), 200
 
@@ -1089,7 +1104,13 @@ The FlavorFlow Team"""
                 if used:
                     return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
 
-                coupon.usage_count += 1
+                stmt = update(Coupon).where(
+                    Coupon.id == coupon.id,
+                    or_(Coupon.usage_limit == None, Coupon.usage_count < Coupon.usage_limit)
+                ).values(usage_count=Coupon.usage_count + 1)
+                res = db.session.execute(stmt)
+                if res.rowcount == 0:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached during checkout"}), 400
                 
                 # Apply discount
                 if coupon.discount_amount and coupon.discount_amount > 0:
@@ -2795,7 +2816,13 @@ The FlavorFlow Team"""
                     used = db.session.scalars(select(Order).where(Order.customer_id == customer.id, Order.applied_coupon_code == coupon.code)).first()
                     if used:
                         return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
-                coupon.usage_count += 1
+                stmt = update(Coupon).where(
+                    Coupon.id == coupon.id,
+                    or_(Coupon.usage_limit == None, Coupon.usage_count < Coupon.usage_limit)
+                ).values(usage_count=Coupon.usage_count + 1)
+                res = db.session.execute(stmt)
+                if res.rowcount == 0:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached during checkout"}), 400
                 
                 # Apply discount
                 if coupon.discount_amount and coupon.discount_amount > 0:
@@ -3318,11 +3345,18 @@ The FlavorFlow Team"""
         if not stock:
             return jsonify({"error": "Not Found", "message": "Item not found in outlet inventory"}), 404
 
-        if stock.current_stock < qty:
-            return jsonify({"error": "Bad Request", "message": f"Insufficient stock to dispose. Available: {stock.current_stock}"}), 400
-
         before = stock.current_stock
-        stock.current_stock -= qty
+        stmt = update(OutletStock).where(
+            OutletStock.outlet_id == int(oid),
+            OutletStock.menu_item_id == int(mid),
+            OutletStock.current_stock >= qty
+        ).values(current_stock=OutletStock.current_stock - qty)
+        res = db.session.execute(stmt)
+        if res.rowcount == 0:
+            return jsonify({"error": "Conflict", "message": "Insufficient stock to dispose due to concurrent update."}), 409
+            
+        db.session.refresh(stock)
+        
         log_stock_change(db.session, outlet_id=int(oid), menu_item_id=int(mid),
                          change_qty=-qty, change_type="waste",
                          stock_before=before, stock_after=stock.current_stock,
