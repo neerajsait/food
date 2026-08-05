@@ -226,6 +226,7 @@ export default function AdminView({ onLogout, dbMode }) {
       // Don't auto-refresh if a modal is open to avoid interrupting user input
       if (!showAddMenu && !showAddOutlet && !showAddStaff && !showAddCoupon) {
         loadData(false); // pass false to avoid triggering full loading spinner
+        setRefreshTimesheetsTrigger(prev => prev + 1);
       }
     }, 10000);
     return () => clearInterval(interval);
@@ -239,6 +240,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [timesheetsFilterOutlet, setTimesheetsFilterOutlet] = useState("all");
   const [timesheetsStartDate, setTimesheetsStartDate] = useState("");
   const [timesheetsEndDate, setTimesheetsEndDate] = useState("");
+  const [refreshTimesheetsTrigger, setRefreshTimesheetsTrigger] = useState(0);
 
   useEffect(() => {
     if (activeTab === "timesheets") {
@@ -250,9 +252,9 @@ export default function AdminView({ onLogout, dbMode }) {
       }).then(data => {
         setTimesheets(data.shifts || []);
         setTimesheetsTotalPages(data.pages || 1);
-      }).catch(() => { });
+      }).catch(err => console.error("Failed to load shifts:", err));
     }
-  }, [activeTab, timesheetsPage, timesheetsFilterOutlet, timesheetsStartDate, timesheetsEndDate]);
+  }, [activeTab, timesheetsPage, timesheetsFilterOutlet, timesheetsStartDate, timesheetsEndDate, refreshTimesheetsTrigger]);
 
   // Background polling for POS catalog to ensure fresh menu
   useEffect(() => {

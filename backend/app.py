@@ -1007,7 +1007,8 @@ The FlavorFlow Team"""
         points_earned = 0
         if customer:
             points_earned = int(float(total) * earn_rate)
-            customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
+            # Note: We NO LONGER instantly credit loyalty points on checkout. 
+            # They will be credited when status becomes 'delivered' or 'completed'
 
         order = Order(
             customer_id=customer_id, 
@@ -1075,12 +1076,8 @@ The FlavorFlow Team"""
         if order.customer_id:
             customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
             if customer:
-                if order.loyalty_points_earned and order.loyalty_points_earned > 0:
-                    customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
-                    db.session.add(WalletTransaction(
-                        user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
-                        description=f"Points deducted due to cancellation of Order #{order.id}"
-                    ))
+                # Note: We DO NOT deduct loyalty_points_earned here because pending/processing orders 
+                # have not yet credited those points to the customer. We ONLY refund the redeemed points.
                 if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
                     customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
                     db.session.add(WalletTransaction(
@@ -1108,9 +1105,21 @@ The FlavorFlow Team"""
             return jsonify({"error": "Unauthorized", "message": "Incorrect Delivery PIN. Please check your email and try again."}), 401
         elif not order.delivery_confirmation_code and order.tracking_id != code:
             return jsonify({"error": "Unauthorized", "message": "Tracking code does not match"}), 401
+        
+        if order.status != "delivered":
+            order.status = "delivered"
+            order.is_received = True
+            
+            # Award points upon delivery
+            if order.customer_id and order.loyalty_points_earned > 0:
+                customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                if customer:
+                    customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_earned
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=order.loyalty_points_earned, transaction_type="credit",
+                        description=f"Points awarded for completion of Order #{order.id}"
+                    ))
 
-        order.is_received = True
-        order.status = "delivered"
         db.session.commit()
         return jsonify({"message": "Order confirmed as delivered", "order": order.to_dict()}), 200
 
@@ -1268,13 +1277,14 @@ The FlavorFlow Team"""
             })
             
         for o in orders:
-            if o.loyalty_points_earned and o.loyalty_points_earned > 0:
+            # Earned points are only credited if the order was actually delivered or completed
+            if o.loyalty_points_earned and o.loyalty_points_earned > 0 and o.status in ["delivered", "completed"]:
                 history.append({
                     "id": f"oe_{o.id}",
                     "date": o.created_at.isoformat(),
-                    "desc": f"Earned points on order #{o.id}",
+                    "type": "credit",
                     "amount": o.loyalty_points_earned,
-                    "type": "credit"
+                    "desc": f"Order #{o.id} reward"
                 })
             if o.loyalty_points_redeemed and o.loyalty_points_redeemed > 0:
                 history.append({
@@ -1629,11 +1639,27 @@ The FlavorFlow Team"""
         if not order:
             return jsonify({"error": "Not Found"}), 404
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        valid = ("pending", "processing", "shipped", "delivered", "cancelled")
+        valid = ("pending", "processing", "shipped", "delivered", "completed", "cancelled", "refunded", "payment_failed")
         if "status" in data and data["status"] in valid:
             old_status = order.status
             order.status = data["status"]
-            if old_status != "cancelled" and order.status == "cancelled":
+            
+            award_statuses = ["delivered", "completed"]
+            reverse_statuses = ["cancelled", "refunded", "payment_failed"]
+            
+            # If changing TO an awarding status from a non-awarding status
+            if order.status in award_statuses and old_status not in award_statuses:
+                if order.customer_id and order.loyalty_points_earned > 0:
+                    customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                    if customer:
+                        customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_earned
+                        db.session.add(WalletTransaction(
+                            user_id=customer.id, amount=order.loyalty_points_earned, transaction_type="credit",
+                            description=f"Points awarded for completion of Order #{order.id}"
+                        ))
+            
+            # If changing TO a reverse status from a non-reverse status
+            if order.status in reverse_statuses and old_status not in reverse_statuses:
                 for item in order.items:
                     menu_item = db.session.get(MenuItem, item.menu_item_id)
                     if menu_item and menu_item.global_stock is not None:
@@ -1646,17 +1672,20 @@ The FlavorFlow Team"""
                 if order.customer_id:
                     customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
                     if customer:
-                        if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                        # Reverse awarded points ONLY IF they were previously awarded
+                        if old_status in award_statuses and order.loyalty_points_earned and order.loyalty_points_earned > 0:
                             customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
                             db.session.add(WalletTransaction(
                                 user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
-                                description=f"Points deducted due to cancellation of Order #{order.id}"
+                                description=f"Points deducted due to {order.status} of Order #{order.id}"
                             ))
+                        
+                        # ALWAYS refund redeemed points on cancel/refund/fail (since they were deducted at checkout)
                         if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
                             customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
                             db.session.add(WalletTransaction(
                                 user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
-                                description=f"Points refunded due to cancellation of Order #{order.id}"
+                                description=f"Points refunded due to {order.status} of Order #{order.id}"
                             ))
         if "tracking_code" in data:
             order.tracking_code = data["tracking_code"]
@@ -2795,7 +2824,7 @@ The FlavorFlow Team"""
                 Order.order_type == "pos",
                 Order.status != "cancelled"
             ).order_by(Order.created_at.desc())
-        ).all()
+        ).unique().all()
         
         # Format for frontend expecting total_amount instead of total_price just to be safe
         result = []
@@ -2917,11 +2946,12 @@ The FlavorFlow Team"""
             end_time = s.clock_out_time or datetime.now(timezone.utc)
             sales = db.session.execute(
                 select(
-                    OrderItem.menu_item_name,
+                    MenuItem.name.label("menu_item_name"),
                     func.sum(OrderItem.quantity).label("total_qty"),
                     func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
                 )
                 .join(Order, Order.id == OrderItem.order_id)
+                .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
                 .where(
                     Order.staff_id == s.staff_id,
                     Order.outlet_id == s.outlet_id,
@@ -2929,7 +2959,7 @@ The FlavorFlow Team"""
                     Order.created_at <= end_time,
                     Order.status != "cancelled"
                 )
-                .group_by(OrderItem.menu_item_name)
+                .group_by(MenuItem.name)
             ).all()
             
             s_dict["sales_summary"] = [
@@ -2990,11 +3020,12 @@ The FlavorFlow Team"""
             end_time = s.clock_out_time or datetime.now(timezone.utc)
             sales = db.session.execute(
                 select(
-                    OrderItem.menu_item_name,
+                    MenuItem.name.label("menu_item_name"),
                     func.sum(OrderItem.quantity).label("total_qty"),
                     func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
                 )
                 .join(Order, Order.id == OrderItem.order_id)
+                .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
                 .where(
                     Order.staff_id == s.staff_id,
                     Order.outlet_id == s.outlet_id,
@@ -3002,7 +3033,7 @@ The FlavorFlow Team"""
                     Order.created_at <= end_time,
                     Order.status != "cancelled"
                 )
-                .group_by(OrderItem.menu_item_name)
+                .group_by(MenuItem.name)
             ).all()
             
             s_dict["sales_summary"] = [

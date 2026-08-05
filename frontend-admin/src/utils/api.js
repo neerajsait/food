@@ -1987,12 +1987,30 @@ export const api = {
     return data;
   },
 
-  async adminGetShifts() {
+  async adminGetShifts(params = {}) {
     const live = await checkBackendAlive();
     if (!live) return JSON.parse(localStorage.getItem("mock_shifts") || "[]").reverse();
-    const res = await fetch(`${API_BASE_URL}/admin/shifts`, { headers: getAuthHeader() });
+    
+    const qs = new URLSearchParams();
+    if (params.page) qs.append("page", params.page);
+    if (params.outlet_id && params.outlet_id !== "all") qs.append("outlet_id", params.outlet_id);
+    if (params.start_date) qs.append("start_date", params.start_date);
+    if (params.end_date) qs.append("end_date", params.end_date);
+    
+    const res = await fetch(`${API_BASE_URL}/admin/shifts?${qs.toString()}`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load timesheets");
     return safeJson(res);
+  },
+
+  async adminGetFinance() {
+    const live = await checkBackendAlive();
+    if (!live) return { revenue_share: [] };
+    const res = await fetch(`${API_BASE_URL}/admin/revenue-share`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load finance data");
+    
+    // The endpoint returns a list directly, but AdminView expects { revenue_share: [...] }
+    const data = await safeJson(res);
+    return { revenue_share: Array.isArray(data) ? data : [] };
   },
 
   async adminDeleteShift(shiftId) {

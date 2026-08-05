@@ -177,7 +177,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     setClockOutLoading(true);
     try {
       const res = await api.posClockOut(cashVal);
-      setClockOutResult(res.shift);
+      setClockOutResult({ ...res.shift, stats: shiftTotals });
       setActiveShift(null);
       setActualCashInput("");
     } catch (err) {
@@ -641,8 +641,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   // Compute stats for EOD Report
   const shiftTotals = useMemo(() => {
-    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
-    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
+    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
+    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
     const count = salesHistory.length;
     return { cash, upi, total: cash + upi, count };
   }, [salesHistory]);
@@ -781,16 +781,36 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                 ⚠️ Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
               </div>
             )}
+            
+            {clockOutResult.stats && (
+              <div style={{ background: "var(--bg-inset)", padding: "1.25rem", borderRadius: "1rem", marginBottom: "1.5rem", border: "1px solid var(--border-subtle)", textAlign: "left" }}>
+                <h4 style={{ margin: "0 0 1rem 0", fontSize: "0.9rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>End of Day Summary</h4>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
+                  <span>Ticket Count:</span>
+                  <strong>{clockOutResult.stats.count}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
+                  <span>Cash Sales:</span>
+                  <strong>₹{clockOutResult.stats.cash.toFixed(2)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem", fontSize: "0.85rem" }}>
+                  <span>UPI/Card Sales:</span>
+                  <strong>₹{clockOutResult.stats.upi.toFixed(2)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px dashed var(--border-subtle)", fontSize: "1rem", fontWeight: "800", color: "var(--brand)" }}>
+                  <span>Total Sales:</span>
+                  <span>₹{clockOutResult.stats.total.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+
             <button
               id="clock-out-done-btn"
               className="btn btn-primary"
               style={{ width: "100%", padding: "0.875rem", marginBottom: "0.75rem" }}
-              onClick={() => { setClockOutResult(null); }}
+              onClick={() => { setClockOutResult(null); onLogout(); }}
             >
-              Done
-            </button>
-            <button className="btn btn-secondary" style={{ width: "100%" }} onClick={onLogout}>
-              <LogOut size={14} /> Sign Out
+              Done & Sign Out
             </button>
           </div>
         </div>
@@ -920,6 +940,12 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             
           >
             <FileText size={14} /> Shift Report
+          </button>
+          <button
+            onClick={() => setShowClockOutModal(true)}
+            className="clock-out"
+          >
+            <Clock size={14} /> Clock Out
           </button>
           <button
             onClick={openProfileModal}
@@ -1177,7 +1203,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <Store size={18} style={{ color: "var(--brand)" }} /> End of Shift
+                <Store size={18} style={{ color: "var(--brand)" }} /> Shift Report
               </h2>
               <button className="modal-close" onClick={() => setShowShiftReport(false)}><X size={16} /></button>
             </div>
