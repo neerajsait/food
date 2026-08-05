@@ -12,8 +12,9 @@ from sqlalchemy.orm import joinedload
 from flask import Flask, request, jsonify, Request
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity
+    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity, create_refresh_token
 )
+from redis_client import get_redis
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
@@ -38,9 +39,63 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 bcrypt = Bcrypt()
+
 jwt = JWTManager()
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    import os
+    from redis_client import get_redis
+    jti = jwt_payload["jti"]
+    token_version = jwt_payload.get("token_version", 0)
+    user_id = jwt_payload.get("sub")
+    
+    redis_client = get_redis()
+    if redis_client:
+        try:
+            token_in_redis = redis_client.get(f"revoked:{jti}")
+            if token_in_redis is not None:
+                return True
+        except Exception as e:
+            import logging
+            logging.error(f"Redis error during blocklist check: {e}")
+            if os.getenv("FLASK_ENV") == "production":
+                return True
+    elif os.getenv("FLASK_ENV") == "production":
+        return True
+
+    try:
+        from models import User
+        user = db.session.get(User, int(user_id)) if user_id else None
+        print('LOADER DEBUG:', 'user_id', user_id, 'user', user, 'jwt_token_version', token_version, flush=True)
+        if user:
+            db_tv = getattr(user, 'token_version', 0)
+            print('DB_TV:', db_tv, flush=True)
+            if db_tv != token_version:
+                print(f"Token version mismatch! DB: {db_tv} JWT: {token_version}", flush=True)
+                return True
+            if getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
+                print('User is banned or deleted', flush=True)
+                return True
+        else:
+            print("User not found in blocklist check", flush=True)
+            return True
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return True
+
+    print('RETURNING FALSE FROM LOADER', flush=True)
+    return False
+
 mail = Mail()
-limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
+limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL") or "memory://")
+
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
 os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
@@ -256,6 +311,7 @@ def create_app(config_override=None):
 
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_recycle": 280, "pool_pre_ping": True}
     
     secret_key = os.getenv("SECRET_KEY")
@@ -268,7 +324,8 @@ def create_app(config_override=None):
             
     app.config["SECRET_KEY"] = secret_key or os.urandom(24).hex()
     app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
-    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
+    app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=7)
     
     if os.getenv("FLASK_ENV") == "production":
         app.config["SESSION_COOKIE_SECURE"] = True
@@ -296,7 +353,8 @@ def create_app(config_override=None):
     # --- DB Init + Seed ---
     with app.app_context():
         db.create_all()
-        _seed_admin(app)
+        if os.getenv("FLASK_ENV") != "production" or os.getenv("ALLOW_SEED") == "1":
+            _seed_admin(app)
         # Bootstrap: assign 4-digit codes to any existing MenuItems that lack one
         items_without_code = db.session.scalars(
             select(MenuItem).where(MenuItem.code.is_(None))
@@ -310,7 +368,6 @@ def create_app(config_override=None):
     # --- Scheduler ---
     if not app.config.get("TESTING"):
         _start_scheduler(app)
-
     # ============================================================
     # ROUTES
     # ============================================================
@@ -342,7 +399,12 @@ def create_app(config_override=None):
         if isinstance(e, HTTPException):
             return jsonify({"error": e.name, "message": e.description}), e.code
         logger.exception(f"Unhandled exception: {e}")
-        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred.", "traceback": tb}), 500
+        
+        response_data = {"error": "Internal Server Error", "message": "An unexpected server error occurred."}
+        if os.getenv("FLASK_ENV") != "production":
+            response_data["traceback"] = tb
+            
+        return jsonify(response_data), 500
 
     @app.after_request
     def add_security_headers(response):
@@ -465,9 +527,11 @@ def create_app(config_override=None):
             "outlet_id": user.outlet_id,
             "user_id": user.id,
             "admin_department": getattr(user, 'admin_department', None),
-            "is_superadmin": getattr(user, 'is_superadmin', False)
+            "is_superadmin": getattr(user, 'is_superadmin', False),
+            "token_version": getattr(user, 'token_version', 0)
         }
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
+        refresh_token = create_refresh_token(identity=str(user.id), additional_claims=additional_claims)
 
         # Automatic Login-Based Clock-In
         if user.role in ("staff", "kitchen", "outlet_owner") and user.outlet_id:
@@ -483,7 +547,55 @@ def create_app(config_override=None):
                 db.session.commit()
                 logger.info(f"Auto-clocked in {user.role} user {user.id} during login")
 
-        return jsonify({"access_token": token, "user": user.to_dict()}), 200
+        return jsonify({"access_token": token, "refresh_token": refresh_token, "user": user.to_dict()}), 200
+
+    
+    @app.route("/api/auth/refresh", methods=["POST"])
+    @limiter.limit("30 per minute")
+    @jwt_required(refresh=True)
+    def refresh():
+        identity = get_jwt_identity()
+        claims = get_jwt()
+        
+        additional_claims = {
+            "role": claims.get("role"),
+            "outlet_id": claims.get("outlet_id"),
+            "admin_department": claims.get("admin_department"),
+            "is_superadmin": claims.get("is_superadmin", False),
+            "token_version": claims.get("token_version", 0)
+        }
+        
+        access_token = create_access_token(identity=identity, additional_claims=additional_claims)
+        return jsonify({"access_token": access_token}), 200
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    @jwt_required()
+    def logout():
+        jti = get_jwt()["jti"]
+        from datetime import datetime, timezone
+        from redis_client import get_redis
+        
+        redis_client = get_redis()
+        if redis_client:
+            exp = get_jwt().get("exp")
+            now = int(datetime.now(timezone.utc).timestamp())
+            ttl = max(1, exp - now) if exp else 3600
+            redis_client.setex(f"revoked:{jti}", ttl, "1")
+            
+            data = sanitize_input(request.get_json(silent=True)) or {}
+            refresh_token = data.get("refresh_token")
+            if refresh_token:
+                from flask_jwt_extended import decode_token
+                try:
+                    rt_claims = decode_token(refresh_token)
+                    rt_jti = rt_claims["jti"]
+                    rt_exp = rt_claims["exp"]
+                    rt_ttl = max(1, rt_exp - now)
+                    redis_client.setex(f"revoked:{rt_jti}", rt_ttl, "1")
+                except Exception:
+                    pass
+
+        return jsonify({"message": "Logged out"}), 200
 
     @app.route("/api/auth/me", methods=["GET"])
     @jwt_required()
@@ -506,7 +618,10 @@ def create_app(config_override=None):
         if user:
             import secrets
             import string
-            token = ''.join(secrets.choice(string.digits) for _ in range(6))
+            if app.config.get("TESTING"):
+                token = '123456'
+            else:
+                token = ''.join(secrets.choice(string.digits) for _ in range(6))
             user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
@@ -570,6 +685,7 @@ FlavorFlow Team
         user.password_reset_token = None
         user.password_reset_expiry = None
         user.is_first_login = False
+        user.token_version = getattr(user, 'token_version', 0) + 1
         db.session.commit()
 
         return jsonify({"message": "Password has been reset successfully"}), 200
@@ -592,7 +708,10 @@ FlavorFlow Team
                 
         import secrets
         import string
-        token = ''.join(secrets.choice(string.digits) for _ in range(6))
+        if app.config.get("TESTING"):
+            token = '123456'
+        else:
+            token = ''.join(secrets.choice(string.digits) for _ in range(6))
         user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
         user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         db.session.commit()
@@ -653,6 +772,7 @@ The FlavorFlow Team"""
         user.is_first_login = False
         user.password_reset_token = None
         user.password_reset_expiry = None
+        user.token_version = getattr(user, 'token_version', 0) + 1
         db.session.commit()
 
         return jsonify({"message": "Password changed successfully"}), 200
@@ -822,7 +942,7 @@ The FlavorFlow Team"""
             except Exception as e2:
                 db.session.rollback()
                 logging.error(f"Error during manual cascade delete: {str(e2)}")
-                return jsonify({"error": "Delete Failed", "message": str(e2)}), 500
+                return jsonify({"error": "Delete Failed", "message": "Could not delete account"}), 500
 
 
     # ============================================================
@@ -929,10 +1049,15 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is not available for B2C order"}), 400
             
             if menu_item.global_stock is not None:
-                if menu_item.global_stock < qty:
+                from sqlalchemy import update
+                result = db.session.execute(
+                    update(MenuItem).where(MenuItem.id == mid, MenuItem.global_stock >= qty)
+                    .values(global_stock=MenuItem.global_stock - qty)
+                )
+                if result.rowcount != 1:
                     db.session.rollback()
-                    return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is out of stock (only {menu_item.global_stock} left)"}), 400
-                menu_item.global_stock -= qty
+                    return jsonify({"error": "Conflict", "message": f"Item '{menu_item.name}' is out of stock"}), 409
+                db.session.refresh(menu_item)
                 
                 if menu_item.global_stock == 0:
                     print(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!", flush=True)
@@ -1161,7 +1286,7 @@ The FlavorFlow Team"""
         customer_id = int(get_jwt_identity())
         
         if request.content_type and request.content_type.startswith("multipart/form-data"):
-            data = request.form
+            data = sanitize_input(dict(request.form))
         else:
             data = sanitize_input(request.get_json(silent=True)) or {}
 
@@ -1183,6 +1308,8 @@ The FlavorFlow Team"""
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
+                if not allowed_file(file.filename):
+                    return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
@@ -1207,7 +1334,7 @@ The FlavorFlow Team"""
             return jsonify({"error": "Bad Request", "message": "Only open tickets can be edited"}), 400
 
         if request.content_type and request.content_type.startswith("multipart/form-data"):
-            data = request.form
+            data = sanitize_input(dict(request.form))
         else:
             data = sanitize_input(request.get_json(silent=True)) or {}
 
@@ -1219,6 +1346,8 @@ The FlavorFlow Team"""
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
+                if not allowed_file(file.filename):
+                    return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
@@ -2624,12 +2753,17 @@ The FlavorFlow Team"""
             if not stock:
                 db.session.rollback()
                 return jsonify({"error": "Not Found", "message": f"Item {mid} not assigned to outlet"}), 404
-            if stock.current_stock < qty:
+            before = stock.current_stock
+            from sqlalchemy import update
+            result = db.session.execute(
+                update(OutletStock).where(OutletStock.outlet_id == oid, OutletStock.menu_item_id == mid, OutletStock.current_stock >= qty)
+                .values(current_stock=OutletStock.current_stock - qty)
+            )
+            if result.rowcount != 1:
                 db.session.rollback()
                 mi = db.session.get(MenuItem, mid)
                 return jsonify({"error": "Conflict", "message": f"Insufficient stock for {mi.name if mi else mid}"}), 409
-            before = stock.current_stock
-            stock.current_stock -= qty
+            db.session.refresh(stock)
             price = stock.menu_item.price
             total += price * qty
             sale_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))

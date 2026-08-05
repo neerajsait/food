@@ -110,8 +110,10 @@ class AdminTestCase(unittest.TestCase):
             "first_name": "Staff",
             "last_name": "Member",
             "phone": "5555555555",
+            "pin": "1234",
             "outlet_id": self.outlet.id
         }, headers=self.admin_headers)
+        print("TEST RESP:", resp.json)
         self.assertIn(resp.status_code, [200, 201])
 
     def test_admin_delete_staff(self):

@@ -65,6 +65,7 @@ class User(db.Model):
     id = Column(Integer, primary_key=True)
     email = Column(String(120), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+    token_version = Column(Integer, default=0, nullable=False)
     role = Column(String(20), nullable=False, default='customer')
     
     __mapper_args__ = {
@@ -113,6 +114,9 @@ class User(db.Model):
 
     def set_password(self, password: str, bcrypt):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+        if not hasattr(self, 'token_version') or self.token_version is None:
+            self.token_version = 0
+        self.token_version += 1
 
     def check_password(self, password: str, bcrypt) -> bool:
         return bcrypt.check_password_hash(self.password_hash, password)
