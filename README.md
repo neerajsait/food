@@ -16,7 +16,7 @@ This is a comprehensive full-stack application providing POS, B2C, and B2B funct
 *   `SECRET_KEY`: **Required in production.** Used for session signing, QR code generation, etc.
 *   `JWT_SECRET_KEY`: **Required in production.** Used for JWT signature.
 *   `REDIS_URL`: **Required in production.** Used for JWT token blocklisting. Example: `redis://localhost:6379/0`
-*   `ALLOW_SEED`: (Optional) Set to `1` to run database seed logic in production (normally disabled).
+*   `ALLOW_SEED=1`: (Optional) only if you intentionally want demo seeds in prod
 *   `DATABASE_URL`: (Optional) Full connection string. Defaults to SQLite if not provided (except in production).
 *   **MySQL Variables (Alternative to `DATABASE_URL`)**:
     *   `MYSQL_HOST`: e.g. `localhost`

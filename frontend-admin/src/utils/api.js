@@ -1053,7 +1053,7 @@ export const api = {
     return data;
   },
 
-  logout() {
+  async logout() {
     try {
       const userStr = localStorage.getItem("user");
       if (userStr) {
@@ -1072,17 +1072,20 @@ export const api = {
       }
     } catch(e) {}
     
-    const refreshToken = localStorage.getItem("refresh_token");
-    if (refreshToken) {
-      originalFetch(`${API_BASE_URL}/auth/logout`, {
+    try {
+      const refreshToken = localStorage.getItem("refresh_token");
+      const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
+      await originalFetch(`${API_BASE_URL}/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({ refresh_token: refreshToken })
-      }).catch(() => {});
-    }
+        body
+      });
+    } catch (e) {}
+
     localStorage.removeItem("token");
     localStorage.removeItem("refresh_token");
     localStorage.removeItem("user");
+    window.location.href = "/login";
   },
 
   getCurrentUser() {

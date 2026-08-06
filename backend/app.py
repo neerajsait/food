@@ -56,6 +56,14 @@ def check_if_token_revoked(jwt_header, jwt_payload):
             token_in_redis = redis_client.get(f"revoked:{jti}")
             if token_in_redis is not None:
                 return True
+                
+            redis_tv = redis_client.get(f"user_tv:{user_id}")
+            if redis_tv is not None:
+                if int(redis_tv) != token_version:
+                    return True
+                # Optional: if it matches, we can skip DB check, but we lose banned/active check unless we cache those too.
+                # Per requirements: "Only if Redis missing that key, fall back to DB user.token_version (and banned/active checks)"
+                return False
         except Exception as e:
             import logging
             logging.error(f"Redis error during blocklist check: {e}")
@@ -69,6 +77,13 @@ def check_if_token_revoked(jwt_header, jwt_payload):
         user = db.session.get(User, int(user_id)) if user_id else None
         if user:
             db_tv = getattr(user, 'token_version', 0)
+            
+            if redis_client:
+                try:
+                    redis_client.set(f"user_tv:{user_id}", db_tv)
+                except Exception:
+                    pass
+
             if db_tv != token_version:
                 return True
             if getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
@@ -168,7 +183,7 @@ def sanitize_input(data, skip_keys=None):
             if k in ["image_url", "target_url", "icon"] and isinstance(v, str) and v.strip():
                 if not validate_public_url(v):
                     from werkzeug.exceptions import BadRequest
-                    raise BadRequest("Invalid URL")
+                    raise BadRequest("Invalid URL scheme")
             result[k] = v if k in skip_keys else sanitize_input(v, skip_keys)
         return result
     elif isinstance(data, list):
@@ -550,6 +565,15 @@ def create_app(config_override=None):
             "is_superadmin": getattr(user, 'is_superadmin', False),
             "token_version": getattr(user, 'token_version', 0)
         }
+        
+        try:
+            from redis_client import get_redis
+            rc = get_redis()
+            if rc:
+                rc.set(f"user_tv:{user.id}", getattr(user, 'token_version', 0))
+        except Exception:
+            pass
+            
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
         refresh_token = create_refresh_token(identity=str(user.id), additional_claims=additional_claims)
 
@@ -568,14 +592,12 @@ def create_app(config_override=None):
             
         additional_claims = {
             "role": user.role,
+            "outlet_id": user.outlet_id,
+            "user_id": user.id,
+            "admin_department": getattr(user, 'admin_department', None),
+            "is_superadmin": getattr(user, 'is_superadmin', False),
             "token_version": getattr(user, 'token_version', 0)
         }
-        
-        if user.role in ("staff", "kitchen"):
-            additional_claims["outlet_id"] = getattr(user, 'outlet_id', None)
-        elif user.role == "admin":
-            additional_claims["admin_department"] = getattr(user, 'admin_department', None)
-            additional_claims["is_superadmin"] = getattr(user, 'is_superadmin', False)
         
         access_token = create_access_token(identity=identity, additional_claims=additional_claims)
         return jsonify({"access_token": access_token}), 200

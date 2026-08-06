@@ -120,6 +120,13 @@ class User(db.Model):
         if getattr(self, 'token_version', None) is None:
             self.token_version = 0
         self.token_version += 1
+        try:
+            from redis_client import get_redis
+            rc = get_redis()
+            if rc and getattr(self, 'id', None):
+                rc.set(f"user_tv:{self.id}", self.token_version)
+        except Exception:
+            pass
 
     def check_password(self, password: str, bcrypt) -> bool:
         return bcrypt.check_password_hash(self.password_hash, password)
