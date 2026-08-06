@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import QRScanner from "./QRScanner";
 import BannerZone from "./BannerZone";
-
+import EmptyState from "./EmptyState";
 // Category configuration
 const DEFAULT_CATEGORIES = [
   { id: "all", label: "All Products", emoji: "", color: "#a855f7" },
@@ -1057,11 +1057,7 @@ export default function CustomerView({ onLogout, dbMode }) {
             </div>
             
             {filteredMenu.length === 0 && (
-              <div style={{ textAlign: "center", padding: "4rem", color: "var(--text-muted)" }}>
-                <Search size={48} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
-                <h3>No products found</h3>
-                <p>Try adjusting your search or category filters.</p>
-              </div>
+              <EmptyState icon="search" title="No products found" message="Try adjusting your search or category filters." />
             )}
             
             {/* Bottom Banners */}
@@ -1082,12 +1078,12 @@ export default function CustomerView({ onLogout, dbMode }) {
           <div style={{ maxWidth: "800px", margin: "0 auto" }}>
             <h2 style={{ fontSize: "2rem", fontWeight: "900", fontFamily: "var(--font-heading)", marginBottom: "2rem" }}>My Orders</h2>
             {orders.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "4rem", color: "var(--text-muted)", borderTop: "1px solid var(--border-light)" }}>
-                <ShoppingBag size={48} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
-                <h3>No orders yet</h3>
-                <p>When you place an order, it will appear here.</p>
-                <button onClick={() => setActiveTab("menu")} className="btn" style={{ background: "var(--text-primary)", color: "#fff", marginTop: "1rem" }}>Start Shopping</button>
-              </div>
+              <EmptyState 
+                icon="package" 
+                title="No orders yet" 
+                message="When you place an order, it will appear here." 
+                action={<button onClick={() => setActiveTab("menu")} className="btn" style={{ background: "var(--text-primary)", color: "#fff", marginTop: "1rem" }}>Start Shopping</button>}
+              />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--border-light)" }}>
                 {orders.map(order => (
@@ -1153,11 +1149,7 @@ export default function CustomerView({ onLogout, dbMode }) {
             </div>
             
             {tickets.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "4rem", color: "var(--text-muted)", borderTop: "1px solid var(--border-light)" }}>
-                <MessageSquare size={48} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
-                <h3>No support tickets</h3>
-                <p>Need help? Create a new ticket and we'll get back to you.</p>
-              </div>
+              <EmptyState icon="message" title="No support tickets" message="Need help? Create a new ticket and we'll get back to you." />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--border-light)" }}>
                 {tickets.map(t => (
@@ -1366,8 +1358,8 @@ export default function CustomerView({ onLogout, dbMode }) {
                       <span>Total</span><span>₹{finalTotal.toFixed(0)}</span>
                     </div>
                   </div>
-                  <button onClick={handlePlaceOrder} disabled={paymentProcessing} style={{ width: "100%", marginTop: "1.5rem", background: "var(--text-primary)", color: "#fff", border: "none", padding: "1.25rem", fontSize: "1rem", fontWeight: "800", cursor: paymentProcessing ? "not-allowed" : "pointer", letterSpacing: "2px", textTransform: "uppercase", opacity: paymentProcessing ? 0.7 : 1, transition: "opacity 0.2s" }}>
-                    {paymentProcessing ? "Processing..." : `Place Order · ₹${finalTotal.toFixed(0)}`}
+                  <button onClick={handlePlaceOrder} disabled={paymentProcessing} style={{ width: "100%", marginTop: "1.5rem", background: "var(--text-primary)", color: "#fff", border: "none", padding: "1.25rem", fontSize: "1rem", fontWeight: "800", cursor: paymentProcessing ? "not-allowed" : "pointer", letterSpacing: "2px", textTransform: "uppercase", opacity: paymentProcessing ? 0.7 : 1, transition: "opacity 0.2s", display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem" }}>
+                    {paymentProcessing ? <><RefreshCw size={18} className="animate-spin" /> Processing...</> : `Place Order · ₹${finalTotal.toFixed(0)}`}
                   </button>
                   <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", marginTop: "1rem" }}>🔒 Secure checkout. Your data is protected.</p>
                 </div>
@@ -1558,8 +1550,8 @@ export default function CustomerView({ onLogout, dbMode }) {
                       </div>
                     ))}
                     {addresses.length === 0 && (
-                      <div style={{ gridColumn: "1 / -1", padding: "2rem", textAlign: "center", border: "1px dashed var(--border-default)", color: "var(--text-muted)" }}>
-                        No addresses saved yet. Add one for quicker checkout!
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <EmptyState icon="mapPin" title="No addresses saved yet" message="Add one for quicker checkout!" />
                       </div>
                     )}
                   </div>
@@ -1664,7 +1656,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       {/* Ticket Modal */}
       {isTicketModalOpen && createPortal(
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem", backdropFilter: "blur(4px)" }}>
-          <div className="glass-card" style={{ padding: "2rem", width: "100%", maxWidth: "500px", borderRadius: "var(--r-xl)", position: "relative" }}>
+          <div className="card" style={{ padding: "2rem", width: "100%", maxWidth: "500px", borderRadius: "var(--r-xl)", position: "relative" }}>
             <button onClick={() => setIsTicketModalOpen(false)} style={{ position: "absolute", top: "1rem", right: "1rem", background: "var(--bg-hover)", border: "none", borderRadius: "50%", padding: "0.5rem", cursor: "pointer", color: "var(--text-primary)" }}>
               <X size={18} />
             </button>
@@ -1690,7 +1682,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       {/* Review Modal */}
       {reviewForm && createPortal(
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem", backdropFilter: "blur(4px)" }}>
-          <div className="glass-card" style={{ padding: "2rem", width: "100%", maxWidth: "450px", borderRadius: "var(--r-xl)", position: "relative" }}>
+          <div className="card" style={{ padding: "2rem", width: "100%", maxWidth: "450px", borderRadius: "var(--r-xl)", position: "relative" }}>
             <button onClick={() => setReviewForm(null)} style={{ position: "absolute", top: "1rem", right: "1rem", background: "var(--bg-hover)", border: "none", borderRadius: "50%", padding: "0.5rem", cursor: "pointer", color: "var(--text-primary)" }}>
               <X size={18} />
             </button>
@@ -1720,7 +1712,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       {/* Show Reviews Modal */}
       {showReviewsModal && selectedItem && createPortal(
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem", backdropFilter: "blur(4px)" }}>
-          <div className="glass-card" style={{ padding: "2rem", width: "100%", maxWidth: "500px", maxHeight: "80vh", display: "flex", flexDirection: "column", borderRadius: "var(--r-xl)", position: "relative" }}>
+          <div className="card" style={{ padding: "2rem", width: "100%", maxWidth: "500px", maxHeight: "80vh", display: "flex", flexDirection: "column", borderRadius: "var(--r-xl)", position: "relative" }}>
             <button onClick={() => { setShowReviewsModal(false); setSelectedItem(null); }} style={{ position: "absolute", top: "1rem", right: "1rem", background: "var(--bg-hover)", border: "none", borderRadius: "50%", padding: "0.5rem", cursor: "pointer", color: "var(--text-primary)" }}>
               <X size={18} />
             </button>
@@ -1735,9 +1727,12 @@ export default function CustomerView({ onLogout, dbMode }) {
             
             <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "1rem", paddingRight: "0.5rem" }}>
               {itemReviewsLoading ? (
-                <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>Loading reviews...</div>
+                <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>
+                  <RefreshCw size={24} className="animate-spin" style={{ margin: "0 auto 0.5rem" }} />
+                  <div style={{ fontSize: "0.85rem" }}>Loading reviews...</div>
+                </div>
               ) : itemReviews.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No reviews yet.</div>
+                <EmptyState icon="message" title="No reviews yet" message="Be the first to review this item!" />
               ) : (
                 itemReviews.map(review => (
                   <div key={review.id} style={{ padding: "1rem", background: "var(--bg-canvas)", borderRadius: "var(--r-md)" }}>
@@ -1772,7 +1767,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       {/* Dynamic Popup Banner */}
       {showPopupBanner && popupBanner && createPortal(
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(4px)" }} onClick={() => { setShowPopupBanner(false); sessionStorage.setItem("popupDismissed_" + popupBanner.id, "true"); }}>
-          <div className="glass-card" onClick={e => e.stopPropagation()} style={{ width: "90%", maxWidth: "400px", padding: "2rem", borderRadius: "var(--r-xl)", position: "relative", textAlign: "center" }}>
+          <div className="card" onClick={e => e.stopPropagation()} style={{ width: "90%", maxWidth: "400px", padding: "2rem", borderRadius: "var(--r-xl)", position: "relative", textAlign: "center" }}>
             <button onClick={() => { setShowPopupBanner(false); sessionStorage.setItem("popupDismissed_" + popupBanner.id, "true"); }} style={{ position: "absolute", top: "1rem", right: "1rem", background: "rgba(0,0,0,0.1)", border: "none", width: "32px", height: "32px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-primary)" }}><X size={16}/></button>
             <Sparkles size={48} color="var(--brand-pink)" style={{ margin: "0 auto 1rem" }} />
             <h2 style={{ fontSize: "1.75rem", fontWeight: "900", fontFamily: "var(--font-heading)", margin: "0 0 1rem", color: "var(--text-primary)" }}>{popupBanner.title}</h2>

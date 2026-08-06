@@ -3,6 +3,7 @@ import { api } from "./utils/api";
 import Login from "./components/Login";
 import ErrorBoundary from "./components/ErrorBoundary";
 import VerifyEmail from "./components/VerifyEmail";
+import SkeletonLoader from "./components/SkeletonLoader";
 
 // Lazy load views for code splitting
 const AdminView = lazy(() => import("./components/AdminView"));
@@ -122,8 +123,8 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="animate-fade-in">
-        <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
+      <div>
+        <Suspense fallback={<SkeletonLoader />}>
           {currentUser.role === 'admin' && <AdminView onLogout={handleLogout} dbMode={dbMode} />}
           {currentUser.role === 'staff' && <StaffPOS onLogout={handleLogout} dbMode={dbMode} />}
           {currentUser.role === 'outlet_owner' && <OutletOwnerView onLogout={handleLogout} dbMode={dbMode} />}

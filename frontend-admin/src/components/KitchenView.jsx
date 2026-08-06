@@ -222,26 +222,6 @@ const premiumStyles = `
     box-shadow: 0 0 0 2px var(--brand-glow);
   }
   
-  .kv-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.9rem;
-  }
-  .kv-table th {
-    text-align: left;
-    padding: 0.75rem;
-    color: var(--text-secondary);
-    font-weight: 600;
-    border-bottom: 2px solid var(--border-default);
-  }
-  .kv-table td {
-    padding: 0.75rem;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-  .kv-table tr:hover td {
-    background: var(--bg-hover);
-  }
-
   .spin-anim {
     animation: spin 1s linear infinite;
   }
@@ -282,7 +262,7 @@ export default function KitchenView({ onLogout, dbMode }) {
       } else {
         const r = await api.getStockRequests();
         setRestockReqs(r);
-        const m = await api.getMenu();
+        const m = await api.getFoodsMenu();
         setMenuItems(m);
       }
     } catch (err) {
@@ -431,7 +411,7 @@ export default function KitchenView({ onLogout, dbMode }) {
                 <h3 style={{ margin: 0, fontSize: "1.25rem", color: "#0f172a" }}>Critical Restock Alerts</h3>
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table className="kv-table">
+                <table className="custom-table">
                   <thead>
                     <tr>
                       <th>Location</th>

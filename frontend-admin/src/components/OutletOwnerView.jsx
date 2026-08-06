@@ -5,6 +5,7 @@ import {
   Package, AlertTriangle, Plus, Store, MapPin, 
   Globe, RefreshCw, Edit3, X, LogOut, User
 } from "lucide-react";
+import EmptyState from './EmptyState';
 import "./OutletOwnerView.css";
 
 /* ── Modal Wrapper ── */
@@ -434,10 +435,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         }}>
           <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, marginBottom: "1.25rem", color: "var(--text-primary)" }}>My Outlets</h2>
           {outlets.length === 0 ? (
-            <div className="empty-state" style={{ padding: "3rem 1rem", textAlign: "center" }}>
-              <div style={{ width: 44, height: 44, background: "var(--bg-secondary)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1rem", color: "var(--text-muted)" }}><Store size={20} /></div>
-              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>No outlets registered yet. Click 'Register Outlet' to add one.</p>
-            </div>
+            <EmptyState icon={Store} message="No outlets registered yet. Click 'Register Outlet' to add one." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {outlets.map(o => {
@@ -600,10 +598,8 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </div>
             </div>
           ) : (
-            <div className="empty-state" style={{ padding: "6rem 2rem", textAlign: "center" }}>
-              <div style={{ width: 56, height: 56, background: "rgba(67, 160, 71, 0.06)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1.25rem", color: "var(--brand)" }}><Package size={26} /></div>
-              <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "0.5rem" }}>No Outlet Selected</h3>
-              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", maxWidth: "320px", margin: "0 auto" }}>Select an outlet from the left sidebar to view its live stock, coordinates, and safety limit reports.</p>
+            <div style={{ padding: "6rem 2rem" }}>
+              <EmptyState icon={Package} title="No Outlet Selected" message="Select an outlet from the left sidebar to view its live stock, coordinates, and safety limit reports." />
             </div>
           )}
         </div>

@@ -9,6 +9,9 @@ import {
   Megaphone, Image, Settings, Gift
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
+import EmptyState from "./EmptyState";
+import { formatCurrency } from "../utils/formatters";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 
 
@@ -204,6 +207,7 @@ export default function AdminView({ onLogout, dbMode }) {
       try { const s = await api.getSuppliers(); setSuppliers(s); } catch (err) { }
       try { const f = await api.getForecast(); setForecastData(f); } catch (err) { }
       try { const t = await api.adminGetTickets(); setTickets(t); } catch (err) { }
+      try { const r = await api.adminGetFinance(); setRevenueShare(r.revenue_share || []); } catch (err) { }
       try {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
@@ -817,7 +821,7 @@ export default function AdminView({ onLogout, dbMode }) {
   }, []);
   const userDept = currentUser.role === "admin" ? (currentUser.admin_department || "SuperAdmin") : (currentUser.role || "staff");
 
-  const ALL_TABS = [
+  const ALL_TABS = React.useMemo(() => [
     { id: "overview", label: "Overview", icon: BarChart3, depts: ["SuperAdmin", "Operations", "HR", "Finance"] },
     { id: "catalog", label: "Master Catalog", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
     { id: "customer_orders", label: "Customer Orders", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
@@ -839,9 +843,9 @@ export default function AdminView({ onLogout, dbMode }) {
     { id: "crm", label: "CRM & Wallets", icon: Megaphone, depts: ["SuperAdmin", "Operations", "Finance"] },
     { id: "banners", label: "Banners", icon: Image, depts: ["SuperAdmin", "Operations"] },
     { id: "settings", label: "Store Settings", icon: Settings, depts: ["SuperAdmin"] },
-  ];
+  ], [storeSettings.share_revenue_with_outlets]);
 
-  const TABS = ALL_TABS.filter(t => t.depts.includes(userDept));
+  const TABS = React.useMemo(() => ALL_TABS.filter(t => t.depts.includes(userDept)), [ALL_TABS, userDept]);
 
 
   const filteredUsers = useMemo(() => {
@@ -1005,15 +1009,25 @@ export default function AdminView({ onLogout, dbMode }) {
         marginLeft: sidebarOpen ? "250px" : "70px",
         transition: "margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         padding: "1.5rem 2rem",
-        minWidth: 0,
-        overflowX: "hidden"
+        minWidth: 0
       }}>
         <div className="animate-fade-in">
-          {/* ── Page Header ── */}
-          <div className="page-header" style={{ marginBottom: "2rem" }}>
+          {/* ── Global Nav Bar ── */}
+          <div className="page-header" style={{ 
+            position: "sticky",
+            top: 0,
+            background: "var(--bg-base)",
+            zIndex: 40,
+            padding: "1rem 2rem",
+            margin: "-1.5rem -2rem 2rem -2rem",
+            borderBottom: "1px solid var(--border-light)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
         <div className="page-header-left">
-          <h1>Admin Dashboard</h1>
-          <p>Manage your food business — catalog, outlets, orders & analytics</p>
+          <h1 style={{ fontSize: "1.5rem", margin: 0 }}>Admin Dashboard</h1>
+          <p style={{ margin: "0.2rem 0 0", fontSize: "0.85rem", color: "var(--text-muted)" }}>Manage your food business — catalog, outlets, orders & analytics</p>
         </div>
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
           {dbMode && (
@@ -1095,7 +1109,7 @@ export default function AdminView({ onLogout, dbMode }) {
 
           {/* Recent Orders Quick View */}
           <div className="grid-responsive-15fr" style={{ gap: "1.5rem" }}>
-            <div className="glass-panel" style={{ padding: "1.5rem" }}>
+            <div className="panel" style={{ padding: "1.5rem" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
                 <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem" }}>Recent Orders</h3>
                 <button className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.78rem" }} onClick={() => setActiveTab("foods")}>
@@ -1126,7 +1140,7 @@ export default function AdminView({ onLogout, dbMode }) {
             </div>
 
             {/* Outlet Health */}
-            <div className="glass-panel" style={{ padding: "1.5rem" }}>
+            <div className="panel" style={{ padding: "1.5rem" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
                 <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem" }}>Outlet Health</h3>
                 <button className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.78rem" }} onClick={openAddOutletModal}>
@@ -1235,7 +1249,7 @@ export default function AdminView({ onLogout, dbMode }) {
             {outlets.map(outlet => {
               const isAlert = (outlet.items || []).some(i => i.needs_restock);
               return (
-                <div key={outlet.id} className="glass-card" style={{ borderLeft: `3px solid ${isAlert ? "var(--error)" : "var(--brand)"}`, padding: "1.25rem" }}>
+                <div key={outlet.id} className="card" style={{ borderLeft: `3px solid ${isAlert ? "var(--error)" : "var(--brand)"}`, padding: "1.25rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "0.75rem" }}>
                     <div>
                       <h3 style={{ fontSize: "1rem", fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -1348,9 +1362,8 @@ export default function AdminView({ onLogout, dbMode }) {
                     <td>
                       {(o.status === "pending" || o.status === "processing" || o.status === "ready") ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
-                          <div style={{ display: "flex", gap: "0.4rem" }}>
-                            <input type="text" placeholder="Tracking ID" className="form-input" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem", width: 130, height: "auto" }} value={trackingCodes[o.id] || ""} onChange={e => setTrackingCodes({ ...trackingCodes, [o.id]: e.target.value })} />
-
+                          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                            <input type="text" placeholder="Tracking ID" className="form-input" style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem", width: 120, height: "auto" }} value={trackingCodes[o.id] || ""} onChange={e => setTrackingCodes({ ...trackingCodes, [o.id]: e.target.value })} />
                             <label style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px", borderRadius: "6px", background: trackingLabels[o.id] ? "rgba(34,197,94,0.12)" : "var(--bg-secondary)", border: trackingLabels[o.id] ? "1px solid #22c55e" : "1px solid var(--border-light)", cursor: "pointer", color: trackingLabels[o.id] ? "#22c55e" : "var(--text-secondary)", transition: "all 0.2s" }} title="Upload vendor barcode/QR code label">
                               <QrCode size={14} />
                               <input
@@ -1369,7 +1382,6 @@ export default function AdminView({ onLogout, dbMode }) {
                                 }}
                               />
                             </label>
-
                             <button onClick={() => handleShipOrder(o.id)} className="btn btn-success" style={{ padding: "0.4rem 0.75rem", fontSize: "0.78rem", whiteSpace: "nowrap" }}>
                               <Truck size={13} /> Ship
                             </button>
@@ -1423,7 +1435,7 @@ export default function AdminView({ onLogout, dbMode }) {
           </header>
           <div className="card">
             <div className="table-responsive">
-              <table className="data-table">
+              <table className="custom-table">
                 <thead>
                   <tr>
                     <th>Outlet Name</th>
@@ -1477,26 +1489,18 @@ export default function AdminView({ onLogout, dbMode }) {
               </div>
 
               <div className="grid-responsive-2col" style={{ gap: "1.5rem" }}>
-                <div className="glass-panel" style={{ padding: "1.5rem" }}>
+                <div className="panel" style={{ padding: "1.5rem" }}>
                   <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1.25rem" }}>Weekly Sales Trend</h3>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                    {analytics.daily.map(d => {
-                      const total = d.b2c + d.pos + 1;
-                      const b2cPct = Math.round((d.b2c / total) * 100);
-                      const posPct = 100 - b2cPct;
-                      return (
-                        <div key={d.date}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", marginBottom: "0.35rem" }}>
-                            <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{d.date}</span>
-                            <span style={{ color: "var(--text-secondary)" }}>B2C: ₹{d.b2c} · POS: ₹{d.pos}</span>
-                          </div>
-                          <div style={{ height: 8, background: "rgba(255,255,255,0.06)", borderRadius: "var(--r-full)", overflow: "hidden", display: "flex" }}>
-                            <div style={{ width: `${b2cPct}%`, background: "var(--brand)", borderRadius: "var(--r-full) 0 0 var(--r-full)" }} />
-                            <div style={{ width: `${posPct}%`, background: "var(--info)", borderRadius: "0 var(--r-full) var(--r-full) 0" }} />
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div style={{ width: '100%', height: 250, marginTop: "1rem" }}>
+                    <ResponsiveContainer>
+                      <BarChart data={analytics.daily}>
+                        <XAxis dataKey="date" axisLine={false} tickLine={false} />
+                        <YAxis hide />
+                        <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: "8px", background: "var(--bg-card)" }} />
+                        <Bar dataKey="b2c" stackId="a" fill="var(--brand)" radius={[0, 0, 4, 4]} />
+                        <Bar dataKey="pos" stackId="a" fill="var(--info)" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
                   <div style={{ display: "flex", gap: "1rem", marginTop: "1rem", fontSize: "0.75rem" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}><div style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--brand)" }} /> B2C</div>
@@ -1504,28 +1508,29 @@ export default function AdminView({ onLogout, dbMode }) {
                   </div>
                 </div>
 
-                <div className="glass-panel" style={{ padding: "1.5rem", marginTop: "1.5rem" }}>
+                <div className="panel" style={{ padding: "1.5rem", marginTop: "1.5rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
                     <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">AI Demand Forecast (Next 7 Days) ℹ️</h3>
                     <span style={{ fontSize: "0.75rem", background: "rgba(139,92,246,0.12)", color: "#8b5cf6", padding: "4px 8px", borderRadius: "12px", fontWeight: 700 }}>Powered by AI</span>
                   </div>
                   <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "1.5rem" }}>Predicted order volume based on historical data, weather, and upcoming holidays.</p>
-                  <div style={{ display: "flex", alignItems: "flex-end", height: "150px", gap: "1rem", paddingTop: "1rem", borderBottom: "1px dashed var(--border-subtle)" }}>
-                    {[
-                      { day: "Mon", val: 45, color: "var(--brand)" },
-                      { day: "Tue", val: 52, color: "var(--brand)" },
-                      { day: "Wed", val: 80, color: "var(--warning)" },
-                      { day: "Thu", val: 65, color: "var(--brand)" },
-                      { day: "Fri", val: 95, color: "var(--error)" },
-                      { day: "Sat", val: 110, color: "var(--error)" },
-                      { day: "Sun", val: 85, color: "var(--warning)" }
-                    ].map((d, i) => (
-                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
-                        <div style={{ fontSize: "0.7rem", fontWeight: 700, color: "var(--text-primary)" }}>{d.val}</div>
-                        <div style={{ width: "100%", maxWidth: "30px", height: `${(d.val / 120) * 100}%`, background: d.color, borderRadius: "4px 4px 0 0", opacity: 0.8 }} />
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }}>{d.day}</div>
-                      </div>
-                    ))}
+                  <div style={{ width: '100%', height: 250, marginTop: "1rem" }}>
+                    <ResponsiveContainer>
+                      <BarChart data={[
+                        { day: "Mon", val: 45 },
+                        { day: "Tue", val: 52 },
+                        { day: "Wed", val: 80 },
+                        { day: "Thu", val: 65 },
+                        { day: "Fri", val: 95 },
+                        { day: "Sat", val: 110 },
+                        { day: "Sun", val: 85 }
+                      ]}>
+                        <XAxis dataKey="day" axisLine={false} tickLine={false} />
+                        <YAxis hide />
+                        <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: "8px", background: "var(--bg-card)" }} />
+                        <Bar dataKey="val" fill="var(--brand)" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
                   <div style={{ display: "flex", gap: "1rem", marginTop: "1rem", fontSize: "0.75rem", justifyContent: "center" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}><div style={{ width: 10, height: 10, borderRadius: "2px", background: "var(--brand)" }} /> Normal Volume</div>
@@ -1534,7 +1539,7 @@ export default function AdminView({ onLogout, dbMode }) {
                   </div>
                 </div>
 
-                <div className="glass-panel" style={{ padding: "1.5rem" }}>
+                <div className="panel" style={{ padding: "1.5rem" }}>
                   <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1.25rem" }}>Customer Feedback</h3>
                   <div style={{ display: "flex", gap: "1rem", alignItems: "center", marginBottom: "1.5rem" }}>
                     <div style={{ width: 72, height: 72, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "2px solid rgba(34,197,94,0.3)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -1601,8 +1606,8 @@ export default function AdminView({ onLogout, dbMode }) {
             </div>
           </div>
 
-          <div className="glass-panel" style={{ overflowX: "auto" }}>
-            <table className="data-table" style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
+          <div className="panel" style={{ overflowX: "auto" }}>
+            <table className="custom-table" style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid var(--border-light)" }}>
                   <th style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.75rem", textTransform: "uppercase" }}>Staff ID</th>
@@ -1617,33 +1622,31 @@ export default function AdminView({ onLogout, dbMode }) {
               </thead>
               <tbody>
                 {timesheets.length === 0 ? (
-                  <tr><td colSpan="8" style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>No timesheet records found.</td></tr>
+                  <tr><td colSpan="8" style={{ padding: "2rem" }}><EmptyState title="No Timesheets" description="No timesheets match your criteria." icon={Clock} /></td></tr>
                 ) : (
                   timesheets.map(ts => {
                     const discrepancyColor = ts.cash_discrepancy < 0 ? "var(--error)" : ts.cash_discrepancy > 0 ? "var(--success)" : "var(--text-secondary)";
                     const outOutlet = outlets.find(o => o.id === ts.outlet_id);
                     return (
-                      <React.Fragment key={ts.id}>
-                        <tr style={{ borderBottom: ts.sales_summary && ts.sales_summary.length > 0 ? "none" : "1px solid var(--border-subtle)" }}>
-                          <td style={{ padding: "1rem", fontWeight: 600 }}>Staff #{ts.staff_id}</td>
+                        <tr key={ts.id} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                          <td style={{ padding: "1rem" }}>
+                            <div style={{ fontWeight: 600 }}>Staff #{ts.staff_id}</div>
+                            {ts.sales_summary && ts.sales_summary.length > 0 && (
+                              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.25rem", maxWidth: "250px" }}>
+                                <strong>Sold:</strong> {ts.sales_summary.map(s => `${s.total_qty}x ${s.item_name}`).join(', ')}
+                              </div>
+                            )}
+                          </td>
                           <td style={{ padding: "1rem" }}>{outOutlet ? outOutlet.name : `Outlet #${ts.outlet_id}`}</td>
                           <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{new Date(ts.clock_in_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
                           <td style={{ padding: "1rem", fontSize: "0.85rem" }}>{ts.clock_out_time ? new Date(ts.clock_out_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : <span style={{ color: "var(--warning-color)", fontWeight: 700 }}>Active</span>}</td>
                           <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.duration_hours ? `${ts.duration_hours}h` : "—"}</td>
-                          <td style={{ padding: "1rem", color: "var(--text-secondary)" }}>{ts.expected_cash !== null ? `₹${ts.expected_cash.toFixed(2)}` : "—"}</td>
-                          <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.actual_cash !== null ? `₹${ts.actual_cash.toFixed(2)}` : "—"}</td>
+                          <td style={{ padding: "1rem", color: "var(--text-secondary)" }}>{ts.expected_cash !== null ? formatCurrency(ts.expected_cash) : "—"}</td>
+                          <td style={{ padding: "1rem", fontWeight: 600 }}>{ts.actual_cash !== null ? formatCurrency(ts.actual_cash) : "—"}</td>
                           <td style={{ padding: "1rem", fontWeight: 800, color: discrepancyColor }}>
-                            {ts.cash_discrepancy !== null ? `${ts.cash_discrepancy > 0 ? '+' : ''}₹${ts.cash_discrepancy.toFixed(2)}` : "—"}
+                            {ts.cash_discrepancy !== null ? `${ts.cash_discrepancy > 0 ? '+' : ''}${formatCurrency(ts.cash_discrepancy)}` : "—"}
                           </td>
                         </tr>
-                        {ts.sales_summary && ts.sales_summary.length > 0 && (
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", background: "rgba(0,0,0,0.02)" }}>
-                            <td colSpan="8" style={{ padding: "0.5rem 1rem", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                              <strong>Items Sold:</strong> {ts.sales_summary.map(s => `${s.total_qty}x ${s.item_name} (₹${s.total_revenue})`).join(', ')}
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
                     );
                   })
                 )}
@@ -1713,7 +1716,7 @@ export default function AdminView({ onLogout, dbMode }) {
               <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Disposal Log</h3>
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                 {auditLogs.filter(l => l.change_type === "waste").map(log => (
-                  <div key={log.id} className="glass-card" style={{ borderLeft: "3px solid var(--error)", padding: "1rem" }}>
+                  <div key={log.id} className="card" style={{ borderLeft: "3px solid var(--error)", padding: "1rem" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.72rem", color: "var(--text-secondary)", marginBottom: "0.3rem" }}>
                       <span>{log.outlet_name || "System"}</span>
                       <span>{new Date(log.created_at).toLocaleDateString()}</span>
@@ -1740,7 +1743,7 @@ export default function AdminView({ onLogout, dbMode }) {
           <div className="grid-responsive-15fr" style={{ gap: "1.5rem" }}>
             <div>
               <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Draft Purchase Order</h3>
-              <div className="glass-panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
+              <div className="panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
                 <form onSubmit={handleDraftPO} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                   <div className="form-group" style={{ margin: 0 }}>
                     <label className="form-label">Supplier</label>
@@ -1787,19 +1790,23 @@ export default function AdminView({ onLogout, dbMode }) {
             <div>
               <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Supplier Directory</h3>
               <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-                {suppliers.map(s => (
-                  <div key={s.id} className="glass-card" style={{ padding: "1.1rem" }}>
-                    <div style={{ fontWeight: 800, fontSize: "0.9rem", marginBottom: "0.25rem" }}>{s.name}</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "0.6rem" }}>
-                      Contact: <strong>{s.contact}</strong> · {s.phone}
+                {suppliers.length === 0 ? (
+                  <EmptyState title="No Suppliers" description="You have not added any suppliers yet." icon={Truck} />
+                ) : (
+                  suppliers.map(s => (
+                    <div key={s.id} className="card" style={{ padding: "1.1rem" }}>
+                      <div style={{ fontWeight: 800, fontSize: "0.9rem", marginBottom: "0.25rem" }}>{s.name}</div>
+                      <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "0.6rem" }}>
+                        Contact: <strong>{s.contact}</strong> · {s.phone}
+                      </div>
+                      <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
+                        {s.items.map(item => (
+                          <span key={item} className="chip" style={{ fontSize: "0.68rem", padding: "0.2rem 0.6rem" }}>{item}</span>
+                        ))}
+                      </div>
                     </div>
-                    <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
-                      {s.items.map(item => (
-                        <span key={item} className="chip" style={{ fontSize: "0.68rem", padding: "0.2rem 0.6rem" }}>{item}</span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -2156,7 +2163,7 @@ export default function AdminView({ onLogout, dbMode }) {
             </div>
           ) : (
             <div className="table-responsive">
-              <table className="table">
+              <table className="custom-table">
                 <thead>
                   <tr>
                     <th>Coupon Code</th>
@@ -2310,7 +2317,7 @@ export default function AdminView({ onLogout, dbMode }) {
             <div style={{ display: "grid", gap: "1.5rem" }}>
               <div>
                 <h3>Frequent Buyers (5+ Orders)</h3>
-                <table className="data-table">
+                <table className="custom-table">
                   <thead><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Action</th></tr></thead>
                   <tbody>
                     {(segments?.frequent_buyers || []).map(c => (
@@ -2329,7 +2336,7 @@ export default function AdminView({ onLogout, dbMode }) {
               </div>
               <div>
                 <h3>High Value (₹5000+ Spent)</h3>
-                <table className="data-table">
+                <table className="custom-table">
                   <thead><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Action</th></tr></thead>
                   <tbody>
                     {(segments?.high_value || []).map(c => (
@@ -2368,7 +2375,7 @@ export default function AdminView({ onLogout, dbMode }) {
               <Plus size={16} /> Add Banner
             </button>
           </div>
-          <table className="data-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 1rem" }}>
+          <table className="custom-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 1rem" }}>
             <thead>
               <tr style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", textAlign: "left", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                 <th style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>Image</th>
@@ -2382,9 +2389,12 @@ export default function AdminView({ onLogout, dbMode }) {
               </tr>
             </thead>
             <tbody>
-              {(Array.isArray(banners) ? banners : []).map(b => (
-                <tr key={b.id} style={{ background: "var(--bg-card)", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
-                  <td style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>
+              {(Array.isArray(banners) ? banners : []).length === 0 ? (
+                <tr><td colSpan="8"><EmptyState title="No Banners" description="Create a dynamic banner to engage customers." icon={Image} /></td></tr>
+              ) : (
+                (Array.isArray(banners) ? banners : []).map(b => (
+                  <tr key={b.id} style={{ background: "var(--bg-card)", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
+                    <td style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>
                     <div style={{ width: "120px", height: "60px", borderRadius: "8px", overflow: "hidden", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {b.image_url ? <img src={b.image_url} alt={b.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>No Image</span>}
                     </div>
@@ -2448,7 +2458,8 @@ export default function AdminView({ onLogout, dbMode }) {
                     </div>
                   </td>
                 </tr>
-              ))}
+              ))
+            )}
             </tbody>
           </table>
 
@@ -2457,7 +2468,15 @@ export default function AdminView({ onLogout, dbMode }) {
 
       {/* ══════════ STORE SETTINGS ══════════ */}
       {activeTab === "settings" && (
-        <div className="card fade-in" style={{ padding: "1.5rem" }}>
+        <form className="card fade-in" style={{ padding: "1.5rem" }} onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            await api.adminUpdateStoreSettings(storeSettings);
+            setToast({ message: "All store settings saved successfully", type: "success" });
+          } catch (err) {
+            setToast({ message: "Error saving settings", type: "error" });
+          }
+        }}>
           <h2>Store Settings</h2>
           <div style={{ marginTop: "1.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2rem" }}>
             
@@ -2465,11 +2484,9 @@ export default function AdminView({ onLogout, dbMode }) {
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               <h3 style={{ fontSize: "1rem", color: "var(--text-secondary)", marginBottom: "0.5rem" }}>Store Status</h3>
               <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", background: "var(--bg-elevated)", padding: "1rem", borderRadius: "var(--r-md)", border: "1px solid var(--border-subtle)" }}>
-                <input type="checkbox" checked={storeSettings.is_store_online === "true"} onChange={async (e) => {
+                <input type="checkbox" checked={storeSettings.is_store_online === "true"} onChange={e => {
                   const val = e.target.checked ? "true" : "false";
-                  await api.adminUpdateStoreSettings({ is_store_online: val });
                   setStoreSettings(prev => ({ ...prev, is_store_online: val }));
-                  setToast({ message: "Store online status updated", type: "success" });
                 }} style={{ width: "1.2rem", height: "1.2rem", accentColor: "var(--success)" }} />
                 <div>
                   <strong style={{ display: "block", color: "var(--text-primary)" }}>Store Online (Accepting Orders)</strong>
@@ -2478,11 +2495,9 @@ export default function AdminView({ onLogout, dbMode }) {
               </label>
               
               <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", background: "var(--bg-elevated)", padding: "1rem", borderRadius: "var(--r-md)", border: "1px solid var(--border-subtle)" }}>
-                <input type="checkbox" checked={storeSettings.is_holiday === "true"} onChange={async (e) => {
+                <input type="checkbox" checked={storeSettings.is_holiday === "true"} onChange={e => {
                   const val = e.target.checked ? "true" : "false";
-                  await api.adminUpdateStoreSettings({ is_holiday: val });
                   setStoreSettings(prev => ({ ...prev, is_holiday: val }));
-                  setToast({ message: "Holiday mode updated", type: "success" });
                 }} style={{ width: "1.2rem", height: "1.2rem", accentColor: "var(--brand)" }} />
                 <div>
                   <strong style={{ display: "block", color: "var(--text-primary)" }}>Holiday Mode (Store Closed)</strong>
@@ -2491,11 +2506,9 @@ export default function AdminView({ onLogout, dbMode }) {
               </label>
 
               <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", background: "var(--bg-elevated)", padding: "1rem", borderRadius: "var(--r-md)", border: "1px solid var(--border-subtle)" }}>
-                <input type="checkbox" checked={storeSettings.share_revenue_with_outlets === "true"} onChange={async (e) => {
+                <input type="checkbox" checked={storeSettings.share_revenue_with_outlets === "true"} onChange={e => {
                   const val = e.target.checked ? "true" : "false";
-                  await api.adminUpdateStoreSettings({ share_revenue_with_outlets: val });
                   setStoreSettings(prev => ({ ...prev, share_revenue_with_outlets: val }));
-                  setToast({ message: "Revenue sharing visibility updated", type: "success" });
                 }} style={{ width: "1.2rem", height: "1.2rem", accentColor: "var(--brand)" }} />
                 <div>
                   <strong style={{ display: "block", color: "var(--text-primary)" }}>Share Revenue Stats with Outlets</strong>
@@ -2512,10 +2525,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Delivery Radius (km)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" className="form-input" value={storeSettings.delivery_radius || "5"} onChange={e => setStoreSettings(prev => ({ ...prev, delivery_radius: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ delivery_radius: storeSettings.delivery_radius });
-                    setToast({ message: "Delivery radius updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2523,10 +2532,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Minimum Order Value ($)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" className="form-input" value={storeSettings.min_order_value || "10"} onChange={e => setStoreSettings(prev => ({ ...prev, min_order_value: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ min_order_value: storeSettings.min_order_value });
-                    setToast({ message: "Min order value updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2534,10 +2539,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Delivery Fee ($)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" className="form-input" value={storeSettings.delivery_fee || "5"} onChange={e => setStoreSettings(prev => ({ ...prev, delivery_fee: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ delivery_fee: storeSettings.delivery_fee });
-                    setToast({ message: "Delivery fee updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2545,10 +2546,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Tax Percentage (%)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" step="0.1" className="form-input" value={storeSettings.tax_percentage || "0"} onChange={e => setStoreSettings(prev => ({ ...prev, tax_percentage: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ tax_percentage: storeSettings.tax_percentage });
-                    setToast({ message: "Tax percentage updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2556,10 +2553,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Loyalty: Earn Rate (e.g. 0.1 for 1 pt per ₹10)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" step="0.01" className="form-input" value={storeSettings.loyalty_earn_rate || "0.1"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_earn_rate: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ loyalty_earn_rate: storeSettings.loyalty_earn_rate });
-                    setToast({ message: "Loyalty earn rate updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2567,10 +2560,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Loyalty: Redeem Rate (e.g. 0.01 for 100 pts = ₹1)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" step="0.01" className="form-input" value={storeSettings.loyalty_redeem_rate || "0.01"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_redeem_rate: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ loyalty_redeem_rate: storeSettings.loyalty_redeem_rate });
-                    setToast({ message: "Loyalty redeem rate updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2578,10 +2567,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Loyalty: Points for Review</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" className="form-input" value={storeSettings.loyalty_review_points || "10"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_review_points: e.target.value }))} />
-                  <button className="btn btn-primary" onClick={async () => {
-                    await api.adminUpdateStoreSettings({ loyalty_review_points: storeSettings.loyalty_review_points });
-                    setToast({ message: "Review points updated", type: "success" });
-                  }}>Save</button>
                 </div>
               </div>
 
@@ -2589,16 +2574,18 @@ export default function AdminView({ onLogout, dbMode }) {
                 <label className="form-label">Store Announcement Notice</label>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   <textarea className="form-input" value={storeSettings.store_notice || ""} onChange={e => setStoreSettings(prev => ({ ...prev, store_notice: e.target.value }))} placeholder="e.g. Expect delays due to heavy rain" rows={2} />
-                  <button className="btn btn-primary" style={{ alignSelf: "flex-end" }} onClick={async () => {
-                    await api.adminUpdateStoreSettings({ store_notice: storeSettings.store_notice });
-                    setToast({ message: "Store notice updated", type: "success" });
-                  }}>Save Notice</button>
                 </div>
               </div>
               
             </div>
           </div>
-        </div>
+          
+          <div style={{ marginTop: "2rem", paddingTop: "1.5rem", borderTop: "1px solid var(--border-light)", display: "flex", justifyContent: "flex-end", position: "sticky", bottom: "1rem", background: "transparent", zIndex: 10 }}>
+            <button type="submit" className="btn btn-primary" style={{ padding: "0.75rem 2rem" }}>
+              Save All Changes
+            </button>
+          </div>
+        </form>
       )}
 
       {/* ══════════ STOCK REQUESTS ══════════ */}
@@ -2612,7 +2599,7 @@ export default function AdminView({ onLogout, dbMode }) {
               Refresh
             </button>
           </div>
-          <table className="data-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 0.5rem" }}>
+          <table className="custom-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 0.5rem" }}>
             <thead>
               <tr style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", textAlign: "left", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                 <th style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>ID</th>
@@ -2671,6 +2658,71 @@ export default function AdminView({ onLogout, dbMode }) {
         </div>
       )}
 
+      {/* ══════════ DEMAND FORECAST ══════════ */}
+      {activeTab === "forecast" && (
+        <div className="card fade-in" style={{ padding: "2rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+            <h2 style={{ margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">AI Demand Forecast (Next 7 Days) ℹ️</h2>
+            <span style={{ fontSize: "0.85rem", background: "rgba(139,92,246,0.12)", color: "#8b5cf6", padding: "6px 12px", borderRadius: "12px", fontWeight: 700 }}>Powered by AI</span>
+          </div>
+          <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", marginBottom: "2rem" }}>Predicted order volume based on historical data, weather patterns, and upcoming holidays.</p>
+          
+          <div style={{ width: '100%', height: 350, marginTop: "1rem" }}>
+            <ResponsiveContainer>
+              <BarChart data={forecastData?.length > 0 ? forecastData : [
+                { day: "Mon", val: 45 },
+                { day: "Tue", val: 52 },
+                { day: "Wed", val: 80 },
+                { day: "Thu", val: 65 },
+                { day: "Fri", val: 95 },
+                { day: "Sat", val: 110 },
+                { day: "Sun", val: 85 }
+              ]}>
+                <XAxis dataKey="day" axisLine={false} tickLine={false} />
+                <YAxis hide />
+                <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: "8px", background: "var(--bg-card)" }} />
+                <Bar dataKey="val" fill="var(--brand)" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          
+          <div style={{ display: "flex", gap: "1.5rem", marginTop: "2rem", fontSize: "0.85rem", justifyContent: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--brand)" }} /> Normal Volume</div>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--warning)" }} /> High Demand</div>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--error)" }} /> Peak/Surge</div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════ FALLBACK / UNDER CONSTRUCTION ══════════ */}
+      {![
+        "overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", 
+        "finance", "analytics", "timesheets", "batches", "suppliers", "logs", "qr", 
+        "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests",
+        "forecast"
+      ].includes(activeTab) && (
+        <div className="card fade-in" style={{ padding: "4rem 2rem", textAlign: "center" }}>
+          <div className="empty-state-icon" style={{ margin: "0 auto 1.5rem" }}>
+            <TrendingUp size={32} />
+          </div>
+          <h2 style={{ marginBottom: "0.5rem" }}>Under Construction</h2>
+          <p style={{ color: "var(--text-muted)", maxWidth: 400, margin: "0 auto 2rem", lineHeight: 1.5 }}>
+            The <strong>{ALL_TABS.find(t => t.id === activeTab)?.label || activeTab}</strong> module is currently being built and will be available in a future update.
+          </p>
+          <button className="btn btn-primary" onClick={() => setActiveTab("overview")}>
+            Return to Dashboard
+          </button>
+        </div>
+      )}
+
+      {/* ══════════ UNKNOWN TAB FALLBACK ══════════ */}
+      {!["overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", "finance", "analytics", "timesheets", "batches", "suppliers", "logs", "qr", "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests"].includes(activeTab) && (
+        <div style={{ padding: "3rem", textAlign: "center", display: "flex", justifyContent: "center" }}>
+          <div style={{ maxWidth: 500, width: "100%" }}>
+            <EmptyState title="Page Under Construction" description={`The '${activeTab}' view is currently being built. Please check back later.`} icon={AlertTriangle} />
+          </div>
+        </div>
+      )}
 
       {/* ══════════ MODALS ══════════ */}
 

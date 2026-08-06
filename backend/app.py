@@ -115,7 +115,12 @@ def check_if_token_revoked(jwt_header, jwt_payload):
     return False
 
 mail = Mail()
-limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL") or "memory://")
+redis_url = os.getenv("REDIS_URL")
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=redis_url or "memory://",
+    storage_options={"protocol": 2} if redis_url and "redis" in redis_url else {}
+)
 
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
@@ -2407,11 +2412,12 @@ The FlavorFlow Team"""
 
         if role == "outlet_owner" and user_outlet_id:
             outlet = db.session.get(Outlet, user_outlet_id)
-            share_pct = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage else 100.0
-            if share_pct > 0 and share_pct <= 100:
-                b2c_rev = b2c_rev * (share_pct / 100.0)
-                pos_rev = pos_rev * (share_pct / 100.0)
-            elif share_pct == 0:
+            brand_share = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage is not None else 0.0
+            outlet_share = 100.0 - brand_share
+            if 0 <= outlet_share <= 100:
+                b2c_rev = b2c_rev * (outlet_share / 100.0)
+                pos_rev = pos_rev * (outlet_share / 100.0)
+            else:
                 b2c_rev = 0
                 pos_rev = 0
 

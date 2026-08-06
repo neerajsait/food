@@ -1,0 +1,32 @@
+.skeleton-wrapper {
+  padding: 2rem;
+  width: 100%;
+}
+
+.skeleton-header {
+  height: 2rem;
+  width: 40%;
+  background: var(--bg-secondary, #2d3748);
+  border-radius: var(--r-md, 0.5rem);
+  margin-bottom: 2rem;
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+.skeleton-card {
+  height: 150px;
+  background: var(--bg-secondary, #2d3748);
+  border-radius: var(--r-lg, 1rem);
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 0.3; }
+  100% { opacity: 0.6; }
+}

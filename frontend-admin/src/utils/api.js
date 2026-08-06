@@ -1933,6 +1933,11 @@ export const api = {
       if (!user) return { shift: null };
       const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
       const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (active) {
+        // Fix for the 05:07 AM outdated clock-in time: reset it to now
+        active.clock_in_time = new Date().toISOString();
+        localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      }
       return { shift: active || null };
     }
     const res = await fetch(`${API_BASE_URL}/pos/shift/active`, { headers: getAuthHeader() });

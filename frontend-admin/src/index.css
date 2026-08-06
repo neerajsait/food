@@ -49,21 +49,23 @@
   --sidebar-w:     240px;
   --sidebar-w-sm:  64px;
 
-  /* ── Radius ── */
-  --r-sm: 6px;
-  --r-md: 12px;
-  --r-lg: 18px;
-  --r-xl: 24px;
+  /* ── Radius (More rounded and friendly) ── */
+  --r-sm: 8px;
+  --r-md: 16px;
+  --r-lg: 24px;
+  --r-xl: 32px;
   --r-full: 9999px;
 
-  /* ── Shadows (Flat & Clean) ── */
-  --shadow-card:   0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.02);
-  --shadow-glow:   none;
-  --shadow-modal:  0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+  /* ── Shadows (Deeper, softer, premium) ── */
+  --shadow-card:   0 4px 20px rgba(0,0,0,0.03), 0 2px 8px rgba(0,0,0,0.02);
+  --shadow-glow:   0 8px 24px rgba(67, 160, 71, 0.15); /* uses brand color */
+  --shadow-modal:  0 30px 60px -10px rgba(0,0,0,0.12), 0 15px 25px -10px rgba(0,0,0,0.08);
+  --shadow-input-focus: 0 0 0 4px rgba(67, 160, 71, 0.15);
 
-  /* ── Transitions ── */
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* ── Transitions (Smoother easing) ── */
+  --ease: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-bounce: cubic-bezier(0.175, 0.885, 0.32, 1.275);
 
   /* Legacy aliases for existing components */
   --bg-main: var(--bg-card);
@@ -361,23 +363,23 @@ body {
    CARDS & PANELS
    ============================================================ */
 
-.glass-panel {
+.panel {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-card);
 }
 
-.glass-card {
+.card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   padding: 1.5rem;
   box-shadow: var(--shadow-card);
-  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  transition: all 0.3s var(--ease);
 }
 
-.glass-card:hover {
+.card:hover {
   border-color: var(--border-default);
   transform: translateY(-2px);
   box-shadow: var(--shadow-card), 0 8px 40px rgba(0,0,0,0.2);
@@ -392,16 +394,16 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  transition: all 0.25s var(--ease);
   position: relative;
   overflow: hidden;
+  transition: all 0.3s var(--ease);
 }
 
 .stat-card::before {
   content: '';
   position: absolute;
   top: 0; left: 0; right: 0;
-  height: 2px;
+  height: 3px;
   background: linear-gradient(90deg, transparent, var(--brand), transparent);
   opacity: 0;
   transition: opacity 0.3s;
@@ -412,7 +414,7 @@ body {
 .stat-card:hover {
   border-color: var(--border-brand);
   box-shadow: var(--shadow-glow);
-  transform: translateY(-3px);
+  transform: translateY(-4px) scale(1.02);
 }
 
 .stat-card-label {
@@ -475,11 +477,11 @@ body {
 }
 .btn-primary:not(:disabled):hover {
   background: var(--brand-light);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1), var(--shadow-glow);
 }
 .btn-primary:not(:disabled):active {
-  transform: translateY(0);
+  transform: translateY(0) scale(0.98);
 }
 
 /* Secondary — Ghost */
@@ -491,6 +493,10 @@ body {
 .btn-secondary:not(:disabled):hover {
   background: var(--bg-hover);
   border-color: var(--border-default);
+  transform: translateY(-1px) scale(1.01);
+}
+.btn-secondary:not(:disabled):active {
+  transform: translateY(0) scale(0.98);
 }
 
 /* Success */
@@ -525,7 +531,15 @@ body {
   align-items: center;
   justify-content: center;
 }
-.btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-default); }
+.btn-icon:hover { 
+  background: var(--bg-hover); 
+  color: var(--text-primary); 
+  border-color: var(--border-default); 
+  transform: scale(1.05);
+}
+.btn-icon:active {
+  transform: scale(0.95);
+}
 
 /* ============================================================
    FORM ELEMENTS
@@ -550,14 +564,14 @@ body {
 .form-select,
 .form-textarea {
   width: 100%;
-  padding: 0.75rem 1rem;
+  padding: 0.85rem 1rem;
   background: var(--bg-input);
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
   color: var(--text-primary);
   font-family: var(--font-body);
-  font-size: 0.9rem;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  font-size: 0.95rem;
+  transition: all 0.3s var(--ease);
   outline: none;
   appearance: none;
 }
@@ -568,13 +582,14 @@ body {
 .form-select:focus,
 .form-textarea:focus {
   border-color: var(--brand);
-  box-shadow: 0 0 0 3px var(--brand-dim);
+  box-shadow: var(--shadow-input-focus);
+  transform: translateY(-1px);
 }
 
 .form-select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 0.85rem center;
+  background-position: right 1rem center;
   padding-right: 2.5rem;
   cursor: pointer;
 }
@@ -1713,10 +1728,10 @@ body {
     width: 100%;
     justify-content: center;
   }
-  .glass-card {
+  .card {
     padding: 0.6rem !important;
   }
-  .glass-card h3 {
+  .card h3 {
     font-size: 0.78rem !important;
   }
   .chip {
@@ -1775,11 +1790,11 @@ body {
     grid-template-columns: 1fr !important;
   }
   /* Stack order card items */
-  .glass-panel {
+  .panel {
     padding: 0.75rem !important;
   }
   /* Full-width checkout drawer */
-  .glass-panel[style*="max-width: 460px"] {
+  .panel[style*="max-width: 460px"] {
     max-width: 100% !important;
     border-radius: 0 !important;
   }
@@ -1896,7 +1911,7 @@ body {
   body {
     font-size: 17px;
   }
-  .glass-card {
+  .card {
     padding: 1.25rem !important;
   }
   .stat-card {
@@ -1919,7 +1934,7 @@ body {
     max-width: 2000px;
     padding: 3rem 6rem;
   }
-  .glass-card {
+  .card {
     padding: 1.5rem !important;
     border-radius: 16px !important;
   }
@@ -1950,7 +1965,7 @@ body {
   header, .tab-nav, .chip, .btn, .modal-overlay, .qty-stepper {
     display: none !important;
   }
-  .glass-card, .glass-panel, .stat-card {
+  .card, .panel, .stat-card {
     box-shadow: none !important;
     border: 1px solid #ccc !important;
     break-inside: avoid;
@@ -2082,6 +2097,7 @@ body {
   .d-md-none { display: inline-flex !important; }
 }
 
+
 .grid-responsive-2col {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2111,4 +2127,11 @@ body {
 }
 .sidebar-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.2);
+}
+
+.btn {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }

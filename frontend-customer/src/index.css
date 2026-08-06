@@ -485,30 +485,6 @@ body {
 /* ============================================================
    CARDS & PANELS
    ============================================================ */
-.glass-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-card);
-}
-
-.glass-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  padding: var(--space-lg);
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--t-base) var(--ease),
-              transform var(--t-base) var(--ease),
-              box-shadow var(--t-base) var(--ease);
-  will-change: transform;
-}
-
-.glass-card:hover {
-  border-color: var(--border-default);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-hover);
-}
 
 .card {
   background: var(--bg-card);
@@ -1505,7 +1481,7 @@ body {
 @media print {
   body { background: #fff; color: #000; }
   .sidebar, header, .tab-nav, .chip, .btn, .modal-overlay, .qty-stepper { display: none; }
-  .glass-card, .glass-panel, .stat-card {
+  .card, .panel, .stat-card {
     box-shadow: none; border: 1px solid #ccc; break-inside: avoid;
   }
   .main-content { margin-left: 0; padding-bottom: 0; }

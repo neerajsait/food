@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import './StaffPOS.css';
 import { createPortal } from "react-dom";
+import EmptyState from './EmptyState';
 import { api, API_BASE_URL } from "../utils/api";
 import {
   Plus, Minus, IndianRupee, QrCode, ShoppingCart, RefreshCw,
@@ -180,6 +181,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       setClockOutResult({ ...res.shift, stats: shiftTotals });
       setActiveShift(null);
       setActualCashInput("");
+      setShowClockOutModal(false);
     } catch (err) {
       alert("Clock-out failed: " + err.message);
     } finally {
@@ -941,12 +943,22 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           >
             <FileText size={14} /> Shift Report
           </button>
-          <button
-            onClick={() => setShowClockOutModal(true)}
-            className="clock-out"
-          >
-            <Clock size={14} /> Clock Out
-          </button>
+          {!activeShift ? (
+            <button
+              onClick={() => setShowClockInModal(true)}
+              className="clock-in"
+              style={{ background: "#22c55e", color: "#fff" }}
+            >
+              <Clock size={14} /> Clock In
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowClockOutModal(true)}
+              className="clock-out"
+            >
+              <Clock size={14} /> Clock Out
+            </button>
+          )}
           <button
             onClick={openProfileModal}
             
@@ -969,7 +981,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       )}
 
       {false ? (
-        <div style={{ textAlign: "center", padding: "4rem 2rem", maxWidth: "500px", margin: "3rem auto" }} className="glass-panel animate-fade-in">
+        <div style={{ textAlign: "center", padding: "4rem 2rem", maxWidth: "500px", margin: "3rem auto" }} className="panel animate-fade-in">
           <div style={{ width: 64, height: 64, background: "rgba(239, 68, 68, 0.1)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--error)", margin: "0 auto 1.5rem" }}>
             <AlertCircle size={32} />
           </div>
@@ -998,7 +1010,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           <div className="pos-grid">
             
             {/* ── REGISTER CATALOG ITEMS ── */}
-            <div className="glass-panel" style={{ padding: "1.5rem" }}>
+            <div className="panel" style={{ padding: "1.5rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
                 <div>
                   <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.1rem", fontWeight: 800, margin: 0 }}>{displayOutlet.name}</h2>
@@ -1135,10 +1147,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                   )}
 
                   {Object.keys(activeSale).length === 0 ? (
-                    <div className="empty-state" style={{ padding: "2rem" }}>
-                      <div className="empty-state-icon"><ShoppingCart size={22} /></div>
-                      <p style={{ fontSize: "0.8rem" }}>Tap items on the left to add them here</p>
-                    </div>
+                    <EmptyState icon={ShoppingCart} message="Tap items on the left to add them here" />
                   ) : (
                     Object.entries(activeSale).map(([id, qty]) => {
                       const item = displayMenu.find(m => m.id === parseInt(id));
@@ -1241,9 +1250,11 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               <button className="modal-close" onClick={() => setShowMyShiftsModal(false)}><X size={16} /></button>
             </div>
             {myShiftsLoading ? (
-              <div style={{ textAlign: "center", padding: "2rem" }}>Loading...</div>
+              <div style={{ textAlign: "center", padding: "4rem 2rem" }}>
+                <RefreshCw className="animate-spin" size={32} style={{ color: "var(--brand)", margin: "0 auto" }} />
+              </div>
             ) : myShifts.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No shift history found.</div>
+              <EmptyState icon={Clock} message="No shift history found." />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 {myShifts.map(s => (

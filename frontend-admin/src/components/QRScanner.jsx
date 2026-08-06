@@ -51,7 +51,7 @@ export default function QRScanner({ onStockUpdated }) {
   };
 
   return (
-    <div className="glass-panel" style={{ padding: "1.5rem" }}>
+    <div className="panel" style={{ padding: "1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
           <ScanLine size={18} /> Scan Stock Arrival

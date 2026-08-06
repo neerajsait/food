@@ -67,7 +67,7 @@ export default function QRGenerator({ outlets, menuItems }) {
 
   return (
     <div className="grid-responsive-2col" style={{ gap: "1.5rem", alignItems: "start" }}>
-      <div className="glass-panel" style={{ padding: "1.5rem" }}>
+      <div className="panel" style={{ padding: "1.5rem" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: "700", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <QrCode size={18} /> Generate Dispatch QR
         </h3>
@@ -122,7 +122,7 @@ export default function QRGenerator({ outlets, menuItems }) {
         </form>
       </div>
 
-      <div className="glass-panel" style={{ padding: "1.5rem", minHeight: "320px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+      <div className="panel" style={{ padding: "1.5rem", minHeight: "320px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
         {!qrResult ? (
           <div style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
             <QrCode size={48} style={{ opacity: 0.2, marginBottom: "0.75rem", display: "block", margin: "0 auto 0.75rem" }} />
