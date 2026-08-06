@@ -1250,7 +1250,7 @@ The FlavorFlow Team"""
         for item in order.items:
             menu_item = db.session.get(MenuItem, item.menu_item_id)
             if menu_item and menu_item.global_stock is not None:
-                menu_item.global_stock += item.quantity
+                db.session.execute(update(MenuItem).where(MenuItem.id == item.menu_item_id).values(global_stock=MenuItem.global_stock + item.quantity))
         
         if order.applied_coupon_code:
             coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
@@ -1851,7 +1851,7 @@ The FlavorFlow Team"""
                 for item in order.items:
                     menu_item = db.session.get(MenuItem, item.menu_item_id)
                     if menu_item and menu_item.global_stock is not None:
-                        menu_item.global_stock += item.quantity
+                        db.session.execute(update(MenuItem).where(MenuItem.id == item.menu_item_id).values(global_stock=MenuItem.global_stock + item.quantity))
                 if order.applied_coupon_code:
                     coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
                     if coupon and coupon.usage_count > 0:

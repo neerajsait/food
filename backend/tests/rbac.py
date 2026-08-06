@@ -26,7 +26,7 @@ class TestRBACAndPrivilegeEscalation(unittest.TestCase):
         # Generate Customer Token
         customer_token = create_access_token(
             identity=str(self.customer.id), 
-            additional_claims={"role": "customer"}
+            additional_claims={"role": "customer", "token_version": getattr(self.customer, "token_version", 0)}
         )
         self.customer_headers = {
             "Authorization": f"Bearer {customer_token}",

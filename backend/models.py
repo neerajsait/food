@@ -133,6 +133,7 @@ class User(db.Model):
 
     def set_pin(self, pin: str, bcrypt):
         self.pin_hash = bcrypt.generate_password_hash(pin).decode('utf-8')
+        self.bump_token_version()
 
     def check_pin(self, pin: str, bcrypt) -> bool:
         if not self.pin_hash:
