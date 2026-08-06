@@ -24,10 +24,11 @@ class TestFileUploadSecurity(unittest.TestCase):
         db.session.add(self.customer)
         db.session.commit()
 
-        token = create_access_token(
-            identity=str(self.customer.id), 
-            additional_claims={"role": "customer"}
-        )
+        login_resp = self.client.post("/api/auth/login", json={
+            "email": "uploader@test.com",
+            "password": "pass123"
+        })
+        token = login_resp.get_json()["access_token"]
         self.headers = {"Authorization": f"Bearer {token}"}
 
     def tearDown(self):
@@ -41,7 +42,7 @@ class TestFileUploadSecurity(unittest.TestCase):
         data = {
             "issue_type": "Bug",
             "description": "Testing path traversal",
-            "attachment": (io.BytesIO(b"fake data"), "../../../etc/passwd")
+            "attachment": (io.BytesIO(b"fake data"), "../../../etc/passwd.jpg")
         }
         resp = self.client.post("/api/customer/tickets", data=data, headers=self.headers)
         self.assertEqual(resp.status_code, 201)

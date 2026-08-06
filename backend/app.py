@@ -61,8 +61,23 @@ def check_if_token_revoked(jwt_header, jwt_payload):
             if redis_tv is not None:
                 if int(redis_tv) != token_version:
                     return True
-                # Optional: if it matches, we can skip DB check, but we lose banned/active check unless we cache those too.
-                # Per requirements: "Only if Redis missing that key, fall back to DB user.token_version (and banned/active checks)"
+                
+                # Harden loader: even if user_tv matches, verify ban/active in DB using a lightweight query.
+                # This ensures a stale Redis doesn't allow banned users to skip ban checks.
+                try:
+                    from models import User
+                    flags = db.session.execute(db.select(User.is_banned, User.is_active, User.deleted_at).where(User.id == int(user_id))).first()
+                    if flags:
+                        is_banned, is_active, deleted_at = flags
+                        if is_banned or deleted_at is not None or not is_active:
+                            return True
+                    else:
+                        return True
+                except Exception as db_err:
+                    import logging
+                    logging.error(f"Lightweight DB check error: {db_err}")
+                    return True
+
                 return False
         except Exception as e:
             import logging
@@ -80,7 +95,7 @@ def check_if_token_revoked(jwt_header, jwt_payload):
             
             if redis_client:
                 try:
-                    redis_client.set(f"user_tv:{user_id}", db_tv)
+                    redis_client.setex(f"user_tv:{user_id}", 8 * 86400, db_tv)
                 except Exception:
                     pass
 
@@ -570,7 +585,7 @@ def create_app(config_override=None):
             from redis_client import get_redis
             rc = get_redis()
             if rc:
-                rc.set(f"user_tv:{user.id}", getattr(user, 'token_version', 0))
+                rc.setex(f"user_tv:{user.id}", 8 * 86400, getattr(user, 'token_version', 0))
         except Exception:
             pass
             
@@ -870,6 +885,7 @@ The FlavorFlow Team"""
         
         user.deleted_at = datetime.now(timezone.utc)
         user.is_active = False
+        user.bump_token_version()
         db.session.commit()
         return jsonify({"message": "Account deleted successfully"}), 200
 
@@ -1993,7 +2009,10 @@ The FlavorFlow Team"""
         if "outlet_id" in data:
             user.outlet_id = data["outlet_id"]
         if "is_active" in data:
-            user.is_active = bool(data["is_active"])
+            new_active = bool(data["is_active"])
+            if user.is_active and not new_active:
+                user.bump_token_version()
+            user.is_active = new_active
         if "loyalty_points" in data and user.role == "customer":
             user.loyalty_points = int(data["loyalty_points"])
         if "pin" in data:
