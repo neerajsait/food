@@ -62,3 +62,17 @@ def test_ticket_upload_security(client):
     assert "<script>" not in issue_type
     assert "&lt;script&gt;" in issue_type or "alert(1)" in issue_type or issue_type == "" # bleached
 
+
+def test_url_validation_rejects_javascript(client):
+    res = client.post('/api/auth/login', json={"email": "test@cust.com", "password": "custpass"})
+    token = res.get_json()["access_token"]
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    data = {
+        "first_name": "Test",
+        "image_url": "javascript:alert(1)"
+    }
+    res2 = client.put('/api/auth/profile', headers=headers, json=data)
+    assert res2.status_code == 400
+    assert "Invalid URL" in res2.get_json().get("message", "")

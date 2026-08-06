@@ -73,6 +73,8 @@ def check_if_token_revoked(jwt_header, jwt_payload):
                 return True
             if getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
                 return True
+            if not getattr(user, 'is_active', True):
+                return True
         else:
             return True
     except Exception as e:
@@ -150,6 +152,12 @@ def department_required(*departments):
     return decorator
 
 
+def validate_public_url(url: str | None) -> bool:
+    if not url:
+        return True
+    u = url.strip().lower()
+    return u.startswith("http://") or u.startswith("https://")
+
 def sanitize_input(data, skip_keys=None):
     if skip_keys is None:
         skip_keys = ["password", "new_password", "old_password", "image_url", "target_url", "icon", "attachment"]
@@ -158,9 +166,9 @@ def sanitize_input(data, skip_keys=None):
         result = {}
         for k, v in data.items():
             if k in ["image_url", "target_url", "icon"] and isinstance(v, str) and v.strip():
-                if not v.strip().startswith(("http://", "https://")):
+                if not validate_public_url(v):
                     from werkzeug.exceptions import BadRequest
-                    raise BadRequest(f"Invalid URL scheme for {k}. Must start with http:// or https://")
+                    raise BadRequest("Invalid URL")
             result[k] = v if k in skip_keys else sanitize_input(v, skip_keys)
         return result
     elif isinstance(data, list):
@@ -362,6 +370,8 @@ def create_app(config_override=None):
 
     # --- DB Init + Seed ---
     with app.app_context():
+        # NOTE: For existing MySQL databases, db.create_all() will NOT add token_version to the users table.
+        # Production must run: ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0;
         db.create_all()
         if os.getenv("FLASK_ENV") != "production" or os.getenv("ALLOW_SEED") == "1":
             _seed_admin(app)

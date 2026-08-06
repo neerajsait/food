@@ -69,3 +69,22 @@ def test_logout_requires_redis_in_production(client, monkeypatch):
     
     res2 = client.post('/api/auth/logout', headers={"Authorization": f"Bearer {access_token}"})
     assert res2.status_code == 503
+
+def test_inactive_user_token_rejected(client):
+    res = client.post('/api/auth/login', json={"email": "test@admin.com", "password": "admin"})
+    access_token = res.get_json()["access_token"]
+    
+    # Verify works initially
+    res1 = client.get('/api/auth/me', headers={"Authorization": f"Bearer {access_token}"})
+    assert res1.status_code == 200
+
+    # Deactivate user
+    from models import User
+    from app import db
+    user = db.session.scalars(db.select(User).where(User.email == "test@admin.com")).first()
+    user.is_active = False
+    db.session.commit()
+
+    # Verify token is rejected
+    res2 = client.get('/api/auth/me', headers={"Authorization": f"Bearer {access_token}"})
+    assert res2.status_code == 401
