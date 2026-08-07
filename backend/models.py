@@ -136,7 +136,7 @@ class User(db.Model):
             from redis_client import get_redis
             rc = get_redis()
             if rc and getattr(self, 'id', None):
-                rc.setex(f"user_tv:{self.id}", 8 * 86400, self.token_version)
+                rc.setex(f"user_tv:{self.id}", 2 * 86400, self.token_version)
         except Exception:
             pass
 

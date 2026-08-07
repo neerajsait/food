@@ -98,7 +98,7 @@ def check_if_token_revoked(jwt_header, jwt_payload):
             
             if redis_client:
                 try:
-                    redis_client.setex(f"user_tv:{user_id}", 8 * 86400, db_tv)
+                    redis_client.setex(f"user_tv:{user_id}", 2 * 86400, db_tv)
                 except Exception:
                     pass
 
@@ -663,7 +663,7 @@ def create_app(config_override=None):
             from redis_client import get_redis
             rc = get_redis()
             if rc:
-                rc.setex(f"user_tv:{user.id}", 8 * 86400, getattr(user, 'token_version', 0))
+                rc.setex(f"user_tv:{user.id}", 2 * 86400, getattr(user, 'token_version', 0))
         except Exception:
             pass
             

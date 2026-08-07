@@ -24,6 +24,7 @@ class MemoryRedis:
                 del self.store[key]
         return None
 
+# WARNING: memory:// backend is single-process only. Never use it with multiple workers/gunicorn processes.
 def get_redis():
     global _redis_client
     if _redis_client is not None:
