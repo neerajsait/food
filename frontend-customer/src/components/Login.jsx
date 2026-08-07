@@ -63,24 +63,6 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  const handleQuickLogin = async (qEmail, qPass) => {
-    setError(""); setMessage(""); setLoading(true);
-    try {
-      let payload = {};
-      if (qEmail.includes("@") || qEmail === "admin") {
-         payload = { email: qEmail, password: qPass };
-      } else {
-         payload = { staff_code: qEmail, pin: qPass };
-      }
-      const data = await api.login(payload);
-      onLoginSuccess(data.user);
-    } catch (err) {
-      setError(err.message || "Quick login failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleForgotSubmit = async (e) => {
     e.preventDefault();
     setForgotError(""); setForgotMessage(""); setForgotLoading(true);
@@ -308,34 +290,6 @@ export default function Login({ onLoginSuccess }) {
             </button>
           </div>
 
-          {/* Quick Demo Access */}
-          {!isRegistering && import.meta.env.DEV && (
-            <>
-              <div className="divider">Quick Demo Access</div>
-              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("admin", "admin")} disabled={loading}>
-                  <Shield size={16} />
-                  <span>Admin</span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("customer@gmail.com", "customer")} disabled={loading}>
-                  <ShoppingBag size={16} />
-                  <span>Customer</span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("1001", "staff123")} disabled={loading} title="Staff Code: 1001">
-                  <Store size={16} />
-                  <span>Staff<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 1001</small></span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("2001", "kitchen123")} disabled={loading} title="Kitchen Code: 2001">
-                  <Zap size={16} />
-                  <span>Kitchen<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 2001</small></span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("owner@brand.com", "owner")} disabled={loading}>
-                  <UserPlus size={16} />
-                  <span>Owner</span>
-                </button>
-              </div>
-            </>
-          )}
         </div>
       </div>
 
