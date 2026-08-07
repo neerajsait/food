@@ -83,6 +83,15 @@ export default function CustomerView({ onLogout, dbMode }) {
   };
 
   useEffect(() => {
+    if (confirmModal) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [confirmModal]);
+
+  useEffect(() => {
     if (toast) {
       const timer = setTimeout(() => setToast(null), 3500);
       return () => clearTimeout(timer);
@@ -1832,7 +1841,7 @@ export default function CustomerView({ onLogout, dbMode }) {
       )}
 
       {/* Confirm Modal */}
-      {confirmModal && (
+      {confirmModal && createPortal(
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", zIndex: 99998, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
           <div style={{ background: "var(--bg-card)", padding: "2rem", maxWidth: "400px", width: "100%", borderRadius: "var(--r-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
             <p style={{ fontSize: "1.1rem", fontWeight: "600", color: "var(--text-primary)", marginBottom: "1.5rem", textAlign: "center" }}>{confirmModal.message}</p>
@@ -1841,7 +1850,8 @@ export default function CustomerView({ onLogout, dbMode }) {
               <button onClick={() => setConfirmModal(null)} style={{ flex: 1, background: "transparent", color: "var(--text-primary)", border: "1px solid var(--border-default)", padding: "0.875rem", fontWeight: "700", cursor: "pointer", borderRadius: "var(--r-sm)" }}>Cancel</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       
     </div>
