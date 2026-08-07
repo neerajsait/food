@@ -742,9 +742,9 @@ def create_app(config_override=None):
             msg.body = f"""Hi {user.first_name or 'User'},
 
 You have requested to reset your password for your FlavorFlow account.
-Please use the following 6-digit code in the password reset form:
+Please use the following reset token in the password reset form:
 
-Reset Code: {token}
+Reset Token: {token}
 
 This code is valid for 1 hour. If you did not request this, please ignore this email.
 
@@ -830,9 +830,9 @@ FlavorFlow Team
         msg.body = f"""Hi {user.first_name or 'User'},
 
 You have requested to change your password for your FlavorFlow account.
-Please use the following 6-digit code in the password change form:
+Please use the following reset token in the password change form:
 
-Change Code: {token}
+Reset Token: {token}
 
 This code is valid for 1 hour. If you did not request this, please ignore this email.
 
@@ -953,7 +953,7 @@ The FlavorFlow Team"""
         if not token:
             return jsonify({"error": "Bad Request", "message": "Token is missing"}), 400
             
-        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
         try:
             # Token expires in 24 hours (86400 seconds)
             email = serializer.loads(token, salt="email-verify-salt", max_age=86400)
@@ -3751,6 +3751,11 @@ The FlavorFlow Team"""
         elif request.method == "POST":
             # Receive incoming messages/orders
             data = request.get_json(silent=True)
+            # TODO: Implement proper X-Hub-Signature-256 verification from Meta
+            # For now, reject empty payloads more strictly
+            if not data:
+                return "Bad Request", 400
+            
             if data:
                 # Placeholder logic to log the incoming payload
                 logger.info(f"Received WhatsApp Webhook payload: {json.dumps(data)}")
@@ -3783,6 +3788,7 @@ The FlavorFlow Team"""
         return jsonify([c.to_dict() for c in coupons]), 200
 
     @app.route("/api/outlet/coupons", methods=["GET"])
+    @role_required("staff", "admin", "outlet_owner")
     def get_outlet_coupons():
         """Return active coupons available for the outlet POS terminal."""
         from datetime import date
@@ -4476,7 +4482,7 @@ def _get_email_html_wrapper(title, content):
 
 def _send_verification_email(app, user):
     try:
-        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
         token = serializer.dumps(user.email, salt="email-verify-salt")
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Verify your Email - FlavorFlow 🧡", sender=sender, recipients=[user.email])
