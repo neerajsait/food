@@ -328,6 +328,8 @@ def create_app(config_override=None):
     app = Flask(__name__)
     app.request_class = SanitizedRequest
     cors_origins = os.getenv("CORS_ORIGINS")
+    if os.getenv("FLASK_ENV") == "production" and not cors_origins:
+        raise RuntimeError("CORS_ORIGINS must be set in production")
     if cors_origins:
         origins = cors_origins.split(",")
     else:
@@ -636,7 +638,21 @@ def create_app(config_override=None):
             user = db.session.scalars(select(User).where(User.email == email)).first()
             if not user or not user.check_password(password, bcrypt):
                 logger.warning(f"Failed login attempt for email: {email}")
+                from redis_client import get_redis
+                rc = get_redis()
+                failed_count = 1
+                if rc:
+                    lock_key = f"login_attempts:{email}"
+                    failed_count = int(rc.get(lock_key) or 0) + 1
+                    rc.setex(lock_key, 300, failed_count)
+                import time
+                time.sleep(min(failed_count, 3))
                 return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
+            
+            from redis_client import get_redis
+            rc = get_redis()
+            if rc:
+                rc.delete(f"login_attempts:{email}")
             
             if not user.is_active:
                 logger.warning(f"Login attempt on inactive account: {email}")
@@ -1138,6 +1154,7 @@ The FlavorFlow Team"""
 
 
     @app.route("/api/foods/menu", methods=["GET"])
+    @limiter.limit("60 per minute")
     def get_foods_menu():
         """Public: home foods menu."""
         from sqlalchemy.orm import selectinload
@@ -1150,6 +1167,7 @@ The FlavorFlow Team"""
         return jsonify([i.to_dict() for i in items]), 200
 
     @app.route("/api/foods/menu/code/<code>", methods=["GET"])
+    @limiter.limit("60 per minute")
     def get_food_by_code(code):
         """Public: get a menu item by its code"""
         item = db.session.scalars(
@@ -1276,7 +1294,7 @@ The FlavorFlow Team"""
 
             if actual_redeem > 0:
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
-                customer.loyalty_points -= actual_redeem
+                customer.loyalty_points = max(0, (customer.loyalty_points or 0) - actual_redeem)
                 points_redeemed = actual_redeem
                 total = max(Decimal("0.00"), total - points_discount)
         
@@ -2161,7 +2179,10 @@ The FlavorFlow Team"""
             claims = get_jwt()
             if not claims.get("is_superadmin"):
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            old_points = user.loyalty_points or 0
             user.loyalty_points = int(data["loyalty_points"])
+            from models import db
+            log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
         if "pin" in data:
             pin = (data["pin"] or "").strip()
             if pin:
@@ -2828,7 +2849,10 @@ The FlavorFlow Team"""
         if "loyalty_points" in data:
             if not get_jwt().get("is_superadmin"):
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            old_points = user.loyalty_points or 0
             user.loyalty_points = int(data["loyalty_points"])
+            from models import db
+            log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
 
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
@@ -3065,7 +3089,7 @@ The FlavorFlow Team"""
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
                 total -= points_discount
                 total = max(Decimal("0.00"), total)
-                customer.loyalty_points -= actual_redeem
+                customer.loyalty_points = max(0, (customer.loyalty_points or 0) - actual_redeem)
                 points_redeemed = actual_redeem
 
         # Loyalty points: earning
