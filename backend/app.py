@@ -419,6 +419,7 @@ def create_app(config_override=None):
         raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
+    # TODO: Ensure real migration scripts exist and are applied for token_version and attachment_filename
     migrate = Migrate(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
@@ -513,7 +514,7 @@ def create_app(config_override=None):
                 email = data.get("email")
                 if email:
                     return email.strip().lower()
-        except:
+        except Exception as e:
             pass
         from flask_limiter.util import get_remote_address
         return get_remote_address()
@@ -587,10 +588,25 @@ def create_app(config_override=None):
         pin = data.get("pin", "")
         
         if staff_code and pin:
+            from redis_client import get_redis
+            rc = get_redis()
+            lockout_key = f"staff_login_attempts:{staff_code}"
+            
+            if rc:
+                attempts = int(rc.get(lockout_key) or 0)
+                if attempts >= 5:
+                    return jsonify({"error": "Too Many Requests", "message": "Account temporarily locked due to excessive failed attempts"}), 429
+
             user = db.session.scalars(select(User).where(User.staff_code == staff_code)).first()
             if not user or getattr(user, 'pin_hash', None) is None or not user.check_pin(pin, bcrypt):
                 logger.warning(f"Failed staff login attempt for staff_code: {staff_code}")
+                if rc:
+                    attempts = int(rc.get(lockout_key) or 0) + 1
+                    rc.setex(lockout_key, 300, attempts)
                 return jsonify({"error": "Unauthorized", "message": "Invalid staff code or PIN"}), 401
+            
+            if rc:
+                rc.setex(lockout_key, 1, 0) # reset lockout
         else:
             email = (data.get("email") or "").strip().lower()
             password = data.get("password", "")
@@ -726,9 +742,9 @@ def create_app(config_override=None):
         if user:
             import secrets
             if app.config.get("TESTING"):
-                token = '1234567890abcdef1234567890abcdef'
+                token = '123456'
             else:
-                token = secrets.token_hex(16)
+                token = f"{secrets.randbelow(1000000):06d}"
             user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
@@ -742,9 +758,9 @@ def create_app(config_override=None):
             msg.body = f"""Hi {user.first_name or 'User'},
 
 You have requested to reset your password for your FlavorFlow account.
-Please use the following reset token in the password reset form:
+Please use the following 6-digit code in the password reset form:
 
-Reset Token: {token}
+Reset Code: {token}
 
 This code is valid for 1 hour. If you did not request this, please ignore this email.
 
@@ -814,9 +830,9 @@ FlavorFlow Team
                 
         import secrets
         if app.config.get("TESTING"):
-            token = '1234567890abcdef1234567890abcdef'
+            token = '123456'
         else:
-            token = secrets.token_hex(16)
+            token = f"{secrets.randbelow(1000000):06d}"
         user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
         user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         db.session.commit()
@@ -830,9 +846,9 @@ FlavorFlow Team
         msg.body = f"""Hi {user.first_name or 'User'},
 
 You have requested to change your password for your FlavorFlow account.
-Please use the following reset token in the password change form:
+Please use the following 6-digit code in the password change form:
 
-Reset Token: {token}
+Change Code: {token}
 
 This code is valid for 1 hour. If you did not request this, please ignore this email.
 
@@ -1428,6 +1444,8 @@ The FlavorFlow Team"""
                 if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
                 filename = secure_filename(file.filename)
+                if not filename:
+                    return jsonify({"error": "Bad Request", "message": "Invalid filename"}), 400
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
@@ -1468,6 +1486,8 @@ The FlavorFlow Team"""
                 if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
                 filename = secure_filename(file.filename)
+                if not filename:
+                    return jsonify({"error": "Bad Request", "message": "Invalid filename"}), 400
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
@@ -3730,6 +3750,7 @@ The FlavorFlow Team"""
         return jsonify({"message": "Review deleted successfully"}), 200
 
     @app.route("/api/whatsapp/webhook", methods=["GET", "POST"])
+    @limiter.limit("30 per minute")
     def whatsapp_webhook():
         """
         Endpoint for WhatsApp Business API integration.
@@ -3744,17 +3765,33 @@ The FlavorFlow Team"""
             
             # Verify against token in Meta Dashboard (via env vars)
             if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
-                return challenge, 200
+                return jsonify({"challenge": challenge}), 200
             else:
-                return "Forbidden", 403
+                return jsonify({"error": "Forbidden"}), 403
                 
         elif request.method == "POST":
             # Receive incoming messages/orders
+            
+            signature = request.headers.get("X-Hub-Signature-256")
+            if not signature:
+                return jsonify({"error": "Forbidden", "message": "Missing signature"}), 403
+                
+            import hmac
+            import hashlib
+            expected_signature = 'sha256=' + hmac.new(
+                os.getenv("APP_SECRET", app.config["SECRET_KEY"]).encode('utf-8'),
+                request.get_data(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected_signature):
+                return jsonify({"error": "Forbidden", "message": "Invalid signature"}), 403
+                
             data = request.get_json(silent=True)
             # TODO: Implement proper X-Hub-Signature-256 verification from Meta
             # For now, reject empty payloads more strictly
             if not data:
-                return "Bad Request", 400
+                return jsonify({"error": "Bad Request", "message": "Empty payload"}), 400
             
             if data:
                 # Placeholder logic to log the incoming payload
@@ -3765,11 +3802,12 @@ The FlavorFlow Team"""
                 # TODO: Send a reply back to the customer via WhatsApp API confirming the order.
                 
                 # Acknowledge receipt of the webhook to Meta
-                return "EVENT_RECEIVED", 200
-            return "Bad Request", 400
+                return jsonify({"status": "EVENT_RECEIVED"}), 200
+            return jsonify({"error": "Bad Request"}), 400
 
 
     @app.route("/api/coupons/active", methods=["GET"])
+    @limiter.limit("30 per minute")
     def get_active_coupons():
         """Return all active public coupons. Optionally filter by scope query param."""
         from datetime import date
@@ -3804,6 +3842,7 @@ The FlavorFlow Team"""
         return jsonify([c.to_dict() for c in coupons]), 200
 
     @app.route("/api/coupons/<string:code>", methods=["GET"])
+    @limiter.limit("30 per minute")
     def get_coupon(code):
         """Validate and return coupon details."""
         coupon = db.session.scalars(
@@ -3827,6 +3866,12 @@ The FlavorFlow Team"""
         description = data.get("description", "Wallet Credit")
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
         user = db.session.get(User, user_id, with_for_update=True)
         if not user:
@@ -3849,6 +3894,12 @@ The FlavorFlow Team"""
         description = data.get("description", "Wallet Debit")
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
         user = db.session.get(User, user_id, with_for_update=True)
         if not user:
