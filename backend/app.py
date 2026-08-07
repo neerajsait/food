@@ -153,8 +153,9 @@ def get_loyalty_settings():
     earn_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_earn_rate')).first()
     redeem_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_redeem_rate')).first()
     
-    earn_val = float(earn_rate.setting_value) if earn_rate else 0.1  # 1 point per 10 rupees
-    redeem_val = float(redeem_rate.setting_value) if redeem_rate else 0.01  # 100 points = 1 rupee discount
+    from decimal import Decimal
+    earn_val = Decimal(str(earn_rate.setting_value)) if earn_rate else Decimal("0.1")
+    redeem_val = Decimal(str(redeem_rate.setting_value)) if redeem_rate else Decimal("0.01")
     return earn_val, redeem_val
 
 def role_required(*roles):
@@ -488,6 +489,7 @@ def create_app(config_override=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+        # TODO: Remove 'unsafe-inline' and 'unsafe-eval' once frontend no longer needs them
         response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; connect-src 'self' https: wss:;"
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
@@ -1424,7 +1426,7 @@ The FlavorFlow Team"""
             file = request.files["attachment"]
             if file and file.filename:
                 if not allowed_file(file):
-                    return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
+                    return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
@@ -1464,7 +1466,7 @@ The FlavorFlow Team"""
             file = request.files["attachment"]
             if file and file.filename:
                 if not allowed_file(file):
-                    return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
+                    return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
@@ -1486,9 +1488,8 @@ The FlavorFlow Team"""
         if ticket.status != "Open":
             return jsonify({"error": "Bad Request", "message": "Only open tickets can be deleted"}), 400
 
-        if ticket.attachment_url:
-            filename = ticket.attachment_url.split("/")[-1]
-            filepath = os.path.join(TICKETS_UPLOAD_FOLDER, filename)
+        if ticket.attachment_filename:
+            filepath = os.path.join(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename)
             if os.path.exists(filepath):
                 try:
                     os.remove(filepath)

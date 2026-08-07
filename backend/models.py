@@ -1151,12 +1151,14 @@ class SupportTicket(db.Model):
     customer = relationship('User', foreign_keys=[customer_id])
     order = relationship('Order', foreign_keys=[order_id])
 
-    def __init__(self, customer_id, issue_type, description, order_id=None, attachment_url=None):
+    def __init__(self, customer_id, issue_type, description, order_id=None,
+                 attachment_url=None, attachment_filename=None):
         self.customer_id = customer_id
         self.issue_type = issue_type
         self.description = description
         self.order_id = order_id
         self.attachment_url = attachment_url
+        self.attachment_filename = attachment_filename
         self.status = 'Open'
 
     def to_dict(self):
