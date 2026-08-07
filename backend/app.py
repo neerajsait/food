@@ -110,7 +110,7 @@ def check_if_token_revoked(jwt_header, jwt_payload):
                 return True
         else:
             return True
-    except Exception as e:
+    except sqlalchemy.exc.SQLAlchemyError as e:
         import logging
         logging.error(f"Error during blocklist db check: {e}")
         return True
@@ -423,7 +423,10 @@ def create_app(config_override=None):
         raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
-    # IMPORTANT: Ensure Alembic migrations exist for token_version and attachment_filename columns
+    # IMPORTANT: Real Alembic migration scripts must exist and be applied for:
+    # - users.token_version
+    # - support_tickets.attachment_filename
+    # db.create_all() will NOT add these columns on existing databases.
     migrate = Migrate(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
@@ -595,7 +598,10 @@ def create_app(config_override=None):
         
         if staff_code and pin:
             from redis_client import get_redis
-            rc = get_redis()
+            try:
+                rc = get_redis()
+            except Exception:
+                rc = None
             
             if not rc and os.getenv("FLASK_ENV") == "production":
                 return jsonify({"error": "Service Unavailable", "message": "Login temporarily unavailable"}), 503
@@ -639,7 +645,10 @@ def create_app(config_override=None):
             if not user or not user.check_password(password, bcrypt):
                 logger.warning(f"Failed login attempt for email: {email}")
                 from redis_client import get_redis
-                rc = get_redis()
+                try:
+                    rc = get_redis()
+                except Exception:
+                    rc = None
                 failed_count = 1
                 if rc:
                     lock_key = f"login_attempts:{email}"
@@ -650,7 +659,10 @@ def create_app(config_override=None):
                 return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
             
             from redis_client import get_redis
-            rc = get_redis()
+            try:
+                rc = get_redis()
+            except Exception:
+                rc = None
             if rc:
                 rc.delete(f"login_attempts:{email}")
             
@@ -711,7 +723,10 @@ def create_app(config_override=None):
         # Revoke the old refresh token
         jti = get_jwt()["jti"]
         from redis_client import get_redis
-        redis_client = get_redis()
+        try:
+            redis_client = get_redis()
+        except Exception:
+            redis_client = None
         if redis_client:
             redis_client.setex(jti, int(timedelta(days=7).total_seconds()), "revoked")
         elif os.getenv("FLASK_ENV") == "production":
@@ -729,7 +744,10 @@ def create_app(config_override=None):
         from datetime import datetime, timezone
         from redis_client import get_redis
         
-        redis_client = get_redis()
+        try:
+            redis_client = get_redis()
+        except Exception:
+            redis_client = None
         if not redis_client:
             return jsonify({"error": "Service Unavailable", "message": "Logout temporarily unavailable"}), 503
             
@@ -3837,7 +3855,11 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Forbidden", "message": "Invalid signature"}), 403
                 
             data = request.get_json(silent=True)
-            # For now, reject empty payloads more strictly
+            # FEATURE INCOMPLETE: WhatsApp order parsing, DB order creation, and automated reply are not implemented yet
+            # TODO: Implement WhatsApp order parsing logic
+            # TODO: Check if user exists (via phone number), create order in DB
+            # TODO: Send automated reply via WhatsApp API (e.g. "Order received!")
+            
             if not data:
                 return jsonify({"error": "Bad Request", "message": "Empty payload"}), 400
             
@@ -3845,15 +3867,12 @@ The FlavorFlow Team"""
                 # Placeholder logic to log the incoming payload
                 logger.info(f"Received WhatsApp Webhook payload: {json.dumps(data)}")
                 
-                # TODO: Parse the data to extract customer phone, message/cart contents.
-                # TODO: Create a new Order in the database with order_type='whatsapp'.
-                # TODO: Send a reply back to the customer via WhatsApp API confirming the order.
-                
                 # Acknowledge receipt of the webhook to Meta
                 return jsonify({"status": "EVENT_RECEIVED"}), 200
             return jsonify({"error": "Bad Request"}), 400
 
 
+    # Intentionally public (storefront) but rate-limited
     @app.route("/api/coupons/active", methods=["GET"])
     @limiter.limit("30 per minute")
     def get_active_coupons():
@@ -3890,6 +3909,7 @@ The FlavorFlow Team"""
         ).all()
         return jsonify([c.to_dict() for c in coupons]), 200
 
+    # Intentionally public (storefront) but rate-limited
     @app.route("/api/coupons/<string:code>", methods=["GET"])
     @limiter.limit("30 per minute")
     def get_coupon(code):
@@ -3924,17 +3944,21 @@ The FlavorFlow Team"""
         except ValueError:
             return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
-        user = db.session.get(User, user_id, with_for_update=True)
-        if not user:
-            return jsonify({"error": "Not Found", "message": "User not found"}), 404
-        
-        user.loyalty_points = (user.loyalty_points or 0) + int(amount)
-        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
-        db.session.add(tx)
-        
-        log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
-        db.session.commit()
-        return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
+        try:
+            user = db.session.get(User, user_id, with_for_update=True)
+            if not user:
+                return jsonify({"error": "Not Found", "message": "User not found"}), 404
+            
+            user.loyalty_points = (user.loyalty_points or 0) + int(amount)
+            tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
+            db.session.add(tx)
+            
+            log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
+            db.session.commit()
+            return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
+        except sqlalchemy.exc.SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({"error": "Server Error"}), 500
 
     @app.route("/api/admin/wallet/debit", methods=["POST"])
     @role_required("admin")
@@ -3953,20 +3977,24 @@ The FlavorFlow Team"""
         except ValueError:
             return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
-        user = db.session.get(User, user_id, with_for_update=True)
-        if not user:
-            return jsonify({"error": "Not Found", "message": "User not found"}), 404
-        
-        if (user.loyalty_points or 0) < int(amount):
-            return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+        try:
+            user = db.session.get(User, user_id, with_for_update=True)
+            if not user:
+                return jsonify({"error": "Not Found", "message": "User not found"}), 404
             
-        user.loyalty_points = (user.loyalty_points or 0) - int(amount)
-        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
-        db.session.add(tx)
-        
-        log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
-        db.session.commit()
-        return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
+            if (user.loyalty_points or 0) < int(amount):
+                return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+                
+            user.loyalty_points = (user.loyalty_points or 0) - int(amount)
+            tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
+            db.session.add(tx)
+            
+            log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
+            db.session.commit()
+            return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
+        except sqlalchemy.exc.SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({"error": "Server Error"}), 500
 
     @app.route("/api/admin/wallet/transactions/<int:user_id>", methods=["GET"])
     @role_required("admin")
