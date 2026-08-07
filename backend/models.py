@@ -5,6 +5,18 @@ from sqlalchemy.orm import relationship
 
 db = SQLAlchemy()
 
+# ===========================================================================
+# IMPORTANT: REDIS ARCHITECTURE NOTE
+# ===========================================================================
+# The application uses Redis for JWT blocklisting and real-time state.
+# While a fallback `MemoryRedis` exists in `redis_client.py` for local 
+# development (using `memory://`), it is STRICTLY a single-process constraint.
+# In a multi-process environment (like Gunicorn/uWSGI) or multi-node setup,
+# `MemoryRedis` will fail to share state between workers, leading to critical
+# bugs such as security token leaks and desynchronized caches.
+# For production deployments, a real Redis server (e.g., redis-server) is REQUIRED.
+# ===========================================================================
+
 
 # ---------------------------------------------------------------------------
 # Outlet — physical snack supply station
@@ -1132,6 +1144,7 @@ class SupportTicket(db.Model):
     status = Column(String(20), default='Open')  # 'Open', 'Resolved', 'Closed'
     admin_reply = Column(Text, nullable=True)
     attachment_url = Column(Text, nullable=True)
+    attachment_filename = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -1157,6 +1170,7 @@ class SupportTicket(db.Model):
             "status": self.status,
             "admin_reply": self.admin_reply,
             "attachment_url": self.attachment_url,
+            "attachment_filename": self.attachment_filename,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }

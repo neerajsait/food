@@ -175,6 +175,34 @@ export default function CustomerView({ onLogout, dbMode }) {
 
   // Coupon Discount states
   const [couponCodeInput, setCouponCodeInput] = useState("");
+
+  const handleDownloadAttachment = async (e, url) => {
+    e.preventDefault();
+    try {
+      const fullUrl = url.startsWith('/') ? `${API_BASE_URL.replace('/api', '')}${url}` : url;
+      const res = await fetch(fullUrl, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
+      if (!res.ok) throw new Error("Failed to fetch attachment");
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const disposition = res.headers.get('Content-Disposition');
+      let filename = "attachment";
+      if (disposition && disposition.includes('filename=')) {
+          const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
+          if (matches != null && matches[1]) filename = matches[1].replace(/['"]/g, '');
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      alert("Error downloading attachment: " + err.message);
+    }
+  };
+
+
   const [appliedCoupon, setAppliedCoupon] = useState(null);
   const [useLoyaltyPoints, setUseLoyaltyPoints] = useState(false);
   const [couponError, setCouponError] = useState("");
@@ -1170,8 +1198,8 @@ export default function CustomerView({ onLogout, dbMode }) {
                     <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem", margin: "0 0 1rem" }}>{t.description}</p>
                     {t.attachment_url && (
                       <div style={{ marginBottom: "1rem" }}>
-                        <a href={t.attachment_url.startsWith('/') ? `${API_BASE_URL.replace('/api', '')}${t.attachment_url}` : t.attachment_url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", background: "var(--bg-hover)", borderRadius: "var(--r-sm)", color: "var(--brand)", textDecoration: "none", fontSize: "0.85rem", fontWeight: "600" }}>
-                          <FileText size={14} /> View Attachment
+                        <a href="#" onClick={(e) => handleDownloadAttachment(e, t.attachment_url)} style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", background: "var(--bg-hover)", borderRadius: "var(--r-sm)", color: "var(--brand)", textDecoration: "none", fontSize: "0.85rem", fontWeight: "600" }}>
+                          <FileText size={14} /> Download Attachment
                         </a>
                       </div>
                     )}

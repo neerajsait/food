@@ -18,6 +18,7 @@ from redis_client import get_redis
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
+from flask_migrate import Migrate
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -124,9 +125,22 @@ limiter = Limiter(
 
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
+ALLOWED_MIMETYPES = {'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'}
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def allowed_file(file_obj):
+    filename = getattr(file_obj, 'filename', '')
+    if not ('.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS):
+        return False
+    
+    try:
+        import magic
+        header = file_obj.read(2048)
+        file_obj.seek(0)
+        mime = magic.from_buffer(header, mime=True)
+        return mime in ALLOWED_MIMETYPES
+    except Exception as e:
+        logger.error(f"Magic mime check failed: {e}")
+        return False
 
 TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
 os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
@@ -404,6 +418,7 @@ def create_app(config_override=None):
         raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
+    migrate = Migrate(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
     mail.init_app(app)
@@ -473,6 +488,9 @@ def create_app(config_override=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; connect-src 'self' https: wss:;"
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
         if os.getenv("FLASK_ENV") == "production":
             response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         return response
@@ -486,8 +504,20 @@ def create_app(config_override=None):
     # 1. AUTH ROUTES
     # ============================================================
 
+    def auth_rate_limit_key():
+        try:
+            if request.is_json:
+                data = request.get_json(silent=True) or {}
+                email = data.get("email")
+                if email:
+                    return email.strip().lower()
+        except:
+            pass
+        from flask_limiter.util import get_remote_address
+        return get_remote_address()
+
     @app.route("/api/auth/register", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit("10 per minute", key_func=auth_rate_limit_key)
     def register():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         
@@ -500,9 +530,8 @@ def create_app(config_override=None):
         if domain in TEMP_DOMAINS:
             return jsonify({"error": "Bad Request", "message": "This was caused due to temp mail use personal mail"}), 400
             
-        # Self-registration forces non-customer/non-owner roles to customer
-        if role not in ("customer", "outlet_owner"):
-            role = "customer"
+        # Self-registration strictly yields customer accounts
+        role = "customer"
             
         first_name = (data.get("first_name") or "").strip()
         last_name = (data.get("last_name") or "").strip()
@@ -547,7 +576,7 @@ def create_app(config_override=None):
         return jsonify({"message": "If the email is valid, a registration confirmation will be sent."}), 201
 
     @app.route("/api/auth/login", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("5 per minute", key_func=auth_rate_limit_key)
     def login():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         
@@ -684,7 +713,7 @@ def create_app(config_override=None):
         return jsonify(user.to_dict()), 200
 
     @app.route("/api/auth/forgot-password", methods=["POST"])
-    @limiter.limit("3 per minute")
+    @limiter.limit("3 per minute", key_func=auth_rate_limit_key)
     def forgot_password():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -724,14 +753,12 @@ FlavorFlow Team
                 mail.send(msg)
                 logger.info(f"Password reset email sent to {email}")
             except Exception as e:
-                logger.error(f"Failed to send password reset email: {str(e)}")
-                if os.getenv("FLASK_ENV") != "production":
-                    print(f"\n[DEVELOPMENT FALLBACK] PASSWORD RESET TOKEN FOR {email}: {token}\n")
+                logger.error(f"Failed to send email: {e}")
 
         return jsonify({"message": "If the email is registered, you will receive a reset token shortly."}), 200
 
     @app.route("/api/auth/reset-password", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("5 per minute", key_func=auth_rate_limit_key)
     def reset_password():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -762,6 +789,7 @@ FlavorFlow Team
         user.password_reset_token = None
         user.password_reset_expiry = None
         user.is_first_login = False
+        user.bump_token_version()
         db.session.commit()
 
         return jsonify({"message": "Password has been reset successfully"}), 200
@@ -811,9 +839,7 @@ The FlavorFlow Team"""
         try:
             mail.send(msg)
         except Exception as e:
-            app.logger.error(f"Failed to send email: {e}")
-            if os.getenv("FLASK_ENV") != "production":
-                print(f"\n[DEVELOPMENT FALLBACK] PASSWORD CHANGE OTP FOR {user.email}: {token}\n")
+            logger.error(f"Failed to send OTP email: {e}")
             
         return jsonify({"message": "OTP sent to your email"}), 200
 
@@ -849,6 +875,7 @@ The FlavorFlow Team"""
         user.is_first_login = False
         user.password_reset_token = None
         user.password_reset_expiry = None
+        user.bump_token_version()
         db.session.commit()
 
         return jsonify({"message": "Password changed successfully"}), 200
@@ -885,6 +912,7 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
             
             user.set_password(new_password, bcrypt)
+            user.bump_token_version()
 
         # Handle PIN change (for staff/kitchen)
         new_pin = data.get("pin")
@@ -894,8 +922,10 @@ The FlavorFlow Team"""
                 if not new_pin.isdigit() or len(new_pin) != 4:
                     return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
                 user.set_pin(new_pin, bcrypt)
+                user.bump_token_version()
             else:
                 user.pin_hash = None
+                user.bump_token_version()
         db.session.commit()
         return jsonify({"message": "Profile updated successfully", "user": user.to_dict()}), 200
 
@@ -1138,7 +1168,7 @@ The FlavorFlow Team"""
                 db.session.refresh(menu_item)
                 
                 if menu_item.global_stock == 0:
-                    print(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!", flush=True)
+                    logger.info(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!")
 
             price = menu_item.price
             total += price * qty
@@ -1150,7 +1180,7 @@ The FlavorFlow Team"""
         coupon = None
         if coupon_code:
             coupon = db.session.scalars(
-                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True).with_for_update()
             ).first()
             if coupon:
                 if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
@@ -1190,7 +1220,7 @@ The FlavorFlow Team"""
                     total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
                 elif coupon.discount_pct and coupon.discount_pct > 0:
                     discount_pct = min(100, coupon.discount_pct)
-                    discount_value = total * Decimal(str(discount_pct / 100))
+                    discount_value = total * (Decimal(str(discount_pct)) / Decimal("100"))
                     if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
@@ -1204,7 +1234,7 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": "Loyalty points can only be used by registered customers"}), 400
             
             # calculate max redeemable points so it doesn't exceed total cost
-            max_redeem_allowed = int(float(total) / redeem_rate)
+            max_redeem_allowed = int(total / Decimal(str(redeem_rate))) if redeem_rate > 0 else 0
             actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
 
             if actual_redeem > 0:
@@ -1215,7 +1245,7 @@ The FlavorFlow Team"""
         
         points_earned = 0
         if customer:
-            points_earned = int(float(total) * earn_rate)
+            points_earned = int(total * Decimal(str(earn_rate)))
             # Note: We NO LONGER instantly credit loyalty points on checkout. 
             # They will be credited when status becomes 'delivered' or 'completed'
 
@@ -1273,12 +1303,12 @@ The FlavorFlow Team"""
         
         # Restore stock and coupon
         for item in order.items:
-            menu_item = db.session.get(MenuItem, item.menu_item_id)
+            menu_item = db.session.scalars(select(MenuItem).where(MenuItem.id == item.menu_item_id).with_for_update()).first()
             if menu_item and menu_item.global_stock is not None:
-                db.session.execute(update(MenuItem).where(MenuItem.id == item.menu_item_id).values(global_stock=MenuItem.global_stock + item.quantity))
+                menu_item.global_stock += item.quantity
         
         if order.applied_coupon_code:
-            coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+            coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code).with_for_update()).first()
             if coupon and coupon.usage_count > 0:
                 coupon.usage_count -= 1
 
@@ -1389,20 +1419,22 @@ The FlavorFlow Team"""
         if not issue_type or not description:
             return jsonify({"error": "Bad Request", "message": "Issue type and description are required"}), 400
 
-        attachment_url = None
+        unique_name = None
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
-                if not allowed_file(file.filename):
+                if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
-                attachment_url = f"/api/tickets/attachments/{unique_name}"
 
-        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_url=attachment_url)
+        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_filename=unique_name)
         db.session.add(ticket)
+        db.session.flush()
+        if unique_name:
+            ticket.attachment_url = f"/api/tickets/{ticket.id}/attachment"
         db.session.commit()
         
         return jsonify({"message": "Support ticket created successfully", "ticket": ticket.to_dict()}), 201
@@ -1431,13 +1463,14 @@ The FlavorFlow Team"""
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
-                if not allowed_file(file.filename):
+                if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Disallowed file extension"}), 400
                 filename = secure_filename(file.filename)
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
-                ticket.attachment_url = f"/api/tickets/attachments/{unique_name}"
+                ticket.attachment_filename = unique_name
+                ticket.attachment_url = f"/api/tickets/{ticket.id}/attachment"
 
         db.session.commit()
         return jsonify({"message": "Support ticket updated successfully", "ticket": ticket.to_dict()}), 200
@@ -1466,13 +1499,11 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Support ticket deleted successfully"}), 200
 
-    @app.route("/api/tickets/attachments/<filename>", methods=["GET"])
+    @app.route("/api/tickets/<int:ticket_id>/attachment", methods=["GET"])
     @jwt_required()
-    def get_ticket_attachment(filename):
-        # Look up ticket by attachment_url
-        attachment_url = f"/api/tickets/attachments/{filename}"
-        ticket = db.session.scalar(select(SupportTicket).where(SupportTicket.attachment_url == attachment_url))
-        if not ticket:
+    def get_ticket_attachment(ticket_id):
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or not ticket.attachment_filename:
             return jsonify({"error": "Not Found", "message": "Attachment not found"}), 404
             
         claims = get_jwt()
@@ -1482,7 +1513,7 @@ The FlavorFlow Team"""
         if ticket.customer_id != user_id and claims.get("role") not in ["admin", "staff"]:
             return jsonify({"error": "Forbidden", "message": "You do not have access to this attachment"}), 403
             
-        return send_from_directory(TICKETS_UPLOAD_FOLDER, filename, as_attachment=True)
+        return send_from_directory(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename, as_attachment=True)
 
     @app.route("/api/customer/loyalty", methods=["GET"])
     @role_required("customer", "outlet_owner")
@@ -1902,11 +1933,11 @@ The FlavorFlow Team"""
             # If changing TO a reverse status from a non-reverse status
             if order.status in reverse_statuses and old_status not in reverse_statuses:
                 for item in order.items:
-                    menu_item = db.session.get(MenuItem, item.menu_item_id)
+                    menu_item = db.session.scalars(select(MenuItem).where(MenuItem.id == item.menu_item_id).with_for_update()).first()
                     if menu_item and menu_item.global_stock is not None:
-                        db.session.execute(update(MenuItem).where(MenuItem.id == item.menu_item_id).values(global_stock=MenuItem.global_stock + item.quantity))
+                        menu_item.global_stock += item.quantity
                 if order.applied_coupon_code:
-                    coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+                    coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code).with_for_update()).first()
                     if coupon and coupon.usage_count > 0:
                         coupon.usage_count -= 1
 
@@ -2787,6 +2818,7 @@ The FlavorFlow Team"""
             if len(new_pwd) >= 8 and re.search(r'[A-Za-z]', new_pwd) and re.search(r'[0-9]', new_pwd):
                 user.set_password(new_pwd, bcrypt)
                 user.set_pin(new_pwd, bcrypt)
+                user.bump_token_version()
                 password_changed = True
             else:
                 return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
@@ -2932,7 +2964,7 @@ The FlavorFlow Team"""
         coupon = None
         if coupon_code:
             coupon = db.session.scalars(
-                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True).with_for_update()
             ).first()
             if coupon:
                 if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
@@ -2974,7 +3006,7 @@ The FlavorFlow Team"""
                     total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
                 elif coupon.discount_pct and coupon.discount_pct > 0:
                     discount_pct = min(100, coupon.discount_pct)
-                    discount_value = total * Decimal(str(discount_pct / 100))
+                    discount_value = total * (Decimal(str(discount_pct)) / Decimal("100"))
                     if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
@@ -2982,9 +3014,8 @@ The FlavorFlow Team"""
         earn_rate, redeem_rate = get_loyalty_settings()
         
         # Loyalty points: redemption
-        points_redeemed = 0
         if customer and redeem_points > 0:
-            max_redeem_allowed = int(float(total) / redeem_rate)
+            max_redeem_allowed = int(total / Decimal(str(redeem_rate))) if redeem_rate > 0 else 0
             actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
             
             if actual_redeem > 0:
@@ -2997,7 +3028,7 @@ The FlavorFlow Team"""
         # Loyalty points: earning
         points_earned = 0
         if customer:
-            points_earned = int(float(total) * earn_rate)
+            points_earned = int(total * Decimal(str(earn_rate)))
             customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
 
         sale = Order(
