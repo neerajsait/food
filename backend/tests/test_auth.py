@@ -53,8 +53,9 @@ class AuthTestCase(unittest.TestCase):
             "phone": "1234567890"
         })
         self.assertEqual(resp.status_code, 201)
-        self.assertIn("user", resp.json)
-        self.assertEqual(resp.json["user"]["email"], "new@test.com")
+        self.assertIn("registration confirmation will be sent", resp.json["message"])
+        user = db.session.query(User).filter_by(email="new@test.com").first()
+        self.assertIsNotNone(user)
 
     def test_register_duplicate_email(self):
         resp = self.client.post("/api/auth/register", json={
@@ -62,7 +63,8 @@ class AuthTestCase(unittest.TestCase):
             "password": "newpass123",
             "phone": "1234567890"
         })
-        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("registration confirmation will be sent", resp.json["message"])
 
     def test_register_invalid_email(self):
         resp = self.client.post("/api/auth/register", json={
@@ -82,7 +84,8 @@ class AuthTestCase(unittest.TestCase):
             "phone": "1234567890"
         })
         self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.json["user"]["role"], "customer") # Expected to be downgraded
+        user = db.session.query(User).filter_by(email="hacker@test.com").first()
+        self.assertEqual(user.role, "customer") # Expected to be downgraded
 
     # --- Login Tests ---
     def test_login_success(self):

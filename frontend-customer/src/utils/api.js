@@ -26,7 +26,8 @@ window.fetch = async (url, options) => {
     if (refreshToken) {
       if (!isRefreshing) {
         isRefreshing = true;
-        refreshPromise = originalFetch(`${API_BASE_URL}/auth/refresh`, {
+        const refreshUrl = API_BASE_URL.replace(/\/?$/, '/auth/refresh');
+        refreshPromise = originalFetch(refreshUrl, {
           method: "POST",
           headers: { "Authorization": `Bearer ${refreshToken}` }
         }).then(async refreshRes => {
@@ -98,6 +99,10 @@ let cachedLive = null;
 let lastCheckTime = 0;
 
 async function checkBackendAlive(bypassThrow = false) {
+  // Never mock remote APIs
+  if (API_BASE_URL.includes("https") || !API_BASE_URL.includes("localhost") && !API_BASE_URL.includes("127.0.0.1")) {
+    return true; 
+  }
   return true; // Forced Real Mode
 }
 
@@ -1119,12 +1124,18 @@ export const api = {
     const refreshToken = localStorage.getItem("refresh_token");
     const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
     try {
-      await originalFetch(`${API_BASE_URL}/auth/logout`, {
+      const res = await originalFetch(`${API_BASE_URL}/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
         body
       });
-    } catch (e) {}
+      if (!res.ok) {
+        console.warn("Backend logout returned non-OK status. Session might remain active on server.");
+      }
+    } catch (e) {
+      console.error("Logout failed:", e);
+      alert("Warning: Could not reach the server to securely log out. Local session cleared, but remote session may remain active.");
+    }
 
     localStorage.removeItem("token");
     localStorage.removeItem("refresh_token");

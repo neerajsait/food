@@ -9,7 +9,7 @@ from functools import wraps
 from decimal import Decimal
 from sqlalchemy import select, func, update, or_
 from sqlalchemy.orm import joinedload
-from flask import Flask, request, jsonify, Request
+from flask import Flask, request, jsonify, Request, send_from_directory
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity, create_refresh_token
@@ -191,6 +191,8 @@ def validate_public_url(url: str | None) -> bool:
     if not url:
         return True
     u = url.strip().lower()
+    if os.getenv("FLASK_ENV") == "production":
+        return u.startswith("https://")
     return u.startswith("http://") or u.startswith("https://")
 
 def sanitize_input(data, skip_keys=None):
@@ -308,8 +310,12 @@ class SanitizedRequest(Request):
 def create_app(config_override=None):
     app = Flask(__name__)
     app.request_class = SanitizedRequest
-    frontend_url = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    cors_origins = os.getenv("CORS_ORIGINS")
+    if cors_origins:
+        origins = cors_origins.split(",")
+    else:
+        origins = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
+    CORS(app, resources={r"/api/*": {"origins": origins}})
 
     # --- Config ---
     import logging
@@ -318,19 +324,16 @@ def create_app(config_override=None):
     
     @app.before_request
     def log_request_info():
-        # Mask sensitive query parameters like tokens
         safe_url = request.url
-        if "token=" in safe_url.lower():
-            import re
-            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        import re
+        safe_url = re.sub(r'((?:token|password|pin|code)=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
         app.logger.info(f"Incoming Request: {request.method} {safe_url}")
 
     @app.after_request
     def log_response_info(response):
         safe_url = request.url
-        if "token=" in safe_url.lower():
-            import re
-            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        import re
+        safe_url = re.sub(r'((?:token|password|pin|code)=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
         app.logger.info(f"Outgoing Response: {response.status} for {request.method} {safe_url}")
         
         # Prevent caching for all API responses
@@ -396,6 +399,9 @@ def create_app(config_override=None):
 
     if config_override:
         app.config.update(config_override)
+        
+    if app.config.get("TESTING") and os.getenv("FLASK_ENV") == "production":
+        raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
     bcrypt.init_app(app)
@@ -517,8 +523,8 @@ def create_app(config_override=None):
         if len(password) < 8 or not re.search(r'[A-Za-z]', password) or not re.search(r'[0-9]', password):
             return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain a mix of letters and numbers"}), 400
         if db.session.scalars(select(User).where(User.email == email)).first():
-            return jsonify({"error": "Conflict", "message": "Email already registered"}), 409
-
+            # Generic response to prevent email enumeration
+            return jsonify({"message": "If the email is valid, a registration confirmation will be sent."}), 201
         if role == "customer":
             user = Customer(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
         elif role == "outlet_owner":
@@ -537,7 +543,7 @@ def create_app(config_override=None):
         if getattr(user, 'role', '') == "customer":
             _send_verification_email(app, user)
 
-        return jsonify({"message": "Registered successfully", "user": user.to_dict()}), 201
+        return jsonify({"message": "If the email is valid, a registration confirmation will be sent."}), 201
 
     @app.route("/api/auth/login", methods=["POST"])
     @limiter.limit("5 per minute")
@@ -619,8 +625,19 @@ def create_app(config_override=None):
             "token_version": getattr(user, 'token_version', 0)
         }
         
+        # Revoke the old refresh token
+        jti = get_jwt()["jti"]
+        from redis_client import get_redis
+        redis_client = get_redis()
+        if redis_client:
+            redis_client.setex(jti, int(timedelta(days=7).total_seconds()), "revoked")
+        elif os.getenv("FLASK_ENV") == "production":
+            return jsonify({"error": "Service Unavailable", "message": "Redis required for secure logout"}), 503
+
         access_token = create_access_token(identity=identity, additional_claims=additional_claims)
-        return jsonify({"access_token": access_token}), 200
+        new_refresh_token = create_refresh_token(identity=identity, additional_claims=additional_claims)
+        
+        return jsonify({"access_token": access_token, "refresh_token": new_refresh_token}), 200
 
     @app.route("/api/auth/logout", methods=["POST"])
     @jwt_required()
@@ -708,7 +725,8 @@ FlavorFlow Team
                 logger.info(f"Password reset email sent to {email}")
             except Exception as e:
                 logger.error(f"Failed to send password reset email: {str(e)}")
-                print(f"\n[DEVELOPMENT FALLBACK] PASSWORD RESET TOKEN FOR {email}: {token}\n")
+                if os.getenv("FLASK_ENV") != "production":
+                    print(f"\n[DEVELOPMENT FALLBACK] PASSWORD RESET TOKEN FOR {email}: {token}\n")
 
         return jsonify({"message": "If the email is registered, you will receive a reset token shortly."}), 200
 
@@ -795,6 +813,8 @@ The FlavorFlow Team"""
             mail.send(msg)
         except Exception as e:
             app.logger.error(f"Failed to send email: {e}")
+            if os.getenv("FLASK_ENV") != "production":
+                print(f"\n[DEVELOPMENT FALLBACK] PASSWORD CHANGE OTP FOR {user.email}: {token}\n")
             
         return jsonify({"message": "OTP sent to your email"}), 200
 
@@ -1074,6 +1094,7 @@ The FlavorFlow Team"""
         return jsonify(item.to_dict()), 200
 
     @app.route("/api/foods/order", methods=["POST"])
+    @limiter.limit("5 per minute")
     @role_required("customer", "outlet_owner")
     def place_order():
         customer_id = int(get_jwt_identity())
@@ -1345,6 +1366,7 @@ The FlavorFlow Team"""
         return jsonify([t.to_dict() for t in tickets]), 200
 
     @app.route("/api/customer/tickets", methods=["POST"])
+    @limiter.limit("5 per minute")
     @role_required("customer", "outlet_owner")
     def create_ticket():
         customer_id = int(get_jwt_identity())
@@ -1378,7 +1400,7 @@ The FlavorFlow Team"""
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
-                attachment_url = f"/static/uploads/tickets/{unique_name}"
+                attachment_url = f"/api/tickets/attachments/{unique_name}"
 
         ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_url=attachment_url)
         db.session.add(ticket)
@@ -1416,7 +1438,7 @@ The FlavorFlow Team"""
                 unique_name = f"{int(datetime.now().timestamp())}_{filename}"
                 file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
                 file.save(file_path)
-                ticket.attachment_url = f"/static/uploads/tickets/{unique_name}"
+                ticket.attachment_url = f"/api/tickets/attachments/{unique_name}"
 
         db.session.commit()
         return jsonify({"message": "Support ticket updated successfully", "ticket": ticket.to_dict()}), 200
@@ -1435,6 +1457,11 @@ The FlavorFlow Team"""
         db.session.delete(ticket)
         db.session.commit()
         return jsonify({"message": "Support ticket deleted successfully"}), 200
+
+    @app.route("/api/tickets/attachments/<filename>", methods=["GET"])
+    @jwt_required()
+    def get_ticket_attachment(filename):
+        return send_from_directory(TICKETS_UPLOAD_FOLDER, filename, as_attachment=True)
 
     @app.route("/api/customer/loyalty", methods=["GET"])
     @role_required("customer", "outlet_owner")
@@ -1916,9 +1943,19 @@ The FlavorFlow Team"""
     @app.route("/api/admin/staff", methods=["GET"])
     @role_required("admin", "outlet_owner")
     def admin_get_staff():
-        staff = db.session.scalars(
-            select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen", "customer"])).order_by(User.created_at.desc())
-        ).all()
+        user_id = get_jwt_identity()
+        current_user = db.session.get(User, user_id)
+        
+        query = select(User).where(
+            User.role.in_(["staff", "outlet_owner", "kitchen", "customer"]),
+            User.deleted_at.is_(None)
+        ).order_by(User.created_at.desc())
+        
+        # Scope to outlet if not admin
+        if current_user.role != "admin" and hasattr(current_user, "outlet_id"):
+            query = query.where(User.outlet_id == current_user.outlet_id)
+
+        staff = db.session.scalars(query).all()
         return jsonify([u.to_dict() for u in staff]), 200
 
     @app.route("/api/admin/staff", methods=["POST"])
@@ -1926,7 +1963,11 @@ The FlavorFlow Team"""
     def admin_create_staff():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
-        password = data.get("password", "staff1234")
+        password = data.get("password")
+        if not password:
+            import secrets
+            import string
+            password = "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(16))
         outlet_id = data.get("outlet_id")
         first_name = data.get("first_name")
         last_name = data.get("last_name")
@@ -1937,6 +1978,12 @@ The FlavorFlow Team"""
 
         if role not in ("staff", "admin", "outlet_owner", "kitchen"):
             return jsonify({"error": "Bad Request", "message": "Invalid role"}), 400
+
+        claims = get_jwt()
+        if role == "admin" and not claims.get("is_superadmin"):
+            return jsonify({"error": "Forbidden", "message": "Only super-admins can create admin accounts"}), 403
+        if role == "outlet_owner" and claims.get("role") != "admin":
+            return jsonify({"error": "Forbidden", "message": "Only admins can create outlet owners"}), 403
 
         if not email:
             return jsonify({"error": "Bad Request", "message": "email required"}), 400
@@ -1992,7 +2039,7 @@ The FlavorFlow Team"""
         else:
             _send_admin_created_email(app, user)
 
-        return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
+        return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict()}), 201
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["PUT"])
     @department_required("HR")
@@ -2019,6 +2066,9 @@ The FlavorFlow Team"""
                 user.bump_token_version()
             user.is_active = new_active
         if "loyalty_points" in data and user.role == "customer":
+            claims = get_jwt()
+            if not claims.get("is_superadmin"):
+                return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
             user.loyalty_points = int(data["loyalty_points"])
         if "pin" in data:
             pin = (data["pin"] or "").strip()
@@ -2060,9 +2110,10 @@ The FlavorFlow Team"""
             if admin_count <= 1:
                 return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
 
-        db.session.delete(user)
+        user.deleted_at = datetime.now(timezone.utc)
+        user.bump_token_version() # invalidate existing sessions
         db.session.commit()
-        return jsonify({"message": "Staff deleted permanently"}), 200
+        return jsonify({"message": "Staff deleted successfully (soft delete)"}), 200
 
     # --- Coupons (Admin) ---
     @app.route("/api/admin/coupons", methods=["GET"])
@@ -2290,6 +2341,13 @@ The FlavorFlow Team"""
         if not req:
             return jsonify({"error": "Not Found"}), 404
             
+        # Scope authorization to the outlet of the stock request
+        user_id = get_jwt_identity()
+        current_user = db.session.get(User, user_id)
+        if current_user.role != "admin":
+            if not hasattr(current_user, "outlet_id") or current_user.outlet_id != req.outlet_id:
+                return jsonify({"error": "Forbidden", "message": "Cannot modify stock requests for a different outlet"}), 403
+
         req.status = new_status
         
         # Auto-update outlet stock only when dispatched/fulfilled
@@ -2653,7 +2711,9 @@ The FlavorFlow Team"""
     @department_required("HR")
     def admin_get_users():
         users = db.session.scalars(
-            select(User).order_by(User.created_at.desc())
+            select(User)
+            .where(User.deleted_at.is_(None))
+            .order_by(User.created_at.desc())
         ).all()
         return jsonify([u.to_dict() for u in users]), 200
 
@@ -2726,9 +2786,10 @@ The FlavorFlow Team"""
             if admin_count <= 1:
                 return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
 
-        db.session.delete(user)
+        user.deleted_at = datetime.now(timezone.utc)
+        user.bump_token_version() # invalidate existing sessions
         db.session.commit()
-        return jsonify({"message": "User deleted successfully"}), 200
+        return jsonify({"message": "User deleted successfully (soft delete)"}), 200
 
     # ============================================================
     # 4. STAFF / POS ROUTES
@@ -3920,7 +3981,7 @@ The FlavorFlow Team"""
     def track_banner_impression(id):
         banner = db.session.get(Banner, id)
         if banner:
-            banner.impressions = (banner.impressions or 0) + 1
+            db.session.execute(update(Banner).where(Banner.id == id).values(impressions=Banner.impressions + 1))
             db.session.commit()
         return jsonify({"success": True}), 200
 
@@ -3928,7 +3989,7 @@ The FlavorFlow Team"""
     def track_banner_click(id):
         banner = db.session.get(Banner, id)
         if banner:
-            banner.clicks = (banner.clicks or 0) + 1
+            db.session.execute(update(Banner).where(Banner.id == id).values(clicks=Banner.clicks + 1))
             db.session.commit()
         return jsonify({"success": True}), 200
 
@@ -3939,6 +4000,7 @@ The FlavorFlow Team"""
         return jsonify([b.to_dict() for b in banners]), 200
         
     @app.route("/api/admin/banners", methods=["POST"])
+    @limiter.limit("10 per minute")
     @role_required("admin")
     def admin_create_banner():
         data = sanitize_input(request.get_json(silent=True)) or {}
@@ -3975,6 +4037,7 @@ The FlavorFlow Team"""
         return jsonify(banner.to_dict()), 201
         
     @app.route("/api/admin/banners/<int:id>", methods=["PUT"])
+    @limiter.limit("10 per minute")
     @role_required("admin")
     def admin_update_banner(id):
         banner = db.session.get(Banner, id)

@@ -216,8 +216,9 @@ class BackendTestCase(unittest.TestCase):
         }
         resp = self.client.post("/api/auth/register", json=register_payload)
         self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.json["user"]["role"], "customer") 
-        self.assertIsNone(resp.json["user"]["outlet_id"])
+        user = db.session.query(User).filter_by(email="new_staff_try@brand.com").first()
+        self.assertEqual(user.role, "customer") 
+        self.assertIsNone(user.outlet_id)
 
         # 2. Customer attempts to access Admin staff creation route -> Should be Forbidden (403)
         admin_staff_payload = {

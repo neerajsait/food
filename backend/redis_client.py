@@ -46,6 +46,8 @@ def get_redis():
             return _redis_client
         except redis.ConnectionError as e:
             logger.error(f"Failed to connect to Redis at {redis_url}: {e}")
+            if os.getenv("FLASK_ENV") == "production":
+                raise RuntimeError(f"FATAL: Redis is required in production but unreachable: {e}")
             _redis_client = None
     
     return None
