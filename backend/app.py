@@ -8,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 from decimal import Decimal
 from sqlalchemy import select, func, update, or_
+import sqlalchemy.exc
+import redis
 from sqlalchemy.orm import joinedload
 from flask import Flask, request, jsonify, Request, send_from_directory
 from flask_bcrypt import Bcrypt
@@ -74,13 +76,13 @@ def check_if_token_revoked(jwt_header, jwt_payload):
                             return True
                     else:
                         return True
-                except Exception as db_err:
+                except sqlalchemy.exc.SQLAlchemyError as db_err:
                     import logging
                     logging.error(f"Lightweight DB check error: {db_err}")
                     return True
 
                 return False
-        except Exception as e:
+        except redis.RedisError as e:
             import logging
             logging.error(f"Redis error during blocklist check: {e}")
             if os.getenv("FLASK_ENV") == "production":
@@ -419,7 +421,7 @@ def create_app(config_override=None):
         raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
-    # TODO: Ensure real migration scripts exist and are applied for token_version and attachment_filename
+    # IMPORTANT: Ensure Alembic migrations exist for token_version and attachment_filename columns
     migrate = Migrate(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
@@ -491,6 +493,7 @@ def create_app(config_override=None):
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
         # TODO: Remove 'unsafe-inline' and 'unsafe-eval' once frontend no longer needs them
+        # TODO: Add report-uri or report-to directive in the future for CSP monitoring
         response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; connect-src 'self' https: wss:;"
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
@@ -500,6 +503,7 @@ def create_app(config_override=None):
 
     # ---------- Health ----------
     @app.route("/api/health")
+    @limiter.limit("120 per minute")
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}), 200
 
@@ -590,23 +594,38 @@ def create_app(config_override=None):
         if staff_code and pin:
             from redis_client import get_redis
             rc = get_redis()
+            
+            if not rc and os.getenv("FLASK_ENV") == "production":
+                return jsonify({"error": "Service Unavailable", "message": "Login temporarily unavailable"}), 503
+
+            ip_address = request.remote_addr
+            ip_lockout_key = f"staff_login_ip:{ip_address}"
             lockout_key = f"staff_login_attempts:{staff_code}"
             
+            attempts = 0
+            ip_attempts = 0
             if rc:
                 attempts = int(rc.get(lockout_key) or 0)
-                if attempts >= 5:
-                    return jsonify({"error": "Too Many Requests", "message": "Account temporarily locked due to excessive failed attempts"}), 429
+                ip_attempts = int(rc.get(ip_lockout_key) or 0)
+                if attempts >= 5 or ip_attempts >= 10:
+                    return jsonify({"error": "Too Many Requests", "message": "Account or IP temporarily locked due to excessive failed attempts"}), 429
 
             user = db.session.scalars(select(User).where(User.staff_code == staff_code)).first()
             if not user or getattr(user, 'pin_hash', None) is None or not user.check_pin(pin, bcrypt):
-                logger.warning(f"Failed staff login attempt for staff_code: {staff_code}")
+                logger.warning(f"Failed staff login attempt for staff_code: {staff_code} from IP {ip_address}")
                 if rc:
-                    attempts = int(rc.get(lockout_key) or 0) + 1
+                    attempts += 1
+                    ip_attempts += 1
                     rc.setex(lockout_key, 300, attempts)
+                    rc.setex(ip_lockout_key, 300, ip_attempts)
+                
+                import time
+                time.sleep(min(attempts, 4))
                 return jsonify({"error": "Unauthorized", "message": "Invalid staff code or PIN"}), 401
             
             if rc:
                 rc.setex(lockout_key, 1, 0) # reset lockout
+                rc.setex(ip_lockout_key, 1, 0)
         else:
             email = (data.get("email") or "").strip().lower()
             password = data.get("password", "")
@@ -751,7 +770,7 @@ def create_app(config_override=None):
 
             sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
             msg = Message(
-                subject="FlavorFlow Password Reset Code",
+                subject="FlavorFlow Password Reset Token",
                 sender=sender,
                 recipients=[email]
             )
@@ -1047,7 +1066,7 @@ The FlavorFlow Team"""
             db.session.delete(user)
             db.session.commit()
             return jsonify({"message": "Account deleted successfully"}), 200
-        except Exception as e:
+        except sqlalchemy.exc.SQLAlchemyError as e:
             db.session.rollback()
             import logging
             logging.error(f"Error deleting account {user_id}: {str(e)}")
@@ -1064,7 +1083,7 @@ The FlavorFlow Team"""
                 db.session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
                 db.session.commit()
                 return jsonify({"message": "Account deleted successfully (manual cascade)"}), 200
-            except Exception as e2:
+            except sqlalchemy.exc.SQLAlchemyError as e2:
                 db.session.rollback()
                 logging.error(f"Error during manual cascade delete: {str(e2)}")
                 return jsonify({"error": "Delete Failed", "message": "Could not delete account"}), 500
@@ -2519,6 +2538,7 @@ The FlavorFlow Team"""
         claims = get_jwt()
         role = claims.get("role")
         user_outlet_id = claims.get("outlet_id")
+        share_pct = 0.0
 
         days = int(request.args.get("days", 30))
         since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -2530,6 +2550,9 @@ The FlavorFlow Team"""
         if role == "outlet_owner" and user_outlet_id:
             b2c_conditions.append(Order.outlet_id == user_outlet_id)
             pos_conditions.append(Order.outlet_id == user_outlet_id)
+            outlet_obj = db.session.get(Outlet, user_outlet_id)
+            if outlet_obj and outlet_obj.revenue_share_percentage:
+                share_pct = float(outlet_obj.revenue_share_percentage)
 
         # B2C revenue
         b2c_rev = db.session.scalar(
@@ -2612,7 +2635,7 @@ The FlavorFlow Team"""
                 sales_map[date_str] = {"online": 0, "pos": 0}
             
             val = float(row.total_rev or 0)
-            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+            if role == "outlet_owner" and user_outlet_id:
                 val = val * (share_pct / 100.0)
 
             if row.order_type in sales_map[date_str]:
@@ -2651,7 +2674,7 @@ The FlavorFlow Team"""
         outlets_res = []
         for r in outlet_rev:
             val = float(r.rev)
-            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+            if role == "outlet_owner" and user_outlet_id:
                 val = val * (share_pct / 100.0)
             outlets_res.append({"name": r.name, "revenue": val})
 
@@ -2963,7 +2986,6 @@ The FlavorFlow Team"""
                 db.session.rollback()
                 return jsonify({"error": "Not Found", "message": f"Item {mid} not assigned to outlet"}), 404
             before = stock.current_stock
-            from sqlalchemy import update
             result = db.session.execute(
                 update(OutletStock).where(OutletStock.outlet_id == oid, OutletStock.menu_item_id == mid, OutletStock.current_stock >= qty)
                 .values(current_stock=OutletStock.current_stock - qty)
@@ -3765,7 +3787,7 @@ The FlavorFlow Team"""
             
             # Verify against token in Meta Dashboard (via env vars)
             if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
-                return jsonify({"challenge": challenge}), 200
+                return challenge, 200
             else:
                 return jsonify({"error": "Forbidden"}), 403
                 
@@ -3778,8 +3800,11 @@ The FlavorFlow Team"""
                 
             import hmac
             import hashlib
+            secret = os.getenv("WHATSAPP_APP_SECRET") or os.getenv("APP_SECRET")
+            if not secret:
+                return jsonify({"error": "Server Configuration Error", "message": "Missing Meta app secret"}), 500
             expected_signature = 'sha256=' + hmac.new(
-                os.getenv("APP_SECRET", app.config["SECRET_KEY"]).encode('utf-8'),
+                secret.encode('utf-8'),
                 request.get_data(),
                 hashlib.sha256
             ).hexdigest()
@@ -3788,7 +3813,6 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Forbidden", "message": "Invalid signature"}), 403
                 
             data = request.get_json(silent=True)
-            # TODO: Implement proper X-Hub-Signature-256 verification from Meta
             # For now, reject empty payloads more strictly
             if not data:
                 return jsonify({"error": "Bad Request", "message": "Empty payload"}), 400
@@ -3809,6 +3833,7 @@ The FlavorFlow Team"""
     @app.route("/api/coupons/active", methods=["GET"])
     @limiter.limit("30 per minute")
     def get_active_coupons():
+        # Intentionally public but rate-limited
         """Return all active public coupons. Optionally filter by scope query param."""
         from datetime import date
         today = date.today()
@@ -3844,6 +3869,7 @@ The FlavorFlow Team"""
     @app.route("/api/coupons/<string:code>", methods=["GET"])
     @limiter.limit("30 per minute")
     def get_coupon(code):
+        # Intentionally public but rate-limited
         """Validate and return coupon details."""
         coupon = db.session.scalars(
             select(Coupon).where(Coupon.code == code.upper().strip(), Coupon.is_active == True)
@@ -3859,6 +3885,7 @@ The FlavorFlow Team"""
     
     @app.route("/api/admin/wallet/credit", methods=["POST"])
     @role_required("admin")
+    @department_required("finance", "operations")
     def credit_wallet():
         data = sanitize_input(request.get_json(silent=True)) or {}
         user_id = data.get("user_id")
@@ -3887,6 +3914,7 @@ The FlavorFlow Team"""
 
     @app.route("/api/admin/wallet/debit", methods=["POST"])
     @role_required("admin")
+    @department_required("finance", "operations")
     def debit_wallet():
         data = sanitize_input(request.get_json(silent=True)) or {}
         user_id = data.get("user_id")
