@@ -428,7 +428,8 @@ def create_app(config_override=None):
 
     # --- Scheduler ---
     if not app.config.get("TESTING"):
-        _start_scheduler(app)
+        if os.getenv("RUN_SCHEDULER", "false").lower() == "true":
+            _start_scheduler(app)
     # ============================================================
     # ROUTES
     # ============================================================
@@ -693,11 +694,10 @@ def create_app(config_override=None):
         user = db.session.scalars(select(User).where(User.email == email)).first()
         if user:
             import secrets
-            import string
             if app.config.get("TESTING"):
-                token = '123456'
+                token = '1234567890abcdef1234567890abcdef'
             else:
-                token = ''.join(secrets.choice(string.digits) for _ in range(6))
+                token = secrets.token_hex(16)
             user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
@@ -783,11 +783,10 @@ FlavorFlow Team
                 return jsonify({"error": "Unauthorized", "message": "Incorrect old password"}), 401
                 
         import secrets
-        import string
         if app.config.get("TESTING"):
-            token = '123456'
+            token = '1234567890abcdef1234567890abcdef'
         else:
-            token = ''.join(secrets.choice(string.digits) for _ in range(6))
+            token = secrets.token_hex(16)
         user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
         user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         db.session.commit()
@@ -1454,6 +1453,15 @@ The FlavorFlow Team"""
         if ticket.status != "Open":
             return jsonify({"error": "Bad Request", "message": "Only open tickets can be deleted"}), 400
 
+        if ticket.attachment_url:
+            filename = ticket.attachment_url.split("/")[-1]
+            filepath = os.path.join(TICKETS_UPLOAD_FOLDER, filename)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except Exception as e:
+                    logger.error(f"Failed to delete ticket attachment {filepath}: {e}")
+
         db.session.delete(ticket)
         db.session.commit()
         return jsonify({"message": "Support ticket deleted successfully"}), 200
@@ -1461,6 +1469,19 @@ The FlavorFlow Team"""
     @app.route("/api/tickets/attachments/<filename>", methods=["GET"])
     @jwt_required()
     def get_ticket_attachment(filename):
+        # Look up ticket by attachment_url
+        attachment_url = f"/api/tickets/attachments/{filename}"
+        ticket = db.session.scalar(select(SupportTicket).where(SupportTicket.attachment_url == attachment_url))
+        if not ticket:
+            return jsonify({"error": "Not Found", "message": "Attachment not found"}), 404
+            
+        claims = get_jwt()
+        user_id = int(get_jwt_identity())
+        
+        # Must be owner or staff/admin
+        if ticket.customer_id != user_id and claims.get("role") not in ["admin", "staff"]:
+            return jsonify({"error": "Forbidden", "message": "You do not have access to this attachment"}), 403
+            
         return send_from_directory(TICKETS_UPLOAD_FOLDER, filename, as_attachment=True)
 
     @app.route("/api/customer/loyalty", methods=["GET"])
@@ -2728,6 +2749,12 @@ The FlavorFlow Team"""
             return jsonify({"error": "Forbidden", "message": "Cannot modify a super-admin."}), 403
 
         data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        if "loyalty_points" in data:
+            if not get_jwt().get("is_superadmin"):
+                return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            user.loyalty_points = int(data["loyalty_points"])
+
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
         if "role" in data:
@@ -3763,7 +3790,7 @@ The FlavorFlow Team"""
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
         
-        user = db.session.get(User, user_id)
+        user = db.session.get(User, user_id, with_for_update=True)
         if not user:
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
         
@@ -3785,7 +3812,7 @@ The FlavorFlow Team"""
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
         
-        user = db.session.get(User, user_id)
+        user = db.session.get(User, user_id, with_for_update=True)
         if not user:
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
         
@@ -4122,16 +4149,26 @@ The FlavorFlow Team"""
 
 def _seed_admin(app):
     with app.app_context():
+        if os.environ.get("FLASK_ENV") == "production":
+            logger.info("Skipping _seed_admin in production mode")
+            return
+
         # 1. Seed Admin
         admin = db.session.scalars(select(User).where(User.email == "admin")).first()
+        
+        seed_pwd = os.environ.get("ADMIN_SEED_PASSWORD")
+        if not seed_pwd:
+            import secrets
+            seed_pwd = secrets.token_urlsafe(12)
+            
         if not admin:
             admin = Admin(email="admin", first_name="System", last_name="Admin")
             admin.is_superadmin = True
-            admin.set_password("admin", bcrypt)
+            admin.set_password(seed_pwd, bcrypt)
             admin.is_first_login = True
             db.session.add(admin)
             db.session.commit()
-            logger.info("Admin account seeded: admin / admin (first login reset forced)")
+            logger.info(f"Admin account seeded: admin / {seed_pwd} (first login reset forced)")
         else:
             if admin.check_password("admin", bcrypt) and not admin.is_first_login:
                 admin.is_first_login = True

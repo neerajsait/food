@@ -139,7 +139,7 @@ class AuthTestCase(unittest.TestCase):
         # 2. Change Password
         resp = self.client.post("/api/auth/change-password", json={
             "old_password": "custpass",
-            "otp": "123456",
+            "otp": "1234567890abcdef1234567890abcdef",
             "new_password": "newcustpass123"
         }, headers=headers)
         self.assertEqual(resp.status_code, 200)
@@ -165,7 +165,7 @@ class AuthTestCase(unittest.TestCase):
         # Reset password
         resp2 = self.client.post("/api/auth/reset-password", json={
             "email": "customer@test.com",
-            "token": "123456",
+            "token": "1234567890abcdef1234567890abcdef",
             "new_password": "newcustpass123"
         })
         self.assertEqual(resp2.status_code, 200)

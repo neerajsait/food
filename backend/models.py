@@ -233,7 +233,7 @@ class MenuItem(db.Model):
     __tablename__ = 'menu_items'
 
     id = Column(Integer, primary_key=True)
-    code = Column(String(20), unique=True, nullable=True)  # auto-generated 4-digit product code
+    code = Column(String(20), unique=True, nullable=True)  # auto-generated 8-digit product code
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     price = Column(Numeric(10, 2), nullable=False)
@@ -274,15 +274,11 @@ class MenuItem(db.Model):
     @property
     def average_rating(self):
         v_reviews = self.visible_reviews
-        print(f"DEBUG: calculating average_rating for {self.name}, visible_reviews: {len(v_reviews)}")
         if v_reviews:
             avg = round(sum(r.rating for r in v_reviews) / len(v_reviews), 1)
-            print(f"DEBUG: calculated avg {avg}")
             return avg
         if self.admin_rating is not None:
-            print(f"DEBUG: returning admin_rating {self.admin_rating}")
             return float(self.admin_rating)
-        print("DEBUG: returning default 4.0")
         return 4.0
 
     @property
