@@ -1,0 +1,36 @@
+Viewed list_routes.py:1-12
+Listed directory src
+Viewed index.css:1-200
+
+Based on the main CSS file (`index.css`) for the Customer Frontend, here is the complete color palette (FlavorFlow Theme) that was used:
+
+### Core Brand Colors
+* **Brand Green (Primary):** `#43A047`
+* **Brand Pink:** `#E91E63`
+
+### Accent Colors
+* **Accent Terracotta:** `#8D4E27`
+* **Accent Yellow (Warning):** `#FBC02D`
+* **Accent Red (Error):** `#D32F2F`
+* **Info Blue:** `#1976D2`
+
+### Backgrounds & Surfaces
+* **Cream Background:** `#FCFBF7` (Used as the main canvas/page background)
+* **Surface White:** `#FFFFFF` (Used for cards, inputs, and elevated elements)
+
+### Text & Typography
+* **Main Text:** `#333333`
+* **Muted Text (Core):** `#666666`
+* **Lighter Muted Text:** `#999999`
+
+### Borders
+* **Subtle Borders:** `#E8E5DF`
+* **Default Borders:** `#D7D4CD`
+
+### Variations & Transparencies (Aliases)
+* **Brand Dark:** `#388E3C`
+* **Brand Light:** `#81C784`
+* **Brand Glow / Dim:** `rgba(67, 160, 71, 0.2)` / `rgba(67, 160, 71, 0.08)`
+* **Hover Background:** `rgba(0, 0, 0, 0.03)`
+
+The design system is built to feel very earthy, clean, and minimalist, relying heavily on the **Brand Green** for main actions, the **Cream** background for a soft look, and distinct **Terracotta/Pink** accents for highlights!

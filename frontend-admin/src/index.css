@@ -49,18 +49,18 @@
   --sidebar-w:     240px;
   --sidebar-w-sm:  64px;
 
-  /* ── Radius (More rounded and friendly) ── */
-  --r-sm: 8px;
-  --r-md: 16px;
-  --r-lg: 24px;
-  --r-xl: 32px;
+  /* ── Radius (Official, clean, slight rounding) ── */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
   --r-full: 9999px;
 
-  /* ── Shadows (Deeper, softer, premium) ── */
-  --shadow-card:   0 4px 20px rgba(0,0,0,0.03), 0 2px 8px rgba(0,0,0,0.02);
-  --shadow-glow:   0 8px 24px rgba(67, 160, 71, 0.15); /* uses brand color */
-  --shadow-modal:  0 30px 60px -10px rgba(0,0,0,0.12), 0 15px 25px -10px rgba(0,0,0,0.08);
-  --shadow-input-focus: 0 0 0 4px rgba(67, 160, 71, 0.15);
+  /* ── Shadows (Removed for flat design) ── */
+  --shadow-card:   none;
+  --shadow-glow:   none;
+  --shadow-modal:  none;
+  --shadow-input-focus: 0 0 0 2px rgba(67, 160, 71, 0.4); /* keeping focus ring but flat */
 
   /* ── Transitions (Smoother easing) ── */
   --ease: cubic-bezier(0.25, 1, 0.5, 1);
@@ -948,10 +948,12 @@ body {
    GRID LAYOUTS
    ============================================================ */
 
-.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; }
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
-.grid-auto { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.25rem; }
+/* ── Fluid Grids (Perfect for Mobile through TV) ── */
+.grid-2, .grid-3, .grid-4, .grid-auto { 
+  display: grid; 
+  grid-template-columns: repeat(auto-fit, minmax(clamp(260px, 30vw, 320px), 1fr)); 
+  gap: 1.5rem; 
+}
 
 /* ============================================================
    PRODUCT / MENU CARDS

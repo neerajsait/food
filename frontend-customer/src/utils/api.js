@@ -22,7 +22,7 @@ window.fetch = async (url, options) => {
   let res = await originalFetch(url, options);
   
   if (res.status === 401 && typeof url === 'string' && url.includes(API_BASE_URL) && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
-    const refreshToken = localStorage.getItem("refresh_token");
+    const refreshToken = sessionStorage.getItem("refresh_token");
     if (refreshToken) {
       if (!isRefreshing) {
         isRefreshing = true;
@@ -34,21 +34,21 @@ window.fetch = async (url, options) => {
           isRefreshing = false;
           if (refreshRes.ok) {
             const data = await refreshRes.json();
-            localStorage.setItem("token", data.access_token);
+            sessionStorage.setItem("token", data.access_token);
             if (data.refresh_token) {
-              localStorage.setItem("refresh_token", data.refresh_token);
+              sessionStorage.setItem("refresh_token", data.refresh_token);
             }
             return data.access_token;
           } else {
-            localStorage.removeItem("token");
-            localStorage.removeItem("refresh_token");
+            sessionStorage.removeItem("token");
+            sessionStorage.removeItem("refresh_token");
             window.location.href = "/login";
             throw new Error("Session expired");
           }
         }).catch(err => {
           isRefreshing = false;
-          localStorage.removeItem("token");
-          localStorage.removeItem("refresh_token");
+          sessionStorage.removeItem("token");
+          sessionStorage.removeItem("refresh_token");
           window.location.href = "/login";
           throw err;
         });
@@ -62,7 +62,7 @@ window.fetch = async (url, options) => {
         res = await originalFetch(url, newOptions);
       }
     } else {
-      localStorage.removeItem("token");
+      sessionStorage.removeItem("token");
       window.location.href = "/login";
     }
   }
@@ -72,7 +72,7 @@ window.fetch = async (url, options) => {
 
 // Helper to retrieve auth tokens
 function getAuthHeader() {
-  const token = localStorage.getItem("token");
+  const token = sessionStorage.getItem("token");
   return token ? { "Authorization": `Bearer ${token}` } : {};
 }
 
@@ -190,7 +190,7 @@ const INITIAL_MENU_ITEMS = [
 
   // --- Mixes & Instant ---
   { id: 28, name: "Instant Rasam Mix 250g", description: "Instant Rasam Mix â€” Bring the warmth of homemade rasam to your table instantly.", price: 140.00, original_price: 160.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
-  { id: 29, name: "Karram Charu Mix 250g", description: "Karam Charu Mix (Instant Rasam Powder) â€” spicy pepper rasam mix.", price: 165.00, original_price: 195.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
+  { id: 29, name: "Karram Charu Mix 250g", description: "Karam Charu Mix (Instant Rasam Powder) â€” spicy pepper rasam mix.", price: 165.00, original_price: 195.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, is_best_seller: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
   { id: 30, name: "Chinthapandu Pulihora Mix 250g", description: "Chinthapandu Pulihora Mix â€” tamarind rice spice blend for perfect pulihora.", price: 165.00, original_price: 185.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
   { id: 31, name: "Instant Gravy Mix 250g", description: "à°°à±†à°¸à±à°¤à°¾à°°à±†à°‚à°Ÿà± à°¸à±à°Ÿà±ˆà°²à± à°•à°°à±à°°à±€... â€” restaurant-style instant curry gravy mix.", price: 149.00, original_price: 199.00, category: "Mixes & Instant", business_type: "home_foods", is_active: true, image_url: "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=200&q=80" },
 
@@ -450,11 +450,11 @@ const mockApi = {
       }
       localStorage.setItem("mock_users", JSON.stringify(users));
       // Update local user cache
-      const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
+      const currentUser = JSON.parse(sessionStorage.getItem("user") || "{}");
       if (currentUser.id === parseInt(userId)) {
         currentUser.loyalty_points = customerUser.loyalty_points;
         currentUser.loyalty_history = customerUser.loyalty_history;
-        localStorage.setItem("user", JSON.stringify(currentUser));
+        sessionStorage.setItem("user", JSON.stringify(currentUser));
       }
     }
 
@@ -652,6 +652,10 @@ const mockApi = {
       existing.category = data.category || existing.category;
       existing.image_url = data.image_url || existing.image_url;
       if (data.code) existing.code = data.code.trim();
+      if (data.is_best_seller !== undefined) {
+        if (data.is_best_seller) menu.forEach(m => m.is_best_seller = false);
+        existing.is_best_seller = data.is_best_seller;
+      }
       existing.is_active = true;
       localStorage.setItem("mock_menu", JSON.stringify(menu));
       return { message: "Existing item reactivated", item: existing };
@@ -678,8 +682,12 @@ const mockApi = {
       image_url: data.image_url || null,
       is_active: true,
       average_rating: 0,
-      reviews_count: 0
+      reviews_count: 0,
+      is_best_seller: data.is_best_seller || false
     };
+    if (newItem.is_best_seller) {
+      menu.forEach(m => m.is_best_seller = false);
+    }
     menu.push(newItem);
     localStorage.setItem("mock_menu", JSON.stringify(menu));
     return { message: "Menu item added successfully", item: newItem };
@@ -872,8 +880,8 @@ const mockApi = {
       let users = JSON.parse(localStorage.getItem("mock_users") || "[]");
       users = users.filter(u => u.id !== parseInt(userId));
       localStorage.setItem("mock_users", JSON.stringify(users));
-      localStorage.removeItem("user");
-      localStorage.removeItem("token");
+      sessionStorage.removeItem("user");
+      sessionStorage.removeItem("token");
       return { message: "Account deleted successfully" };
     }
   },
@@ -1100,8 +1108,8 @@ export const api = {
       const emailOrCode = payload.email || payload.staff_code;
       const passOrPin = payload.password || payload.pin;
       const data = await mockApi.login(emailOrCode, passOrPin);
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("user", JSON.stringify(data.user));
+      sessionStorage.setItem("token", data.access_token);
+      sessionStorage.setItem("user", JSON.stringify(data.user));
       return data;
     }
 
@@ -1112,16 +1120,16 @@ export const api = {
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
-    localStorage.setItem("token", data.access_token);
+    sessionStorage.setItem("token", data.access_token);
     if (data.refresh_token) {
-      localStorage.setItem("refresh_token", data.refresh_token);
+      sessionStorage.setItem("refresh_token", data.refresh_token);
     }
-    localStorage.setItem("user", JSON.stringify(data.user));
+    sessionStorage.setItem("user", JSON.stringify(data.user));
     return data;
   },
 
   async logout() {
-    const refreshToken = localStorage.getItem("refresh_token");
+    const refreshToken = sessionStorage.getItem("refresh_token");
     const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
     try {
       const res = await originalFetch(`${API_BASE_URL}/auth/logout`, {
@@ -1137,14 +1145,14 @@ export const api = {
       alert("Warning: Could not reach the server to securely log out. Local session cleared, but remote session may remain active.");
     }
 
-    localStorage.removeItem("token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("refresh_token");
+    sessionStorage.removeItem("user");
     window.location.href = "/login";
   },
 
   getCurrentUser() {
-    const userStr = localStorage.getItem("user");
+    const userStr = sessionStorage.getItem("user");
     return userStr ? JSON.parse(userStr) : null;
   },
 
@@ -1157,7 +1165,7 @@ export const api = {
       if (!res.ok) return this.getCurrentUser();
       const data = await safeJson(res);
       if (data && data.id) {
-        localStorage.setItem("user", JSON.stringify(data));
+        sessionStorage.setItem("user", JSON.stringify(data));
         return data;
       }
       return this.getCurrentUser();
@@ -1171,7 +1179,7 @@ export const api = {
     if (!live) {
       return this.getCurrentUser();
     }
-    const token = localStorage.getItem("token");
+    const token = sessionStorage.getItem("token");
     if (!token) throw new Error("No token");
 
     const res = await fetch(`${API_BASE_URL}/auth/me`, {
@@ -1182,10 +1190,10 @@ export const api = {
     });
     const data = await safeJson(res);
     if (data.user) {
-      localStorage.setItem("user", JSON.stringify(data.user));
+      sessionStorage.setItem("user", JSON.stringify(data.user));
       return data.user;
     } else if (data.id) {
-      localStorage.setItem("user", JSON.stringify(data));
+      sessionStorage.setItem("user", JSON.stringify(data));
       return data;
     }
     return null;
@@ -1320,8 +1328,8 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to delete account");
     
-    localStorage.removeItem("user");
-    localStorage.removeItem("token");
+    sessionStorage.removeItem("user");
+    sessionStorage.removeItem("token");
     return data;
   },
 
@@ -1477,7 +1485,18 @@ export const api = {
 
   async adminUpdateMenuItem(itemId, data) {
     const live = await checkBackendAlive();
-    if (!live) return { success: true };
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const idx = menu.findIndex(m => m.id === parseInt(itemId));
+      if (idx !== -1) {
+        if (data.is_best_seller) {
+          menu.forEach(m => m.is_best_seller = false);
+        }
+        menu[idx] = { ...menu[idx], ...data };
+        localStorage.setItem("mock_menu", JSON.stringify(menu));
+      }
+      return { success: true, item: menu[idx] };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -1754,7 +1773,7 @@ export const api = {
       if (!user) throw new Error("Unauthorized");
       const result = await mockApi.changePassword(user.id, newPassword);
       user.is_first_login = false;
-      localStorage.setItem("user", JSON.stringify(user));
+      sessionStorage.setItem("user", JSON.stringify(user));
       return result;
     }
     const res = await fetch(`${API_BASE_URL}/auth/change-password`, {
@@ -1767,7 +1786,7 @@ export const api = {
 
     if (user) {
       user.is_first_login = false;
-      localStorage.setItem("user", JSON.stringify(user));
+      sessionStorage.setItem("user", JSON.stringify(user));
     }
     return result;
   },
@@ -1789,7 +1808,7 @@ export const api = {
         if (data.password) users[idx].password = data.password;
         localStorage.setItem("mock_users", JSON.stringify(users));
         const updatedUser = { ...currentUser, ...users[idx] };
-        localStorage.setItem("user", JSON.stringify(updatedUser));
+        sessionStorage.setItem("user", JSON.stringify(updatedUser));
         return { success: true, user: updatedUser };
       }
       return { success: true, user: currentUser };
@@ -1802,7 +1821,7 @@ export const api = {
     const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Profile update failed");
     if (result.user) {
-      localStorage.setItem("user", JSON.stringify(result.user));
+      sessionStorage.setItem("user", JSON.stringify(result.user));
     }
     return result;
   },

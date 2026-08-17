@@ -58,12 +58,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [couponError, setCouponError] = useState("");
   const [availableCoupons, setAvailableCoupons] = useState([]);
 
-  const displayOutlet = outlet || { name: "Mock Outlet", address: "123 Mock St", needs_restock: false, current_stock: 100 };
-  const displayMenu = menu && menu.length > 0 ? menu : [
-    { id: 1, name: "Margherita Pizza", price: 299, current_stock: 50, restock_limit: 10 },
-    { id: 2, name: "Pepperoni Pizza", price: 399, current_stock: 5, restock_limit: 10 },
-    { id: 3, name: "Garlic Bread", price: 149, current_stock: 20, restock_limit: 5 }
-  ];
+  const displayOutlet = outlet || { name: "Loading Outlet...", address: "", needs_restock: false, current_stock: 0 };
+  const displayMenu = menu || [];
 
   // Shift & POS history states
   const [salesHistory, setSalesHistory] = useState([]);
@@ -302,7 +298,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       const live = (await api.getMode()) === "Live Backend";
       if (live) {
         const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
-          headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
+          headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` }
         });
         if (res.ok) {
           const history = await res.json();
@@ -1186,7 +1182,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                     </div>
                   </div>
 
-                  <button onClick={() => setShowCheckoutModal(true)} disabled={getSaleTotalQty() === 0 || loading} className={`pos-checkout-btn `}>
+                  <button onClick={() => {
+                    if (!activeShift) {
+                      alert("pls start clock in");
+                      return;
+                    }
+                    setShowCheckoutModal(true);
+                  }} disabled={getSaleTotalQty() === 0 || loading} className={`pos-checkout-btn `}>
                     {loading ? "Processing…" : `Proceed to Checkout · ₹${finalTotalAmount.toFixed(0)}`}
                   </button>
                 </div>

@@ -1,0 +1,110 @@
+51: const [activeTab, setActiveTab] = useState("overview");
+244: // Load timesheets when active tab changes to timesheets
+254: if (activeTab === "timesheets") {
+265: }, [activeTab, timesheetsPage, timesheetsFilterOutlet, timesheetsStartDate, timesheetsEndDate, refreshTimesheetsTrigger]);
+269: if (activeTab === "pos") {
+276: }, [activeTab]);
+278: // Load coupons when active tab changes to coupons
+280: if (activeTab === "coupons") {
+287: }, [activeTab]);
+289: // Load reviews when active tab changes to reviews
+291: if (activeTab === "reviews") {
+303: }, [activeTab]);
+352: if (activeTab === "crm") {
+354: } else if (activeTab === "coupons") {
+356: } else if (activeTab === "tickets") {
+358: } else if (activeTab === "banners") {
+360: } else if (activeTab === "settings") {
+363: }, [activeTab]);
+828: const ALL_TABS = React.useMemo(() => [
+840: { id: "suppliers", label: "B2B Suppliers", icon: Truck, depts: ["SuperAdmin", "Operations"] },
+853: const TABS = React.useMemo(() => ALL_TABS.filter(t => t.depts.includes(userDept)), [ALL_TABS, userDept]);
+985: {TABS.map(t => (
+986: <button key={t.id} onClick={() => setActiveTab(t.id)} title={t.label} style={{
+990: background: activeTab === t.id ? "var(--brand-glow)" : "transparent",
+991: color: activeTab === t.id ? "var(--brand)" : "var(--text-secondary)",
+992: border: "none", borderRight: activeTab === t.id ? "3px solid var(--brand)" : "3px solid transparent",
+993: cursor: "pointer", fontSize: "0.9rem", fontWeight: activeTab === t.id ? 700 : 500,
+1074: {activeTab === "overview" && (
+1121: <button className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.78rem" }} onClick={() => setActiveTab("foods")}>
+1195: {activeTab === "catalog" && (
+1206: <div className="table-container" style={{ marginBottom: "2.5rem" }}>
+1207: <table className="custom-table">
+1236: </table>
+1242: {activeTab === "outlet_stations" && (
+1332: {(activeTab === "customer_orders" || activeTab === "outlet_orders") && (
+1335: {activeTab === "customer_orders" ? "B2C Customer Shipments" : "Outlet POS Orders"}
+1338: <div className="table-container">
+1339: <table className="custom-table">
+1351: {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).length === 0 && (
+1354: {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).map(o => (
+1426: </table>
+1433: {activeTab === "finance" && (
+1443: <div className="table-responsive">
+1444: <table className="custom-table">
+1467: </table>
+1473: {activeTab === "analytics" && (
+1584: {activeTab === "timesheets" && (
+1616: <table className="custom-table" style={{ width: "100%", textAlign: "left", borderCollapse: "collapse" }}>
+1660: </table>
+1690: {activeTab === "batches" && (
+1695: <div className="table-container">
+1696: <table className="custom-table">
+1718: </table>
+1747: {activeTab === "suppliers" && (
+1778: <div className="table-container">
+1779: <table className="custom-table">
+1792: </table>
+1823: {activeTab === "logs" && (
+1829: <div className="table-container">
+1830: <table className="custom-table">
+1858: </table>
+1864: {activeTab === "qr" && (
+1877: {activeTab === "users" && (
+1918: <div className="table-container">
+1919: <table className="custom-table">
+2044: </table>
+2051: {activeTab === "reviews" && (
+2066: <div className="table-container">
+2067: <table className="custom-table">
+2146: </table>
+2153: {activeTab === "coupons" && (
+2171: <div className="table-responsive">
+2172: <table className="custom-table">
+2244: </table>
+2252: {activeTab === "tickets" && (
+2257: <div className="table-container">
+2258: <table className="custom-table">
+2305: </table>
+2310: {activeTab === "whatsapp" && (
+2315: <div className="table-container">
+2316: <table className="custom-table">
+2353: </table>
+2361: {activeTab === "crm" && (
+2375: <table className="custom-table">
+2390: </table>
+2394: <table className="custom-table">
+2409: </table>
+2417: {activeTab === "banners" && (
+2433: <table className="custom-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 1rem" }}>
+2519: </table>
+2525: {activeTab === "settings" && (
+2570: <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>If enabled, Outlet Managers (Operations) can see the Revenue Share tab.</span>
+2647: {activeTab === "stock_requests" && (
+2657: <table className="custom-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 0.5rem" }}>
+2712: </table>
+2717: {activeTab === "forecast" && (
+2729: <div className="table-container">
+2730: <table className="custom-table">
+2765: </table>
+2776: ].includes(activeTab) && (
+2783: The <strong>{ALL_TABS.find(t => t.id === activeTab)?.label || activeTab}</strong> module is currently being built and will be available in a future update.
+2785: <button className="btn btn-primary" onClick={() => setActiveTab("overview")}>
+2791: {/* ══════════ UNKNOWN TAB FALLBACK ══════════ */}
+2792: {!["overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", "finance", "analytics", "timesheets", "batches", "suppliers", "logs", "qr", "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests"].includes(activeTab) && (
+2795: <EmptyState title="Page Under Construction" description={`The '${activeTab}' view is currently being built. Please check back later.`} icon={AlertTriangle} />
+2843: <option value="snack_supply">Snack Supply (B2B2C)</option>
+2917: <option value="snack_supply">Snack Supply (B2B2C)</option>
+3504: <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem", marginBottom: "1rem" }}>
+3531: </table>
+3537: printWindow.document.write('<style>body{font-family:sans-serif;} table{width:100%;border-collapse:collapse;} th,td{border-bottom:1px solid #ccc;padding:8px;text-align:left;} th:nth-child(2),td:nth-child(2){text-align:center;} th:last-child,td:last-child{text-align:right;} .text-right{text-align:right;}</style>');

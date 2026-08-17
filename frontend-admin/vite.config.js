@@ -6,7 +6,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    headers: {
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:5173; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';",
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff'
+    }
   },
   test: {
     environment: 'jsdom',

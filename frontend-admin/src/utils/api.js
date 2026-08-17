@@ -22,7 +22,7 @@ window.fetch = async (url, options) => {
   let res = await originalFetch(url, options);
   
   if (res.status === 401 && typeof url === 'string' && url.includes(API_BASE_URL) && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
-    const refreshToken = localStorage.getItem("refresh_token");
+    const refreshToken = sessionStorage.getItem("refresh_token");
     if (refreshToken) {
       if (!isRefreshing) {
         isRefreshing = true;
@@ -34,21 +34,21 @@ window.fetch = async (url, options) => {
           isRefreshing = false;
           if (refreshRes.ok) {
             const data = await refreshRes.json();
-            localStorage.setItem("token", data.access_token);
+            sessionStorage.setItem("token", data.access_token);
             if (data.refresh_token) {
-              localStorage.setItem("refresh_token", data.refresh_token);
+              sessionStorage.setItem("refresh_token", data.refresh_token);
             }
             return data.access_token;
           } else {
-            localStorage.removeItem("token");
-            localStorage.removeItem("refresh_token");
+            sessionStorage.removeItem("token");
+            sessionStorage.removeItem("refresh_token");
             window.location.href = "/login";
             throw new Error("Session expired");
           }
         }).catch(err => {
           isRefreshing = false;
-          localStorage.removeItem("token");
-          localStorage.removeItem("refresh_token");
+          sessionStorage.removeItem("token");
+          sessionStorage.removeItem("refresh_token");
           window.location.href = "/login";
           throw err;
         });
@@ -62,7 +62,7 @@ window.fetch = async (url, options) => {
         res = await originalFetch(url, newOptions);
       }
     } else {
-      localStorage.removeItem("token");
+      sessionStorage.removeItem("token");
       window.location.href = "/login";
     }
   }
@@ -71,7 +71,7 @@ window.fetch = async (url, options) => {
 };
 // Helper to retrieve auth tokens
 function getAuthHeader() {
-  const token = localStorage.getItem("token");
+  const token = sessionStorage.getItem("token");
   return token ? { "Authorization": `Bearer ${token}` } : {};
 }
 
@@ -626,6 +626,10 @@ const mockApi = {
       existing.category = data.category || existing.category;
       existing.image_url = data.image_url || existing.image_url;
       if (data.code) existing.code = data.code.trim();
+      if (data.is_best_seller !== undefined) {
+        if (data.is_best_seller) menu.forEach(m => m.is_best_seller = false);
+        existing.is_best_seller = data.is_best_seller;
+      }
       existing.is_active = true;
       localStorage.setItem("mock_menu", JSON.stringify(menu));
       return { message: "Existing item reactivated", item: existing };
@@ -652,8 +656,12 @@ const mockApi = {
       image_url: data.image_url || null,
       is_active: true,
       average_rating: 0,
-      reviews_count: 0
+      reviews_count: 0,
+      is_best_seller: data.is_best_seller || false
     };
+    if (newItem.is_best_seller) {
+      menu.forEach(m => m.is_best_seller = false);
+    }
     menu.push(newItem);
     localStorage.setItem("mock_menu", JSON.stringify(menu));
     return { message: "Menu item added successfully", item: newItem };
@@ -1038,8 +1046,8 @@ export const api = {
       const emailOrCode = payload.email || payload.staff_code;
       const passOrPin = payload.password || payload.pin;
       const data = await mockApi.login(emailOrCode, passOrPin);
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("user", JSON.stringify(data.user));
+      sessionStorage.setItem("token", data.access_token);
+      sessionStorage.setItem("user", JSON.stringify(data.user));
       return data;
     }
 
@@ -1050,17 +1058,17 @@ export const api = {
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
-    localStorage.setItem("token", data.access_token);
+    sessionStorage.setItem("token", data.access_token);
     if (data.refresh_token) {
-      localStorage.setItem("refresh_token", data.refresh_token);
+      sessionStorage.setItem("refresh_token", data.refresh_token);
     }
-    localStorage.setItem("user", JSON.stringify(data.user));
+    sessionStorage.setItem("user", JSON.stringify(data.user));
     return data;
   },
 
   async logout() {
     try {
-      const userStr = localStorage.getItem("user");
+      const userStr = sessionStorage.getItem("user");
       if (userStr) {
         const user = JSON.parse(userStr);
         if (['staff', 'kitchen', 'outlet_owner'].includes(user.role)) {
@@ -1069,7 +1077,7 @@ export const api = {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${localStorage.getItem("token")}`
+              "Authorization": `Bearer ${sessionStorage.getItem("token")}`
             },
             body: JSON.stringify({}) // Backend defaults actual_cash to expected_cash
           }).catch(() => {});
@@ -1078,7 +1086,7 @@ export const api = {
     } catch(e) {}
     
     try {
-      const refreshToken = localStorage.getItem("refresh_token");
+      const refreshToken = sessionStorage.getItem("refresh_token");
       const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
       const res = await originalFetch(`${API_BASE_URL}/auth/logout`, {
         method: "POST",
@@ -1093,14 +1101,14 @@ export const api = {
       alert("Warning: Could not reach the server to securely log out. Local session cleared, but remote session may remain active.");
     }
 
-    localStorage.removeItem("token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("refresh_token");
+    sessionStorage.removeItem("user");
     window.location.href = "/login";
   },
 
   getCurrentUser() {
-    const userStr = localStorage.getItem("user");
+    const userStr = sessionStorage.getItem("user");
     return userStr ? JSON.parse(userStr) : null;
   },
 
@@ -1123,7 +1131,7 @@ export const api = {
     if (!live) {
       return this.getCurrentUser();
     }
-    const token = localStorage.getItem("token");
+    const token = sessionStorage.getItem("token");
     if (!token) throw new Error("No token");
 
     const res = await fetch(`${API_BASE_URL}/auth/me`, {
@@ -1134,10 +1142,10 @@ export const api = {
     });
     const data = await safeJson(res);
     if (data.user) {
-      localStorage.setItem("user", JSON.stringify(data.user));
+      sessionStorage.setItem("user", JSON.stringify(data.user));
       return data.user;
     } else if (data.id) {
-      localStorage.setItem("user", JSON.stringify(data));
+      sessionStorage.setItem("user", JSON.stringify(data));
       return data;
     }
     return null;
@@ -1360,7 +1368,18 @@ export const api = {
 
   async adminUpdateMenuItem(itemId, data) {
     const live = await checkBackendAlive();
-    if (!live) return { success: true };
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const idx = menu.findIndex(m => m.id === parseInt(itemId));
+      if (idx !== -1) {
+        if (data.is_best_seller) {
+          menu.forEach(m => m.is_best_seller = false);
+        }
+        menu[idx] = { ...menu[idx], ...data };
+        localStorage.setItem("mock_menu", JSON.stringify(menu));
+      }
+      return { success: true, item: menu[idx] };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -1636,7 +1655,7 @@ export const api = {
       if (!user) throw new Error("Unauthorized");
       const result = await mockApi.changePassword(user.id, newPassword);
       user.is_first_login = false;
-      localStorage.setItem("user", JSON.stringify(user));
+      sessionStorage.setItem("user", JSON.stringify(user));
       return result;
     }
     const res = await fetch(`${API_BASE_URL}/auth/change-password`, {
@@ -1649,7 +1668,7 @@ export const api = {
 
     if (user) {
       user.is_first_login = false;
-      localStorage.setItem("user", JSON.stringify(user));
+      sessionStorage.setItem("user", JSON.stringify(user));
     }
     return result;
   },
@@ -1671,7 +1690,7 @@ export const api = {
         if (data.password) users[idx].password = data.password;
         localStorage.setItem("mock_users", JSON.stringify(users));
         const updatedUser = { ...currentUser, ...users[idx] };
-        localStorage.setItem("user", JSON.stringify(updatedUser));
+        sessionStorage.setItem("user", JSON.stringify(updatedUser));
         return { success: true, user: updatedUser };
       }
       return { success: true, user: currentUser };
@@ -1684,7 +1703,7 @@ export const api = {
     const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || result.error || "Profile update failed");
     if (result.user) {
-      localStorage.setItem("user", JSON.stringify(result.user));
+      sessionStorage.setItem("user", JSON.stringify(result.user));
     }
     return result;
   },
@@ -2388,6 +2407,56 @@ export const api = {
     if (!res.ok) throw new Error("Failed to load store settings");
     return safeJson(res);
   },
+  async adminGetMarketPurchases() {
+    const live = await checkBackendAlive();
+    if (!live) return [];
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load market purchases");
+    return safeJson(res);
+  },
+  
+  async adminAddMarketPurchase(payload) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to add market purchase");
+    return data;
+  },
+
+  async adminEditMarketPurchase(id, payload) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to update market purchase");
+    return data;
+  },
+
+  async adminDeleteMarketPurchase(id) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete market purchase");
+    return data;
+  },
+
   async adminGetStoreSettings() {
     const live = await checkBackendAlive();
     if (!live) return { is_store_online: "true" };
@@ -2420,6 +2489,13 @@ export const api = {
     if (!res.ok) throw new Error(data.message || "Failed to create ticket");
     return data;
   },
+  async getForecast() {
+    return _fetch('/api/admin/forecast');
+  },
+  async adminGetWhatsAppMessages() {
+    return _fetch('/api/admin/whatsapp');
+  },
+
   async adminGetTickets() {
     const res = await fetch(`${API_BASE_URL}/admin/tickets`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load tickets");

@@ -32,7 +32,7 @@ from models import (
     db, User, Admin, Customer, Staff, OutletOwner, Outlet, MenuItem, OutletStock,
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
     Order, OrderItem, Review, Coupon, StaffShift, Address, Favorite, AdminAuditLog,
-    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest
+    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest, MarketPurchase
 )
 import bleach
 
@@ -655,6 +655,7 @@ def create_app(config_override=None):
                     failed_count = int(rc.get(lock_key) or 0) + 1
                     rc.setex(lock_key, 300, failed_count)
                 import time
+                # Note: progressive delay + Redis lockout is used instead of CAPTCHA for now
                 time.sleep(min(failed_count, 3))
                 return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
             
@@ -1726,6 +1727,10 @@ The FlavorFlow Team"""
                 existing.code = data["code"].strip()
             elif not existing.code:
                 existing.code = _generate_unique_code(db.session)
+            if "is_best_seller" in data:
+                if data["is_best_seller"]:
+                    db.session.execute(db.update(MenuItem).values(is_best_seller=False))
+                existing.is_best_seller = bool(data["is_best_seller"])
             db.session.commit()
             return jsonify({"message": "Existing item reactivated", "item": existing.to_dict()}), 200
 
@@ -1737,6 +1742,12 @@ The FlavorFlow Team"""
         )
         if not item.code:
             item.code = _generate_unique_code(db.session)
+        if "is_best_seller" in data and data["is_best_seller"]:
+            db.session.execute(db.update(MenuItem).values(is_best_seller=False))
+            item.is_best_seller = True
+        elif "is_best_seller" in data:
+            item.is_best_seller = False
+        
         db.session.add(item)
         db.session.commit()
         admin_id = int(get_jwt_identity())
@@ -1763,6 +1774,11 @@ The FlavorFlow Team"""
             item.business_type = data["business_type"]
         if "is_active" in data:
             item.is_active = bool(data["is_active"])
+        if "is_best_seller" in data:
+            if data["is_best_seller"]:
+                db.session.execute(db.update(MenuItem).values(is_best_seller=False))
+            item.is_best_seller = bool(data["is_best_seller"])
+            
         db.session.commit()
         return jsonify({"message": "Updated", "item": item.to_dict()}), 200
 
@@ -2199,7 +2215,6 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
             old_points = user.loyalty_points or 0
             user.loyalty_points = int(data["loyalty_points"])
-            from models import db
             log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
         if "pin" in data:
             pin = (data["pin"] or "").strip()
@@ -2869,7 +2884,6 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
             old_points = user.loyalty_points or 0
             user.loyalty_points = int(data["loyalty_points"])
-            from models import db
             log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
 
         if "is_active" in data:
@@ -3099,6 +3113,7 @@ The FlavorFlow Team"""
         earn_rate, redeem_rate = get_loyalty_settings()
         
         # Loyalty points: redemption
+        points_redeemed = 0
         if customer and redeem_points > 0:
             max_redeem_allowed = int(total / Decimal(str(redeem_rate))) if redeem_rate > 0 else 0
             actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
@@ -3855,22 +3870,126 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Forbidden", "message": "Invalid signature"}), 403
                 
             data = request.get_json(silent=True)
-            # FEATURE INCOMPLETE: WhatsApp order parsing, DB order creation, and automated reply are not implemented yet
-            # TODO: Implement WhatsApp order parsing logic
-            # TODO: Check if user exists (via phone number), create order in DB
-            # TODO: Send automated reply via WhatsApp API (e.g. "Order received!")
-            
             if not data:
                 return jsonify({"error": "Bad Request", "message": "Empty payload"}), 400
             
-            if data:
-                # Placeholder logic to log the incoming payload
-                logger.info(f"Received WhatsApp Webhook payload: {json.dumps(data)}")
-                
-                # Acknowledge receipt of the webhook to Meta
-                return jsonify({"status": "EVENT_RECEIVED"}), 200
-            return jsonify({"error": "Bad Request"}), 400
+            if data.get("object") == "whatsapp_business_account":
+                for entry in data.get("entry", []):
+                    for change in entry.get("changes", []):
+                        value = change.get("value", {})
+                        if "messages" in value:
+                            for msg in value["messages"]:
+                                if msg.get("type") == "text":
+                                    phone_number = msg.get("from")
+                                    text = msg["text"]["body"]
+                                    
+                                    # Save inbound message
+                                    from models import WhatsAppMessage
+                                    inbound_msg = WhatsAppMessage(phone_number=phone_number, message_body=text, direction='inbound')
+                                    db.session.add(inbound_msg)
+                                    
+                                    # Parse logic
+                                    import re
+                                    matches = re.findall(r'(\d+)\s+([a-zA-Z\s]+)', text)
+                                    
+                                    reply_text = ""
+                                    if not matches:
+                                        reply_text = "Hi! To order, please say the quantity and item name, e.g., '1 burger and 2 pizzas'."
+                                    else:
+                                        active_items = db.session.execute(db.select(MenuItem).where(MenuItem.is_active == True)).scalars().all()
+                                        order_items = []
+                                        total_price = Decimal("0.00")
+                                        not_found = []
+                                        
+                                        for qty_str, item_name in matches:
+                                            qty = int(qty_str)
+                                            item_name_lower = item_name.strip().lower()
+                                            
+                                            # Match item
+                                            matched_item = None
+                                            # Exact or partial match
+                                            for i in active_items:
+                                                if i.name.lower() in item_name_lower or item_name_lower in i.name.lower():
+                                                    matched_item = i
+                                                    break
+                                                    
+                                            if matched_item:
+                                                order_items.append({"item": matched_item, "qty": qty})
+                                                total_price += matched_item.price * qty
+                                            else:
+                                                not_found.append(item_name.strip())
+                                                
+                                        if order_items and not not_found:
+                                            # Find or create user
+                                            customer = db.session.scalars(db.select(User).where(User.phone == phone_number)).first()
+                                            if not customer:
+                                                customer = Customer(phone=phone_number, first_name="WhatsApp", last_name="Customer")
+                                                db.session.add(customer)
+                                                db.session.flush()
+                                                
+                                            new_order = Order(
+                                                customer_id=customer.id,
+                                                order_type="online",
+                                                status="pending",
+                                                total_price=total_price,
+                                                payment_method="COD"
+                                            )
+                                            db.session.add(new_order)
+                                            db.session.flush()
+                                            
+                                            for oi in order_items:
+                                                new_order.items.append(OrderItem(menu_item_id=oi["item"].id, quantity=oi["qty"], price=oi["item"].price))
+                                                
+                                            items_str = ", ".join([f"{oi['qty']}x {oi['item'].name}" for oi in order_items])
+                                            reply_text = f"Order received! Your total is ₹{total_price} for {items_str}. We will prepare it right away."
+                                        elif order_items and not_found:
+                                            reply_text = f"We found some items, but couldn't find: {', '.join(not_found)}. Please try again with our exact menu names."
+                                        else:
+                                            reply_text = f"Sorry, we couldn't find any of those items on our menu. Please try again."
+                                            
+                                    outbound_msg = WhatsAppMessage(phone_number=phone_number, message_body=reply_text, direction='outbound')
+                                    db.session.add(outbound_msg)
+                                    db.session.commit()
+                                    
+                                    # Send reply
+                                    import requests
+                                    wa_token = os.getenv("WHATSAPP_API_TOKEN")
+                                    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+                                    
+                                    if wa_token and phone_number_id:
+                                        try:
+                                            url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+                                            headers = {
+                                                "Authorization": f"Bearer {wa_token}",
+                                                "Content-Type": "application/json"
+                                            }
+                                            payload = {
+                                                "messaging_product": "whatsapp",
+                                                "to": phone_number,
+                                                "text": {"body": reply_text}
+                                            }
+                                            resp = requests.post(url, headers=headers, json=payload, timeout=5)
+                                            if resp.status_code in (200, 201):
+                                                outbound_msg.status = 'sent'
+                                                db.session.commit()
+                                            else:
+                                                logger.error(f"WhatsApp API error: {resp.text}")
+                                        except Exception as e:
+                                            logger.error(f"Error sending WhatsApp reply: {e}")
+                                    else:
+                                        logger.info(f"MOCK WhatsApp Reply to {phone_number}: {reply_text}")
+                                        outbound_msg.status = 'sent'
+                                        db.session.commit()
+            
+            return jsonify({"status": "EVENT_RECEIVED"}), 200
 
+
+    @app.route("/api/admin/whatsapp", methods=["GET"])
+    @role_required("admin")
+    def admin_get_whatsapp_messages():
+        from models import WhatsAppMessage
+        messages = db.session.execute(db.select(WhatsAppMessage).order_by(WhatsAppMessage.created_at.desc())).scalars().all()
+        return jsonify([m.to_dict() for m in messages]), 200
 
     # Intentionally public (storefront) but rate-limited
     @app.route("/api/coupons/active", methods=["GET"])
@@ -4308,6 +4427,86 @@ The FlavorFlow Team"""
         log_admin_action(db.session, get_jwt_identity(), "update_store_settings", "StoreSetting", None, "Updated store settings")
         db.session.commit()
         return jsonify({"message": "Settings updated successfully"}), 200
+
+    # ---------------------------------------------------------------------------
+    # Market Purchases API
+    # ---------------------------------------------------------------------------
+    @app.route('/api/admin/market-purchases', methods=['GET'])
+    @role_required("admin")
+    def admin_get_market_purchases():
+        try:
+            purchases = MarketPurchase.query.order_by(MarketPurchase.purchased_at.desc()).all()
+            return jsonify([p.to_dict() for p in purchases]), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/admin/market-purchases', methods=['POST'])
+    @role_required("admin")
+    def admin_add_market_purchase():
+        data = request.json
+        try:
+            current_user = get_jwt_identity()
+            admin_id_val = current_user.get('id') if isinstance(current_user, dict) else current_user
+            
+            purchase = MarketPurchase(
+                ingredient_name=data.get('ingredient_name'),
+                cost=data.get('cost'),
+                quantity=data.get('quantity'),
+                unit=data.get('unit'),
+                category=data.get('category'),
+                expiration_date=data.get('expiration_date'),
+                receipt_url=data.get('receipt_url'),
+                notes=data.get('notes'),
+                admin_id=admin_id_val
+            )
+            db.session.add(purchase)
+            db.session.commit()
+            return jsonify(purchase.to_dict()), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+
+
+    @app.route('/api/admin/market-purchases/<int:id>', methods=['PUT'])
+    @jwt_required()
+    @role_required('admin')
+    def admin_edit_market_purchase(id):
+        data = request.json
+        try:
+            purchase = MarketPurchase.query.get(id)
+            if not purchase:
+                return jsonify({'error': 'Purchase not found'}), 404
+                
+            purchase.ingredient_name = data.get('ingredient_name', purchase.ingredient_name)
+            purchase.cost = data.get('cost', purchase.cost)
+            purchase.quantity = data.get('quantity', purchase.quantity)
+            purchase.unit = data.get('unit', purchase.unit)
+            purchase.category = data.get('category', purchase.category)
+            purchase.expiration_date = data.get('expiration_date', purchase.expiration_date)
+            purchase.receipt_url = data.get('receipt_url', purchase.receipt_url)
+            purchase.notes = data.get('notes', purchase.notes)
+            
+            db.session.commit()
+            return jsonify(purchase.to_dict()), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+
+    @app.route('/api/admin/market-purchases/<int:id>', methods=['DELETE'])
+    @jwt_required()
+    @role_required('admin')
+    def admin_delete_market_purchase(id):
+        try:
+            purchase = MarketPurchase.query.get(id)
+            if not purchase:
+                return jsonify({'error': 'Purchase not found'}), 404
+            
+            db.session.delete(purchase)
+            db.session.commit()
+            return jsonify({'message': 'Purchase deleted successfully'}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
 
     return app
 
@@ -4942,6 +5141,8 @@ def _generate_daily_report():
         return {"error": str(e)}
 
 
+
+
 def _start_scheduler(app):
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
@@ -4952,7 +5153,6 @@ def _start_scheduler(app):
     scheduler.add_job(run_report, "cron", hour=22, minute=0, id="daily_report")
     scheduler.start()
     logger.info("Scheduler started — daily report at 22:00 IST")
-
 
 if __name__ == "__main__":
     app = create_app()

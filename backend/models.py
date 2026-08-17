@@ -1215,3 +1215,51 @@ class StockRequest(db.Model):
             "type": self.type,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
+
+
+# ---------------------------------------------------------------------------
+# Market Purchases (B2B Admin Expenses)
+# ---------------------------------------------------------------------------
+class MarketPurchase(db.Model):
+    __tablename__ = 'market_purchases'
+    
+    id = Column(Integer, primary_key=True)
+    ingredient_name = Column(String(150), nullable=False)
+    category = Column(String(100), nullable=True)
+    quantity = Column(Numeric(10, 2), nullable=True)
+    unit = Column(String(20), nullable=True)
+    cost = Column(Numeric(10, 2), nullable=False)
+    expiration_date = Column(Date, nullable=True)
+    receipt_url = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    purchased_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    admin_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
+    admin = relationship('User', foreign_keys=[admin_id])
+
+    def __init__(self, ingredient_name, cost, quantity=None, unit=None, category=None, expiration_date=None, receipt_url=None, notes=None, admin_id=None):
+        self.ingredient_name = ingredient_name
+        self.cost = cost
+        self.quantity = quantity
+        self.unit = unit
+        self.category = category
+        self.expiration_date = expiration_date
+        self.receipt_url = receipt_url
+        self.notes = notes
+        self.admin_id = admin_id
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ingredient_name": self.ingredient_name,
+            "category": self.category,
+            "quantity": float(self.quantity) if self.quantity is not None else None,
+            "unit": self.unit,
+            "cost": float(self.cost),
+            "expiration_date": self.expiration_date.isoformat() if self.expiration_date else None,
+            "receipt_url": self.receipt_url,
+            "notes": self.notes,
+            "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
+            "admin_id": self.admin_id,
+            "admin_email": getattr(self.admin, 'email', None) if getattr(self, 'admin', None) else None
+        }

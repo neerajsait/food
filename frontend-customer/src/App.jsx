@@ -30,7 +30,7 @@ export default function App() {
       const mode = await api.getMode();
       setDbMode(mode);
       
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       if (token) {
         const user = await api.getMe();
         if (user) {
@@ -60,6 +60,28 @@ export default function App() {
     api.logout();
     setCurrentUser(null);
   };
+
+  // Idle timeout (1 hour)
+  useEffect(() => {
+    let timeoutId;
+    const resetTimer = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        if (currentUser) {
+          handleLogout();
+        }
+      }, 3600000); // 1 hour
+    };
+
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    events.forEach(event => document.addEventListener(event, resetTimer));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timeoutId);
+      events.forEach(event => document.removeEventListener(event, resetTimer));
+    };
+  }, [currentUser]);
 
   const handleForcePasswordChangeSubmit = async (e) => {
     e.preventDefault();
@@ -141,7 +163,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="animate-fade-in">
+      <div>
         {renderView()}
       </div>
 

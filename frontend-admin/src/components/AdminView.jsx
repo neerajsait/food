@@ -6,7 +6,8 @@ import {
   Globe, QrCode, TrendingUp, FileText, ShoppingBag,
   Truck, Clock, Trash2, Calendar, RefreshCw, BarChart3,
   X, LogOut, MessageSquare, Star, Tag, ArrowRight, User,
-  Megaphone, Image, Settings, Gift
+  Megaphone, Image, Settings, Gift, MessageCircle, Edit2,
+  BookOpen, ShoppingCart, Receipt
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
 import EmptyState from "./EmptyState";
@@ -57,8 +58,27 @@ export default function AdminView({ onLogout, dbMode }) {
   const [revenueShare, setRevenueShare] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
+  const [marketPurchases, setMarketPurchases] = useState([]);
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [mpName, setMpName] = useState("");
+  const [editPurchaseId, setEditPurchaseId] = useState(null);
+  const [mpQty, setMpQty] = useState("");
+  const [mpUnit, setMpUnit] = useState("kg");
+  const [mpCost, setMpCost] = useState("");
+  const [mpNotes, setMpNotes] = useState("");
+  const [mpCategory, setMpCategory] = useState("Vegetables");
+  const [mpExpirationDate, setMpExpirationDate] = useState("");
+  const [mpReceiptUrl, setMpReceiptUrl] = useState("");
   const [forecastData, setForecastData] = useState([]);
+
+  const handleReceiptUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setMpReceiptUrl(reader.result);
+      reader.readAsDataURL(file);
+    }
+  };
 
   // Product Reviews moderation states
   const [reviews, setReviews] = useState([]);
@@ -151,8 +171,10 @@ export default function AdminView({ onLogout, dbMode }) {
   const [menuSpiceLevel, setMenuSpiceLevel] = useState("medium");
   const [menuTag, setMenuTag] = useState("");
   const [menuAdminRating, setMenuAdminRating] = useState("");
+  const [menuIsBestSeller, setMenuIsBestSeller] = useState(false);
   const [showEditMenu, setShowEditMenu] = useState(false);
   const [editMenuId, setEditMenuId] = useState(null);
+  const [whatsappMessages, setWhatsappMessages] = useState([]);
 
   const [showAddOutlet, setShowAddOutlet] = useState(false);
   const [editingOutletId, setEditingOutletId] = useState(null);
@@ -204,14 +226,16 @@ export default function AdminView({ onLogout, dbMode }) {
       } catch (err) { }
       try { const a = await api.adminGetAnalytics(); setAnalytics(a); } catch (err) { }
       try { const l = await api.adminGetAuditLogs(1, 40); setAuditLogs(l.logs || []); } catch (err) { }
-      try { const s = await api.getSuppliers(); setSuppliers(s); } catch (err) { }
+      try { const mp = await api.adminGetMarketPurchases(); setMarketPurchases(mp); } catch (err) { }
       try { const f = await api.getForecast(); setForecastData(f); } catch (err) { }
       try { const t = await api.adminGetTickets(); setTickets(t); } catch (err) { }
       try { const r = await api.adminGetFinance(); setRevenueShare(r.revenue_share || []); } catch (err) { }
+      try { const reqs = await api.getStockRequests(); setStockRequests(reqs); } catch (err) { }
+      try { const wa = await api.adminGetWhatsAppMessages(); setWhatsappMessages(wa); } catch (err) { }
       try {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
-          const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` } });
+          const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` } });
           if (res.ok) setBatches(await res.json());
         } else {
           setBatches([
@@ -355,8 +379,6 @@ export default function AdminView({ onLogout, dbMode }) {
       api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
     } else if (activeTab === "settings") {
       api.adminGetStoreSettings().then(setStoreSettings).catch(() => { });
-    } else if (activeTab === "stock_requests") {
-      api.getStockRequests().then(setStockRequests).catch(console.error);
     }
   }, [activeTab]);
 
@@ -435,9 +457,9 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
-      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
+      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller });
       showToast("Product created successfully!", "success"); setShowAddMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating("");
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false);
       loadData();
     } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
@@ -462,6 +484,7 @@ export default function AdminView({ onLogout, dbMode }) {
     setMenuGlobalStock(item.global_stock !== null ? item.global_stock : "");
     setMenuTag(item.tag || "");
     setMenuAdminRating(item.admin_rating || "");
+    setMenuIsBestSeller(item.is_best_seller || false);
     setShowEditMenu(true);
   };
 
@@ -469,10 +492,10 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
-      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null });
+      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller });
       showToast("Product updated!", "success");
       setShowEditMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuTag(""); setMenuAdminRating("");
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false);
       loadData();
     } catch (err) { showToast("Failed to update: " + err.message, "error"); }
   };
@@ -513,7 +536,7 @@ export default function AdminView({ onLogout, dbMode }) {
       } else {
         const live = (await api.getMode()) === "Live Backend";
         if (live) {
-          const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify(data) });
+          const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` }, body: JSON.stringify(data) });
           const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
         } else {
           const list = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
@@ -639,7 +662,7 @@ export default function AdminView({ onLogout, dbMode }) {
         if (live) {
           const res = await fetch(`${API_BASE_URL}/admin/staff`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("token")}` },
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` },
             body: JSON.stringify(payload)
           });
           const d = await res.json();
@@ -813,18 +836,19 @@ export default function AdminView({ onLogout, dbMode }) {
   const b2cRevenue = analytics?.summary?.b2c_revenue || 0;
   const posRevenue = analytics?.summary?.pos_revenue || 0;
   const pendingOrders = orders.filter(o => o.status === "pending" || o.status === "processing").length;
+  const pendingRestocks = stockRequests.filter(r => r.status === "Pending").length;
   const lowStockOutlets = outlets.filter(o => (o.items || []).some(i => i.needs_restock)).length;
 
   const currentUser = React.useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("user") || "{}"); }
+    try { return JSON.parse(sessionStorage.getItem("user") || "{}"); }
     catch (e) { return {}; }
   }, []);
   const userDept = currentUser.role === "admin" ? (currentUser.admin_department || "SuperAdmin") : (currentUser.role || "staff");
 
   const ALL_TABS = React.useMemo(() => [
     { id: "overview", label: "Overview", icon: BarChart3, depts: ["SuperAdmin", "Operations", "HR", "Finance"] },
-    { id: "catalog", label: "Master Catalog", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
-    { id: "customer_orders", label: "Customer Orders", icon: ShoppingBag, depts: ["SuperAdmin", "Operations"] },
+    { id: "catalog", label: "Master Catalog", icon: BookOpen, depts: ["SuperAdmin", "Operations"] },
+    { id: "customer_orders", label: "Customer Orders", icon: ShoppingCart, depts: ["SuperAdmin", "Operations"] },
     { id: "outlet_orders", label: "Outlet Orders", icon: Store, depts: ["SuperAdmin", "Operations"] },
     { id: "outlet_stations", label: "Outlet Stations", icon: MapPin, depts: ["SuperAdmin", "Operations"] },
     { id: "finance", label: "Revenue Share", icon: FileText, depts: ["SuperAdmin", "Finance", ...(storeSettings.share_revenue_with_outlets === "true" ? ["Operations"] : [])] },
@@ -833,13 +857,14 @@ export default function AdminView({ onLogout, dbMode }) {
     { id: "users", label: "User Accounts", icon: Users, depts: ["SuperAdmin", "HR"] },
     { id: "timesheets", label: "Timesheets", icon: Clock, depts: ["SuperAdmin", "HR"] },
     { id: "batches", label: "Expiry & Spoilage", icon: Calendar, depts: ["SuperAdmin", "Operations"] },
-    { id: "suppliers", label: "B2B Suppliers", icon: Truck, depts: ["SuperAdmin", "Operations"] },
+    { id: "market_purchases", label: "Market Purchases", icon: Receipt, depts: ["SuperAdmin", "Operations"] },
     { id: "reviews", label: "Product Reviews", icon: MessageSquare, depts: ["SuperAdmin", "Operations"] },
     { id: "logs", label: "Audit Logs", icon: FileText, depts: ["SuperAdmin"] },
-    { id: "stock_requests", label: "Stock Requests", icon: Package, depts: ["SuperAdmin", "Operations"] },
+    { id: "stock_requests", label: "Restock Requests", icon: Package, depts: ["SuperAdmin", "Operations"] },
     { id: "qr", label: "QR Dispatch", icon: QrCode, depts: ["SuperAdmin", "Operations"] },
     { id: "coupons", label: "Discount Coupons", icon: Tag, depts: ["SuperAdmin", "Finance"] },
     { id: "tickets", label: "Support Tickets", icon: MessageSquare, depts: ["SuperAdmin", "Operations"] },
+    { id: "whatsapp", label: "WhatsApp Logs", icon: MessageCircle, depts: ["SuperAdmin", "Operations"] },
     { id: "crm", label: "CRM & Wallets", icon: Megaphone, depts: ["SuperAdmin", "Operations", "Finance"] },
     { id: "banners", label: "Banners", icon: Image, depts: ["SuperAdmin", "Operations"] },
     { id: "settings", label: "Store Settings", icon: Settings, depts: ["SuperAdmin"] },
@@ -899,7 +924,7 @@ export default function AdminView({ onLogout, dbMode }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("token")}`
+          "Authorization": `Bearer ${sessionStorage.getItem("token")}`
         },
         body: JSON.stringify({
           min_loyalty_points: bulkCouponMinPts,
@@ -995,8 +1020,9 @@ export default function AdminView({ onLogout, dbMode }) {
               {/* Badges */}
               {sidebarOpen && (t.id === "customer_orders" || t.id === "outlet_orders") && pendingOrders > 0 && <span style={{ background: "var(--brand)", color: "#fff", padding: "2px 6px", borderRadius: "99px", fontSize: "0.7rem", marginLeft: "auto" }}>{pendingOrders}</span>}
               {sidebarOpen && t.id === "outlet_stations" && lowStockOutlets > 0 && <span style={{ background: "var(--error)", color: "#fff", padding: "2px 6px", borderRadius: "99px", fontSize: "0.7rem", marginLeft: "auto" }}>{lowStockOutlets}</span>}
+              {sidebarOpen && t.id === "stock_requests" && pendingRestocks > 0 && <span style={{ background: "var(--brand)", color: "#fff", padding: "2px 6px", borderRadius: "99px", fontSize: "0.7rem", marginLeft: "auto" }}>{pendingRestocks}</span>}
               {!sidebarOpen && (
-                ((t.id === "customer_orders" || t.id === "outlet_orders") && pendingOrders > 0) || (t.id === "outlet_stations" && lowStockOutlets > 0)
+                ((t.id === "customer_orders" || t.id === "outlet_orders") && pendingOrders > 0) || (t.id === "outlet_stations" && lowStockOutlets > 0) || (t.id === "stock_requests" && pendingRestocks > 0)
               ) && <div style={{ width: 8, height: 8, background: (t.id === "outlet_stations") ? "var(--error)" : "var(--brand)", borderRadius: "50%", position: "absolute", right: "0.5rem", top: "0.5rem" }} />}
             </button>
           ))}
@@ -1737,49 +1763,84 @@ export default function AdminView({ onLogout, dbMode }) {
         </div>
       )}
 
-      {/* ══════════ SUPPLIERS ══════════ */}
-      {activeTab === "suppliers" && (
+      {/* ══════════ MARKET PURCHASES ══════════ */}
+      {activeTab === "market_purchases" && (
         <div className="animate-fade-in">
-          <div className="grid-responsive-15fr" style={{ gap: "1.5rem" }}>
+          {/* Monthly Summary */}
+          <div className="panel" style={{ padding: "1.5rem", marginBottom: "1.5rem", background: "linear-gradient(135deg, var(--bg-card), var(--bg-surface))", borderLeft: "4px solid var(--primary-color)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Draft Purchase Order</h3>
-              <div className="panel" style={{ padding: "1.5rem", marginBottom: "1.5rem" }}>
-                <form onSubmit={handleDraftPO} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                  <div className="form-group" style={{ margin: 0 }}>
-                    <label className="form-label">Supplier</label>
-                    <select className="form-select" value={selectedSupplierId} onChange={e => setSelectedSupplierId(e.target.value)}>
-                      {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.contact})</option>)}
-                    </select>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0.75rem" }}>
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label">Item</label>
-                      <input type="text" className="form-input" value={poItem} onChange={e => setPoItem(e.target.value)} required />
-                    </div>
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label">Qty</label>
-                      <input type="number" className="form-input" value={poQty} onChange={e => setPoQty(e.target.value)} required />
-                    </div>
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label">Unit</label>
-                      <input type="text" className="form-input" value={poUnit} onChange={e => setPoUnit(e.target.value)} required />
-                    </div>
-                  </div>
-                  <button type="submit" className="btn btn-primary"><Plus size={15} /> Create Draft PO</button>
-                </form>
+              <h3 style={{ fontSize: "0.85rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "0.5rem" }}>Total Monthly Spend</h3>
+              <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--text-primary)" }}>
+                {formatCurrency(marketPurchases.filter(p => new Date(p.purchased_at).getMonth() === new Date().getMonth() && new Date(p.purchased_at).getFullYear() === new Date().getFullYear()).reduce((sum, p) => sum + p.cost, 0))}
               </div>
-              {draftPOs.length > 0 && (
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
+              <button className="btn btn-primary" onClick={() => {
+                setEditPurchaseId(null);
+                setMpName(""); setMpQty(""); setMpUnit("kg"); setMpCost(""); setMpNotes(""); setMpCategory("Vegetables"); setMpExpirationDate(""); setMpReceiptUrl("");
+                setShowPurchaseModal(true);
+              }}><Plus size={16} /> Add Purchase</button>
+              <Receipt size={48} style={{ color: "var(--primary-color)", opacity: 0.2 }} />
+            </div>
+          </div>
+
+          <div>
+              <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Purchase History</h3>
+              {marketPurchases.length === 0 ? (
+                <EmptyState title="No Purchases" description="You have not logged any market purchases yet." icon={Receipt} />
+              ) : (
                 <div className="table-container">
                   <table className="custom-table">
-                    <thead><tr><th>Supplier</th><th>Item</th><th>Qty</th><th>Date</th><th>Status</th></tr></thead>
+                    <thead><tr><th>Date</th><th>Ingredient & Category</th><th>Qty</th><th>Cost</th><th>Details</th></tr></thead>
                     <tbody>
-                      {draftPOs.map(po => (
-                        <tr key={po.id}>
-                          <td><strong>{po.supplier_name}</strong></td>
-                          <td>{po.item}</td>
-                          <td>{po.quantity} {po.unit}</td>
-                          <td style={{ color: "var(--text-secondary)" }}>{po.date}</td>
-                          <td><span className="badge-status status-pending">Draft</span></td>
+                      {marketPurchases.map(mp => (
+                        <tr key={mp.id}>
+                          <td style={{ color: "var(--text-secondary)", fontSize: "0.8rem" }}>{new Date(mp.purchased_at).toLocaleString()}</td>
+                          <td>
+                            <strong>{mp.ingredient_name}</strong>
+                            <div style={{ fontSize: "0.75rem", color: "var(--primary-color)", fontWeight: 600 }}>{mp.category || "Uncategorized"}</div>
+                          </td>
+                          <td>{mp.quantity ? `${mp.quantity} ${mp.unit}` : "-"}</td>
+                          <td style={{ fontWeight: 600 }}>{formatCurrency(mp.cost)}</td>
+                          <td style={{ fontSize: "0.8rem", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                            <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
+                              <button className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.7rem", display: "flex", alignItems: "center", gap: "0.2rem" }} onClick={() => {
+                                setEditPurchaseId(mp.id);
+                                setMpName(mp.ingredient_name);
+                                setMpQty(mp.quantity || "");
+                                setMpUnit(mp.unit || "kg");
+                                setMpCost(mp.cost);
+                                setMpCategory(mp.category || "Vegetables");
+                                setMpExpirationDate(mp.expiration_date || "");
+                                setMpReceiptUrl(mp.receipt_url || "");
+                                setMpNotes(mp.notes || "");
+                                setShowPurchaseModal(true);
+                              }}>
+                                <Edit2 size={12} /> Edit
+                              </button>
+                              <button className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.7rem", color: "var(--danger-color)", borderColor: "var(--danger-color)", display: "flex", alignItems: "center", gap: "0.2rem" }} onClick={async () => {
+                                if (window.confirm("Are you sure you want to delete this purchase?")) {
+                                  try {
+                                    await api.adminDeleteMarketPurchase(mp.id);
+                                    showToast("Purchase deleted", "success");
+                                    loadData(false);
+                                  } catch (err) {
+                                    showToast("Delete failed: " + err.message, "error");
+                                  }
+                                }
+                              }}>
+                                <Trash2 size={12} /> Delete
+                              </button>
+                            </div>
+                            {mp.expiration_date && <div style={{ color: "var(--warning-color)", fontWeight: 600 }}>Exp: {mp.expiration_date}</div>}
+                            {mp.receipt_url && (
+                              <button className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.7rem", alignSelf: "flex-start" }} onClick={() => {
+                                const w = window.open("");
+                                w.document.write(`<img src="${mp.receipt_url}" style="max-width: 100%; height: auto;" />`);
+                              }}>View Receipt</button>
+                            )}
+                            {mp.notes && <div style={{ color: "var(--text-muted)", marginTop: "4px" }}>{mp.notes}</div>}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1787,29 +1848,6 @@ export default function AdminView({ onLogout, dbMode }) {
                 </div>
               )}
             </div>
-            <div>
-              <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", marginBottom: "1rem" }}>Supplier Directory</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-                {suppliers.length === 0 ? (
-                  <EmptyState title="No Suppliers" description="You have not added any suppliers yet." icon={Truck} />
-                ) : (
-                  suppliers.map(s => (
-                    <div key={s.id} className="card" style={{ padding: "1.1rem" }}>
-                      <div style={{ fontWeight: 800, fontSize: "0.9rem", marginBottom: "0.25rem" }}>{s.name}</div>
-                      <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "0.6rem" }}>
-                        Contact: <strong>{s.contact}</strong> · {s.phone}
-                      </div>
-                      <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
-                        {s.items.map(item => (
-                          <span key={item} className="chip" style={{ fontSize: "0.68rem", padding: "0.2rem 0.6rem" }}>{item}</span>
-                        ))}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1853,6 +1891,85 @@ export default function AdminView({ onLogout, dbMode }) {
           </div>
         </div>
       )}
+
+      {/* ── Market Purchase Modal ── */}
+      <Modal open={showPurchaseModal} onClose={() => setShowPurchaseModal(false)} title={editPurchaseId ? "Edit Purchase" : "Log Market Purchase"} width={600}>
+        <div style={{ padding: "1.5rem" }}>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const payload = { ingredient_name: mpName, quantity: mpQty ? parseFloat(mpQty) : null, unit: mpUnit, cost: parseFloat(mpCost), category: mpCategory, expiration_date: mpExpirationDate || null, receipt_url: mpReceiptUrl || null, notes: mpNotes };
+              if (editPurchaseId) {
+                await api.adminEditMarketPurchase(editPurchaseId, payload);
+                showToast("Market purchase updated!", "success");
+              } else {
+                await api.adminAddMarketPurchase(payload);
+                showToast("Market purchase saved!", "success");
+              }
+              setMpName(""); setMpQty(""); setMpUnit("kg"); setMpCost(""); setMpNotes(""); setMpCategory("Vegetables"); setMpExpirationDate(""); setMpReceiptUrl(""); setEditPurchaseId(null);
+              setShowPurchaseModal(false);
+              loadData(false);
+            } catch (err) { showToast(`Failed to ${editPurchaseId ? 'update' : 'save'}: ` + err.message, "error"); }
+          }} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Ingredient Name</label>
+              <input type="text" className="form-input" value={mpName} onChange={e => setMpName(e.target.value)} required placeholder="e.g. Onions, Tomatoes" />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Quantity</label>
+                <input type="number" step="0.01" className="form-input" value={mpQty} onChange={e => setMpQty(e.target.value)} placeholder="e.g. 5" />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Unit</label>
+                <select className="form-select" value={mpUnit} onChange={e => setMpUnit(e.target.value)}>
+                  <option value="kg">kg</option>
+                  <option value="g">grams</option>
+                  <option value="L">Liters</option>
+                  <option value="ml">ml</option>
+                  <option value="pcs">pieces</option>
+                  <option value="box">boxes</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Category</label>
+                <select className="form-select" value={mpCategory} onChange={e => setMpCategory(e.target.value)}>
+                  <option value="Vegetables">Vegetables</option>
+                  <option value="Dairy">Dairy</option>
+                  <option value="Meat">Meat</option>
+                  <option value="Spices">Spices</option>
+                  <option value="Packaging">Packaging</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Expiration / Best Before</label>
+                <input type="date" className="form-input" value={mpExpirationDate} onChange={e => setMpExpirationDate(e.target.value)} />
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Total Cost (₹)</label>
+                <input type="number" step="0.01" className="form-input" value={mpCost} onChange={e => setMpCost(e.target.value)} required placeholder="e.g. 250" />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Receipt Image</label>
+                <input type="file" className="form-input" accept="image/*" onChange={handleReceiptUpload} style={{ padding: "0.4rem" }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Notes</label>
+              <input type="text" className="form-input" value={mpNotes} onChange={e => setMpNotes(e.target.value)} placeholder="Optional details..." />
+            </div>
+            <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
+              <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Plus size={15} /> {editPurchaseId ? "Update Purchase" : "Save Purchase"}</button>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowPurchaseModal(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </Modal>
 
       {/* ══════════ QR DISPATCH ══════════ */}
       {activeTab === "qr" && (
@@ -2300,6 +2417,55 @@ export default function AdminView({ onLogout, dbMode }) {
           </div>
         </div>
       )}
+      {/* ══════════ WHATSAPP LOGS ══════════ */}
+      {activeTab === "whatsapp" && (
+        <div className="animate-fade-in">
+          <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1.5rem" }}>
+            WhatsApp Business Logs
+          </h3>
+          <div className="table-container">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Phone Number</th>
+                  <th>Direction</th>
+                  <th>Message</th>
+                  <th>Status</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {whatsappMessages.length === 0 ? (
+                  <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No messages found.</td></tr>
+                ) : (
+                  whatsappMessages.map(msg => (
+                    <tr key={msg.id}>
+                      <td style={{ fontWeight: 600 }}>{msg.phone_number}</td>
+                      <td>
+                        <span className={`badge-status status-${msg.direction === 'inbound' ? 'pending' : 'delivered'}`} style={{ textTransform: "capitalize" }}>
+                          {msg.direction}
+                        </span>
+                      </td>
+                      <td style={{ maxWidth: "300px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {msg.message_body}
+                      </td>
+                      <td>
+                        <span className="badge-status status-delivered" style={{ textTransform: "capitalize", opacity: msg.status === 'failed' ? 0.6 : 1 }}>
+                          {msg.status}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                        {new Date(msg.created_at).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
 
 
       {/* ══════════ CRM & WALLETS ══════════ */}
@@ -2630,7 +2796,7 @@ export default function AdminView({ onLogout, dbMode }) {
                     {req.status === "Pending" ? (
                       <button className="btn btn-primary" style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }} onClick={async () => {
                         try {
-                          await api.fulfillStockRequest(req.id);
+                          await api.updateStockRequestStatus(req.id, "Fulfilled");
                           setToast({ message: `Request #${req.id} fulfilled`, type: "success" });
                           const updated = await api.getStockRequests();
                           setStockRequests(updated);
@@ -2660,36 +2826,54 @@ export default function AdminView({ onLogout, dbMode }) {
 
       {/* ══════════ DEMAND FORECAST ══════════ */}
       {activeTab === "forecast" && (
-        <div className="card fade-in" style={{ padding: "2rem" }}>
+        <div className="animate-fade-in">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-            <h2 style={{ margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">AI Demand Forecast (Next 7 Days) ℹ️</h2>
+            <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">
+              Demand & Stockout Forecast
+            </h3>
             <span style={{ fontSize: "0.85rem", background: "rgba(139,92,246,0.12)", color: "#8b5cf6", padding: "6px 12px", borderRadius: "12px", fontWeight: 700 }}>Powered by AI</span>
           </div>
-          <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", marginBottom: "2rem" }}>Predicted order volume based on historical data, weather patterns, and upcoming holidays.</p>
-          
-          <div style={{ width: '100%', height: 350, marginTop: "1rem" }}>
-            <ResponsiveContainer>
-              <BarChart data={forecastData?.length > 0 ? forecastData : [
-                { day: "Mon", val: 45 },
-                { day: "Tue", val: 52 },
-                { day: "Wed", val: 80 },
-                { day: "Thu", val: 65 },
-                { day: "Fri", val: 95 },
-                { day: "Sat", val: 110 },
-                { day: "Sun", val: 85 }
-              ]}>
-                <XAxis dataKey="day" axisLine={false} tickLine={false} />
-                <YAxis hide />
-                <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: "8px", background: "var(--bg-card)" }} />
-                <Bar dataKey="val" fill="var(--brand)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          
-          <div style={{ display: "flex", gap: "1.5rem", marginTop: "2rem", fontSize: "0.85rem", justifyContent: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--brand)" }} /> Normal Volume</div>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--warning)" }} /> High Demand</div>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><div style={{ width: 12, height: 12, borderRadius: "2px", background: "var(--error)" }} /> Peak/Surge</div>
+          <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", marginBottom: "2rem" }}>
+            Predicted inventory depletion based on sales velocity over the past 30 days.
+          </p>
+
+          <div className="table-container">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Urgency</th>
+                  <th>Outlet</th>
+                  <th>Menu Item</th>
+                  <th>Current Stock</th>
+                  <th>30d Sales</th>
+                  <th>Daily Burn Rate</th>
+                  <th>Est. Days Left</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(!forecastData || forecastData.length === 0) ? (
+                  <tr><td colSpan={7} style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No forecast data available (check if items have sales in the past 30 days).</td></tr>
+                ) : (
+                  forecastData.map((f, i) => (
+                    <tr key={i}>
+                      <td>
+                        <span className={`badge-status status-${f.restock_urgency === 'HIGH' ? 'cancelled' : f.restock_urgency === 'MEDIUM' ? 'pending' : 'delivered'}`}>
+                          {f.restock_urgency}
+                        </span>
+                      </td>
+                      <td style={{ fontWeight: 600 }}>{f.outlet_name || `Outlet #${f.outlet_id}`}</td>
+                      <td>{f.menu_item_name || `Item #${f.menu_item_id}`}</td>
+                      <td>{f.current_stock}</td>
+                      <td>{f.sold_30d}</td>
+                      <td>{f.daily_rate} / day</td>
+                      <td style={{ fontWeight: 700, color: f.days_to_stockout < 3 ? "var(--error)" : "inherit" }}>
+                        {f.days_to_stockout !== null ? `${f.days_to_stockout} days` : "N/A"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -2697,7 +2881,7 @@ export default function AdminView({ onLogout, dbMode }) {
       {/* ══════════ FALLBACK / UNDER CONSTRUCTION ══════════ */}
       {![
         "overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", 
-        "finance", "analytics", "timesheets", "batches", "suppliers", "logs", "qr", 
+        "finance", "analytics", "timesheets", "batches", "market_purchases", "suppliers", "logs", "qr", 
         "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests",
         "forecast"
       ].includes(activeTab) && (
@@ -2716,7 +2900,7 @@ export default function AdminView({ onLogout, dbMode }) {
       )}
 
       {/* ══════════ UNKNOWN TAB FALLBACK ══════════ */}
-      {!["overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", "finance", "analytics", "timesheets", "batches", "suppliers", "logs", "qr", "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests"].includes(activeTab) && (
+      {!["overview", "catalog", "outlet_stations", "customer_orders", "outlet_orders", "finance", "analytics", "timesheets", "batches", "market_purchases", "logs", "qr", "users", "reviews", "coupons", "tickets", "crm", "banners", "settings", "stock_requests"].includes(activeTab) && (
         <div style={{ padding: "3rem", textAlign: "center", display: "flex", justifyContent: "center" }}>
           <div style={{ maxWidth: 500, width: "100%" }}>
             <EmptyState title="Page Under Construction" description={`The '${activeTab}' view is currently being built. Please check back later.`} icon={AlertTriangle} />
@@ -2789,6 +2973,10 @@ export default function AdminView({ onLogout, dbMode }) {
               <label className="form-label">Manual Rating Override</label>
               <input type="number" step="0.1" max="5" min="1" className="form-input" placeholder="e.g. 4.5" value={menuAdminRating} onChange={e => setMenuAdminRating(e.target.value)} />
             </div>
+            <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <input type="checkbox" id="addBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+              <label htmlFor="addBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
+            </div>
           </div>
           <div style={{ display: "flex", gap: "0.75rem" }}>
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}><Plus size={15} /> Create Product</button>
@@ -2858,6 +3046,10 @@ export default function AdminView({ onLogout, dbMode }) {
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Manual Rating Override</label>
               <input type="number" step="0.1" max="5" min="1" className="form-input" placeholder="e.g. 4.5" value={menuAdminRating} onChange={e => setMenuAdminRating(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <input type="checkbox" id="editBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+              <label htmlFor="editBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
             </div>
           </div>
           <div style={{ display: "flex", gap: "0.75rem" }}>

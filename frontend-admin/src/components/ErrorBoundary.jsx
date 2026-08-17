@@ -21,8 +21,8 @@ export default class ErrorBoundary extends React.Component {
   };
 
   handleGoHome = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("user");
     window.location.href = "/";
   };
 
