@@ -569,11 +569,12 @@ def create_app(config_override=None):
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         from sqlalchemy import event
 
-        @event.listens_for(db.engine, "connect")
-        def _sqlite_fk_pragma_on_connect(dbapi_connection, connection_record):
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
+        with app.app_context():
+            @event.listens_for(db.engine, "connect")
+            def _sqlite_fk_pragma_on_connect(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
 
     # IMPORTANT: Real Alembic migration scripts must exist and be applied for:
     # - users.token_version
@@ -1504,6 +1505,16 @@ The FlavorFlow Team"""
     @limiter.limit("5 per minute")
     @jwt_required(optional=True)
     def place_order():
+        # TRANSACTION BOUNDARY: everything below runs in ONE transaction that
+        # commits only at the end (see db.session.commit() near the return).
+        # Concurrency controls:
+        #   - Customer row locked with SELECT ... FOR UPDATE up front.
+        #   - Stock decrements use guarded atomic UPDATE ... WHERE stock >= qty
+        #     (409 on rowcount != 1) — no oversell possible.
+        #   - Coupon row locked FOR UPDATE; usage increment is guarded by
+        #     usage_count < usage_limit (400 on rowcount != 1).
+        #   - Loyalty redemption is a guarded atomic decrement (409 on race).
+        # Any failure path rolls back, so no partial order state can persist.
         customer_id = get_jwt_identity()
         customer = None
         if customer_id is not None:
@@ -1549,7 +1560,6 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is not available for B2C order"}), 400
             
             if menu_item.global_stock is not None:
-                from sqlalchemy import update
                 result = db.session.execute(
                     update(MenuItem).where(MenuItem.id == mid, MenuItem.global_stock >= qty)
                     .values(global_stock=MenuItem.global_stock - qty)
@@ -2364,7 +2374,6 @@ The FlavorFlow Team"""
     @department_required("IT", "Operations", "Owner")
     def admin_reset_stock():
         try:
-            from sqlalchemy import update
             db.session.execute(update(MenuItem).values(global_stock=0))
             db.session.commit()
             return jsonify({"message": "All product global stock levels have been set to 0."}), 200
@@ -3596,6 +3605,8 @@ The FlavorFlow Team"""
     @app.route("/api/pos/sale", methods=["POST"])
     @role_required("staff")
     def pos_complete_sale():
+        # TRANSACTION BOUNDARY: single transaction — outlet stock decrements,
+        # coupon usage and loyalty updates commit together at the end.
         claims = get_jwt()
         staff_id = int(get_jwt_identity())
         oid = claims.get("outlet_id")
