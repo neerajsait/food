@@ -14,7 +14,8 @@ from sqlalchemy.orm import joinedload
 from flask import Flask, request, jsonify, Request, send_from_directory, Response
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity, create_refresh_token
+    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity,
+    create_refresh_token, set_access_cookies, unset_jwt_cookies
 )
 from redis_client import get_redis
 from flask_limiter import Limiter
@@ -131,16 +132,39 @@ limiter = Limiter(
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
 ALLOWED_MIMETYPES = {'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'}
 
+# Minimal content signatures — fallback when libmagic is unavailable
+# (e.g. Windows dev machines without the library).
+_MAGIC_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"%PDF-", "application/pdf"),
+)
+
+def _sniff_mime(header):
+    if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WEBP":
+        return "image/webp"
+    for sig, mime in _MAGIC_SIGNATURES:
+        if header.startswith(sig):
+            return mime
+    return None
+
 def allowed_file(file_obj):
     filename = getattr(file_obj, 'filename', '')
     if not ('.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS):
         return False
     
     try:
-        import magic
         header = file_obj.read(2048)
         file_obj.seek(0)
-        mime = magic.from_buffer(header, mime=True)
+        try:
+            import magic
+            mime = magic.from_buffer(header, mime=True)
+        except ImportError:
+            # python-magic present but libmagic missing (typical bare Windows
+            # dev box): fall back to lightweight signature sniffing.
+            mime = _sniff_mime(header)
         return mime in ALLOWED_MIMETYPES
     except Exception as e:
         logger.error(f"Magic mime check failed: {e}")
@@ -289,13 +313,29 @@ os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 # ============================================================
 
 def get_loyalty_settings():
+    from decimal import Decimal, InvalidOperation
     earn_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_earn_rate')).first()
     redeem_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_redeem_rate')).first()
-    
-    from decimal import Decimal
-    earn_val = Decimal(str(earn_rate.setting_value)) if earn_rate else Decimal("0.1")
-    redeem_val = Decimal(str(redeem_rate.setting_value)) if redeem_rate else Decimal("0.01")
+
+    def _safe_decimal(raw, fallback):
+        try:
+            val = Decimal(str(raw))
+            return val if val >= 0 else fallback
+        except (InvalidOperation, ValueError, TypeError):
+            logger.warning(f"Invalid loyalty setting value {raw!r}; falling back to {fallback}")
+            return fallback
+
+    earn_val = _safe_decimal(earn_rate.setting_value if earn_rate else None, Decimal("0.1"))
+    redeem_val = _safe_decimal(redeem_rate.setting_value if redeem_rate else None, Decimal("0.01"))
     return earn_val, redeem_val
+
+# Loyalty settings keys editable through /api/admin/store-settings, with the
+# validation bounds applied by that endpoint.
+LOYALTY_SETTING_KEYS = {
+    "loyalty_earn_rate":    (0, 10000),   # multiplier: points = amount * rate
+    "loyalty_redeem_rate":  (0, 10000),   # rupees per point at redemption
+    "loyalty_review_points": (0, 100),    # review bonus as % of item price
+}
 
 def role_required(*roles):
     """Decorator: JWT required + role check."""
@@ -473,7 +513,9 @@ def create_app(config_override=None):
         origins = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
     # supports_credentials=True is REQUIRED so the HttpOnly refresh-token
     # cookie flows between frontend and API during login/refresh/logout.
-    CORS(app, resources={r"/api/*": {"origins": origins}}, supports_credentials=True)
+    CORS(app, resources={r"/api/*": {"origins": origins}},
+         supports_credentials=True,
+         allow_headers=["Content-Type", "Authorization", "X-CSRF-TOKEN"])
 
     # --- Config ---
     import logging
@@ -540,11 +582,21 @@ def create_app(config_override=None):
     app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
     app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=7)
-    
-    if os.getenv("FLASK_ENV") == "production":
-        app.config["SESSION_COOKIE_SECURE"] = True
-        app.config["JWT_COOKIE_SECURE"] = True
-        
+
+    # --- Access token as a short-lived HttpOnly cookie ---------------------
+    # Tokens are accepted from BOTH the Authorization header (API clients,
+    # frontend memory fast-path) and an HttpOnly cookie (browser sessions).
+    # Cookie-sourced authentication on state-changing methods is protected by
+    # double-submit CSRF (X-CSRF-TOKEN header echoing csrf_access_token).
+    is_production = os.getenv("FLASK_ENV") == "production"
+    app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
+    app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
+    app.config["JWT_ACCESS_COOKIE_PATH"] = "/"
+    app.config["JWT_COOKIE_SAMESITE"] = "Strict"
+    app.config["JWT_COOKIE_SECURE"] = is_production
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = True
+    app.config["JWT_CSRF_METHODS"] = ["POST", "PUT", "PATCH", "DELETE"]
+
 
     # Mail config
     app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
@@ -915,9 +967,14 @@ def create_app(config_override=None):
 
         manual_log_audit("login", "User", user.id)
 
-        # Refresh token is delivered as an HttpOnly cookie so XSS cannot steal it.
-        # The access token stays in the Authorization header (short-lived).
+        # Both tokens are delivered as short-lived HttpOnly cookies:
+        #  - access_token (+ csrf_access_token) via flask-jwt-extended,
+        #    scoped to the browser session and matching the token lifetime.
+        #  - refresh_token manually, path-scoped to /api/auth.
+        # The body still carries access_token for non-browser API clients;
+        # browser frontends rely on the cookies + memory fast-path only.
         resp = jsonify({"access_token": token, "user": user.to_dict()})
+        set_access_cookies(resp, token, max_age=int(expires_delta.total_seconds()))
         _set_refresh_cookie(resp, refresh_token)
         return resp, 200
 
@@ -983,7 +1040,10 @@ def create_app(config_override=None):
         access_token = create_access_token(identity=identity, additional_claims=additional_claims)
         new_refresh_token = create_refresh_token(identity=identity, additional_claims=additional_claims)
 
+        # Rotate BOTH cookies: new short-lived access cookie + new refresh cookie.
         resp = jsonify({"access_token": access_token})
+        set_access_cookies(resp, access_token,
+                           max_age=int(app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds()))
         _set_refresh_cookie(resp, new_refresh_token)
         return resp, 200
 
@@ -1031,6 +1091,8 @@ def create_app(config_override=None):
         manual_log_audit("logout", "User", uid)
 
         resp = jsonify({"message": "Logged out"})
+        # Clear the access + csrf cookies AND the refresh cookie.
+        unset_jwt_cookies(resp)
         _clear_refresh_cookie(resp)
         return resp, 200
 
@@ -2000,16 +2062,9 @@ The FlavorFlow Team"""
                 
         # Sort combined history
         history.sort(key=lambda x: x["date"], reverse=True)
-        
-        # Calculate referral count (users who registered with this user's ID as referred_by_id)
-        referral_count = db.session.scalar(
-            select(func.count(User.id)).where(User.referred_by_id == user_id)
-        )
 
         return jsonify({
             "loyalty_points": user.loyalty_points or 0,
-            "referral_code": user.referral_code,
-            "referral_count": referral_count or 0,
             "history": history
         }), 200
 
@@ -2741,8 +2796,23 @@ The FlavorFlow Team"""
             claims = get_jwt()
             if not claims.get("is_superadmin"):
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            try:
+                new_points = int(data["loyalty_points"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Bad Request", "message": "loyalty_points must be an integer"}), 400
+            if new_points < 0:
+                return jsonify({"error": "Bad Request", "message": "loyalty_points cannot be negative"}), 400
             old_points = user.loyalty_points or 0
-            user.loyalty_points = int(data["loyalty_points"])
+            user.loyalty_points = new_points
+            # Journal the adjustment so it appears in the user's history.
+            delta = new_points - old_points
+            if delta != 0:
+                db.session.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=delta,
+                    transaction_type="credit" if delta > 0 else "debit",
+                    description=f"Admin balance adjustment: {old_points} -> {new_points}"
+                ))
             log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
         if "pin" in data:
             pin = (data["pin"] or "").strip()
@@ -3483,8 +3553,23 @@ The FlavorFlow Team"""
         if "loyalty_points" in data:
             if not get_jwt().get("is_superadmin"):
                 return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            try:
+                new_points = int(data["loyalty_points"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Bad Request", "message": "loyalty_points must be an integer"}), 400
+            if new_points < 0:
+                return jsonify({"error": "Bad Request", "message": "loyalty_points cannot be negative"}), 400
             old_points = user.loyalty_points or 0
-            user.loyalty_points = int(data["loyalty_points"])
+            user.loyalty_points = new_points
+            # Journal the adjustment so it appears in the user's history.
+            delta = new_points - old_points
+            if delta != 0:
+                db.session.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=delta,
+                    transaction_type="credit" if delta > 0 else "debit",
+                    description=f"Admin balance adjustment: {old_points} -> {new_points}"
+                ))
             log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
 
         if "is_active" in data:
@@ -5048,6 +5133,19 @@ The FlavorFlow Team"""
     @role_required("admin")
     def admin_update_store_settings():
         data = sanitize_input(request.get_json(silent=True)) or {}
+
+        # Validate loyalty rate keys BEFORE touching anything (atomic reject).
+        for key, (lo, hi) in LOYALTY_SETTING_KEYS.items():
+            if key in data:
+                try:
+                    num = float(data[key])
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Bad Request",
+                                    "message": f"{key} must be a number"}), 400
+                if not (lo <= num <= hi):
+                    return jsonify({"error": "Bad Request",
+                                    "message": f"{key} must be between {lo} and {hi}"}), 400
+
         for k, v in data.items():
             # Convert python booleans to JSON-compatible lowercase strings
             if isinstance(v, bool):
@@ -5798,6 +5896,41 @@ def _generate_daily_report():
         logger.error(f"Report generation failed: {e}")
         return {"error": str(e)}
 
+def _purge_old_ticket_attachments(app):
+    """Purge attachment FILES from closed/resolved tickets older than
+    TICKET_RETENTION_DAYS (default 90) and null out their references.
+    Module-level so it can be tested/imported independently of the scheduler."""
+    retention_days = int(os.getenv("TICKET_RETENTION_DAYS", "90"))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    with app.app_context():
+        old_tickets = db.session.scalars(
+            select(SupportTicket).where(
+                SupportTicket.attachment_filename.is_not(None),
+                SupportTicket.status.in_(["Resolved", "Closed"]),
+                SupportTicket.updated_at < cutoff,
+            )
+        ).all()
+        if not old_tickets:
+            return 0
+        removed = 0
+        for t in old_tickets:
+            p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    removed += 1
+                except Exception as e:
+                    logger.error(f"Ticket cleanup: failed to remove {p}: {e}")
+            t.attachment_filename = None
+            t.attachment_url = None
+        db.session.commit()
+        logger.info(
+            f"Ticket cleanup: purged attachments from {len(old_tickets)} "
+            f"closed tickets ({removed} files removed, retention={retention_days}d)"
+        )
+        return len(old_tickets)
+
+
 def _start_scheduler(app):
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
@@ -5806,37 +5939,8 @@ def _start_scheduler(app):
             _generate_daily_report()
 
     def cleanup_ticket_attachments():
-        """Purge attachment FILES from closed/resolved tickets older than
-        TICKET_RETENTION_DAYS (default 90) and null out their references."""
-        retention_days = int(os.getenv("TICKET_RETENTION_DAYS", "90"))
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         try:
-            with app.app_context():
-                old_tickets = db.session.scalars(
-                    select(SupportTicket).where(
-                        SupportTicket.attachment_filename.is_not(None),
-                        SupportTicket.status.in_(["Resolved", "Closed"]),
-                        SupportTicket.updated_at < cutoff,
-                    )
-                ).all()
-                if not old_tickets:
-                    return
-                removed = 0
-                for t in old_tickets:
-                    p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
-                    if os.path.exists(p):
-                        try:
-                            os.remove(p)
-                            removed += 1
-                        except Exception as e:
-                            logger.error(f"Ticket cleanup: failed to remove {p}: {e}")
-                    t.attachment_filename = None
-                    t.attachment_url = None
-                db.session.commit()
-                logger.info(
-                    f"Ticket cleanup: purged attachments from {len(old_tickets)} "
-                    f"closed tickets ({removed} files removed, retention={retention_days}d)"
-                )
+            _purge_old_ticket_attachments(app)
         except Exception as e:
             logger.error(f"Ticket attachment cleanup failed: {e}")
 

@@ -36,11 +36,19 @@ function clearAccessToken() {
 window.fetch = async (url, options) => {
   const isApiCall = typeof url === 'string' && url.includes(API_BASE_URL);
   if (isApiCall) {
-    // Always send credentials so the HttpOnly refresh-token cookie flows.
-    options = { credentials: "include", ...(options || {}) };
-    if (!options.method || options.method === 'GET') {
+    // Always send credentials so the HttpOnly auth cookies flow.
+    options = { credentials: "include", headers: {}, ...(options || {}) };
+    const method = (options.method || "GET").toUpperCase();
+    if (method === "GET") {
       const sep = url.includes('?') ? '&' : '?';
       url = `${url}${sep}_t=${Date.now()}`;
+    } else {
+      // Double-submit CSRF for cookie-authenticated mutations: echo the
+      // readable csrf_access_token cookie in a custom header.
+      const m = document.cookie.match(/(?:^|;\s*)csrf_access_token=([^;]+)/);
+      if (m && !options.headers["X-CSRF-TOKEN"]) {
+        options.headers["X-CSRF-TOKEN"] = decodeURIComponent(m[1]);
+      }
     }
   }
   
@@ -121,12 +129,12 @@ export const api = {
     }
   },
 
-  async register(email, password, role, first_name = "", last_name = "", phone = "", outlet_id = null, referral_code = "") {
+  async register(email, password, role, first_name = "", last_name = "", phone = "", outlet_id = null) {
 
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null, referral_code })
+      body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null })
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Registration failed");
