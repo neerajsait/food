@@ -13,56 +13,51 @@ let isRefreshing = false;
 let refreshPromise = null;
 
 window.fetch = async (url, options) => {
-  if (typeof url === 'string' && url.includes(API_BASE_URL) && (!options || options.method === 'GET' || !options.method)) {
-    const sep = url.includes('?') ? '&' : '?';
-    url = `${url}${sep}_t=${Date.now()}`;
+  const isApiCall = typeof url === 'string' && url.includes(API_BASE_URL);
+  if (isApiCall) {
+    // Always send credentials so the HttpOnly refresh-token cookie flows.
+    options = { credentials: "include", ...(options || {}) };
+    if (!options.method || options.method === 'GET') {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url}${sep}_t=${Date.now()}`;
+    }
   }
   
   let res = await originalFetch(url, options);
   
-  if (res.status === 401 && typeof url === 'string' && url.includes(API_BASE_URL) && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
-    const refreshToken = sessionStorage.getItem("refresh_token");
-    if (refreshToken) {
-      if (!isRefreshing) {
-        isRefreshing = true;
-        const refreshUrl = API_BASE_URL.replace(/\/?$/, '/auth/refresh');
-        refreshPromise = originalFetch(refreshUrl, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${refreshToken}` }
-        }).then(async refreshRes => {
-          isRefreshing = false;
-          if (refreshRes.ok) {
-            const data = await refreshRes.json();
-            sessionStorage.setItem("token", data.access_token);
-            if (data.refresh_token) {
-              sessionStorage.setItem("refresh_token", data.refresh_token);
-            }
-            return data.access_token;
-          } else {
-            sessionStorage.removeItem("token");
-            sessionStorage.removeItem("refresh_token");
-            window.location.href = "/";
-            throw new Error("Session expired");
-          }
-        }).catch(err => {
-          isRefreshing = false;
+  if (res.status === 401 && isApiCall && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
+    // The refresh token lives in an HttpOnly cookie - just POST /auth/refresh.
+    if (!isRefreshing) {
+      isRefreshing = true;
+      const refreshUrl = API_BASE_URL.replace(/\/?$/, '/auth/refresh');
+      refreshPromise = originalFetch(refreshUrl, {
+        method: "POST",
+        credentials: "include"
+      }).then(async refreshRes => {
+        isRefreshing = false;
+        if (refreshRes.ok) {
+          const data = await refreshRes.json();
+          sessionStorage.setItem("token", data.access_token);
+          return data.access_token;
+        } else {
           sessionStorage.removeItem("token");
-          sessionStorage.removeItem("refresh_token");
           window.location.href = "/";
-          throw err;
-        });
-      }
-      
-      const newToken = await refreshPromise;
-      if (newToken) {
-        // Retry original request
-        const newOptions = { ...options };
-        newOptions.headers = { ...newOptions.headers, "Authorization": `Bearer ${newToken}` };
-        res = await originalFetch(url, newOptions);
-      }
-    } else {
-      sessionStorage.removeItem("token");
-      window.location.href = "/";
+          throw new Error("Session expired");
+        }
+      }).catch(err => {
+        isRefreshing = false;
+        sessionStorage.removeItem("token");
+        window.location.href = "/";
+        throw err;
+      });
+    }
+    
+    const newToken = await refreshPromise;
+    if (newToken) {
+      // Retry original request
+      const newOptions = { ...options };
+      newOptions.headers = { ...newOptions.headers, "Authorization": `Bearer ${newToken}` };
+      res = await originalFetch(url, newOptions);
     }
   }
   
@@ -137,21 +132,18 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
     sessionStorage.setItem("token", data.access_token);
-    if (data.refresh_token) {
-      sessionStorage.setItem("refresh_token", data.refresh_token);
-    }
+    // Refresh token arrives as an HttpOnly cookie - never stored client-side.
     sessionStorage.setItem("user", JSON.stringify(data.user));
     return data;
   },
 
   async logout() {
-    const refreshToken = sessionStorage.getItem("refresh_token");
-    const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
     try {
       const res = await originalFetch(`${API_BASE_URL}/auth/logout`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body
+        body: JSON.stringify({})
       });
       if (!res.ok) {
         console.warn("Backend logout returned non-OK status. Session might remain active on server.");
@@ -162,7 +154,7 @@ export const api = {
     }
 
     sessionStorage.removeItem("token");
-    sessionStorage.removeItem("refresh_token");
+    sessionStorage.removeItem("refresh_token"); // legacy cleanup
     sessionStorage.removeItem("user");
     window.location.href = "/";
   },

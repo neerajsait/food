@@ -31,16 +31,13 @@ const processImageUrl = (url) => {
     return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
   }
   
-  // 2. Allow specific URLs to pass through untouched (already proxied, safe CDNs, relative paths)
-  if (url.includes('/api/public/proxy-image') || url.includes('drive.google.com') || url.includes('images.unsplash.com') || url.startsWith('/')) {
+  // 2. Allow specific URLs to pass through untouched (safe CDNs, relative paths)
+  if (url.includes('drive.google.com') || url.includes('images.unsplash.com') || url.startsWith('/')) {
     return url;
   }
   
-  // 3. For any other absolute URL, use our own backend proxy to bypass CORS/hotlinking
-  if (url.startsWith('http')) {
-    return `${API_BASE_URL}/public/proxy-image?url=${encodeURIComponent(url)}`;
-  }
-  
+  // 3. Other absolute URLs load directly in the browser.
+  // (The backend SSRF proxy endpoint was removed for security.)
   return url;
 };
 

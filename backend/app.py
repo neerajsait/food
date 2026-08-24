@@ -336,7 +336,9 @@ def create_app(config_override=None):
         origins = cors_origins.split(",")
     else:
         origins = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
-    CORS(app, resources={r"/api/*": {"origins": origins}})
+    # supports_credentials=True is REQUIRED so the HttpOnly refresh-token
+    # cookie flows between frontend and API during login/refresh/logout.
+    CORS(app, resources={r"/api/*": {"origins": origins}}, supports_credentials=True)
 
     # --- Config ---
     import logging
@@ -425,6 +427,19 @@ def create_app(config_override=None):
         raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
+
+    # Enforce foreign keys on SQLite (OFF by default!). Without this, the
+    # ON DELETE CASCADE / SET NULL actions defined in models.py are ignored
+    # in development, which is why raw-SQL delete fallbacks used to be needed.
+    if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
+        from sqlalchemy import event
+
+        @event.listens_for(db.engine, "connect")
+        def _sqlite_fk_pragma_on_connect(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
     # IMPORTANT: Real Alembic migration scripts must exist and be applied for:
     # - users.token_version
     # - support_tickets.attachment_filename
@@ -502,9 +517,21 @@ def create_app(config_override=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
-        # TODO: Remove 'unsafe-inline' and 'unsafe-eval' once frontend no longer needs them
-        # TODO: Add report-uri or report-to directive in the future for CSP monitoring
-        response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; connect-src 'self' https: wss:;"
+        # Hardened CSP - no 'unsafe-inline' / 'unsafe-eval'.
+        # React SPAs built with Vite use external scripts and CSSOM style
+        # injection, so neither directive is required.
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "img-src 'self' data: blob: https:; "
+            "script-src 'self'; "
+            "style-src 'self' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "connect-src 'self' https: wss:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        )
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
         if os.getenv("FLASK_ENV") == "production":
@@ -512,32 +539,9 @@ def create_app(config_override=None):
         return response
 
     # ---------- Health ----------
-    @app.route("/api/public/proxy-image", methods=["GET"])
-    def proxy_image():
-        image_url = request.args.get("url")
-        if not image_url:
-            return "Missing url parameter", 400
-        
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.google.com/'
-            }
-            import requests
-            resp = requests.get(image_url, headers=headers, stream=True, timeout=10)
-            
-            if resp.status_code != 200:
-                return f"Failed to fetch image: {resp.status_code}", resp.status_code
-                
-            excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-            proxy_headers = [(name, value) for (name, value) in resp.raw.headers.items()
-                       if name.lower() not in excluded_headers]
-                       
-            return Response(resp.content, resp.status_code, proxy_headers)
-        except Exception as e:
-            return str(e), 500
+    # NOTE: The former /api/public/proxy-image endpoint was REMOVED for security.
+    # It allowed SSRF attacks (internal network scanning, cloud metadata access)
+    # by fetching arbitrary user-supplied URLs server-side.
 
     @app.route("/api/health")
     @limiter.limit("120 per minute")
@@ -559,6 +563,37 @@ def create_app(config_override=None):
             pass
         from flask_limiter.util import get_remote_address
         return get_remote_address()
+
+    # --- Refresh-token cookie helpers -------------------------------------
+    # The refresh token lives in an HttpOnly cookie scoped to /api/auth so
+    # client-side scripts (XSS) can never read it. Cookies are only sent to
+    # auth endpoints, minimising exposure. SameSite=Strict assumes frontend
+    # and API are served from the same site (true for this deployment).
+    REFRESH_COOKIE = "refresh_token"
+
+    def _set_refresh_cookie(resp, token):
+        resp.set_cookie(
+            REFRESH_COOKIE,
+            token,
+            httponly=True,
+            secure=(os.getenv("FLASK_ENV") == "production"),
+            samesite="Strict",
+            path="/api/auth",
+            max_age=int(timedelta(days=7).total_seconds()),
+        )
+        return resp
+
+    def _clear_refresh_cookie(resp):
+        resp.set_cookie(
+            REFRESH_COOKIE,
+            "",
+            httponly=True,
+            secure=(os.getenv("FLASK_ENV") == "production"),
+            samesite="Strict",
+            path="/api/auth",
+            max_age=0,
+        )
+        return resp
 
     @app.route("/api/auth/register", methods=["POST"])
     @limiter.limit("10 per minute", key_func=auth_rate_limit_key)
@@ -734,44 +769,78 @@ def create_app(config_override=None):
 
         manual_log_audit("login", "User", user.id)
 
-        return jsonify({"access_token": token, "refresh_token": refresh_token, "user": user.to_dict()}), 200
+        # Refresh token is delivered as an HttpOnly cookie so XSS cannot steal it.
+        # The access token stays in the Authorization header (short-lived).
+        resp = jsonify({"access_token": token, "user": user.to_dict()})
+        _set_refresh_cookie(resp, refresh_token)
+        return resp, 200
 
     
     @app.route("/api/auth/refresh", methods=["POST"])
     @limiter.limit("30 per minute")
-    @jwt_required(refresh=True)
     def refresh():
-        identity = get_jwt_identity()
+        # Read the refresh token from the HttpOnly cookie first; fall back to
+        # a JSON body token for backward compatibility during migration.
+        refresh_token = request.cookies.get(REFRESH_COOKIE)
+        if not refresh_token:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+            refresh_token = data.get("refresh_token")
+        if not refresh_token:
+            return jsonify({"error": "Unauthorized", "message": "Missing refresh token"}), 401
+
+        try:
+            from flask_jwt_extended import decode_token
+            claims = decode_token(refresh_token)
+        except Exception:
+            return jsonify({"error": "Unauthorized", "message": "Invalid or expired refresh token"}), 401
+        if claims.get("type") != "refresh":
+            return jsonify({"error": "Unauthorized", "message": "Invalid token type"}), 401
+
+        identity = claims["sub"]
+        jti = claims["jti"]
+
+        # Manual blocklist + token-version checks (bypasses jwt_required loaders).
+        from redis_client import get_redis
+        try:
+            redis_client = get_redis()
+        except Exception:
+            redis_client = None
+        now = int(datetime.now(timezone.utc).timestamp())
+        if redis_client:
+            if redis_client.get(f"revoked:{jti}") is not None:
+                return jsonify({"error": "Unauthorized", "message": "Token has been revoked"}), 401
+        elif os.getenv("FLASK_ENV") == "production":
+            return jsonify({"error": "Service Unavailable", "message": "Redis required for secure refresh"}), 503
+
         user = db.session.get(User, int(identity))
-        
         if not user or getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
             return jsonify({"error": "Unauthorized", "message": "User not found or banned"}), 401
-            
+
+        current_tv = getattr(user, "token_version", 0) or 0
+        if int(claims.get("token_version", 0)) != current_tv:
+            return jsonify({"error": "Unauthorized", "message": "Token has been revoked"}), 401
+
         additional_claims = {
             "role": user.role,
             "outlet_id": user.outlet_id,
             "user_id": user.id,
             "admin_department": getattr(user, 'admin_department', None),
             "is_superadmin": getattr(user, 'is_superadmin', False),
-            "token_version": getattr(user, 'token_version', 0)
+            "token_version": current_tv
         }
-        
-        # Revoke the old refresh token
-        jti = get_jwt()["jti"]
-        from redis_client import get_redis
-        try:
-            redis_client = get_redis()
-        except Exception:
-            redis_client = None
+
+        # Rotation: revoke the presented refresh token before issuing a new one.
         if redis_client:
-            redis_client.setex(jti, int(timedelta(days=7).total_seconds()), "revoked")
-        elif os.getenv("FLASK_ENV") == "production":
-            return jsonify({"error": "Service Unavailable", "message": "Redis required for secure logout"}), 503
+            rt_ttl = max(1, int(claims.get("exp", now)) - now)
+            redis_client.setex(f"revoked:{jti}", rt_ttl, "revoked")
 
         access_token = create_access_token(identity=identity, additional_claims=additional_claims)
         new_refresh_token = create_refresh_token(identity=identity, additional_claims=additional_claims)
-        
-        return jsonify({"access_token": access_token, "refresh_token": new_refresh_token}), 200
+
+        resp = jsonify({"access_token": access_token})
+        _set_refresh_cookie(resp, new_refresh_token)
+        return resp, 200
+
 
     @app.route("/api/auth/logout", methods=["POST"])
     @jwt_required()
@@ -793,8 +862,9 @@ def create_app(config_override=None):
             ttl = max(1, exp - now) if exp else 3600
             redis_client.setex(f"revoked:{jti}", ttl, "1")
             
+            # Revoke the refresh token from the HttpOnly cookie (or legacy body).
             data = sanitize_input(request.get_json(silent=True)) or {}
-            refresh_token = data.get("refresh_token")
+            refresh_token = request.cookies.get(REFRESH_COOKIE) or data.get("refresh_token")
             if refresh_token:
                 from flask_jwt_extended import decode_token
                 try:
@@ -814,7 +884,10 @@ def create_app(config_override=None):
             uid = None
         manual_log_audit("logout", "User", uid)
 
-        return jsonify({"message": "Logged out"}), 200
+        resp = jsonify({"message": "Logged out"})
+        _clear_refresh_cookie(resp)
+        return resp, 200
+
 
     @app.route("/api/auth/me", methods=["GET"])
     @jwt_required()
@@ -1169,32 +1242,45 @@ The FlavorFlow Team"""
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
         
         try:
-            # We can use ORM to delete user and it should cascade,
-            # but if it fails due to IntegrityError, we catch it.
+            # Deterministic, portable cleanup performed in ONE transaction.
+            # Child rows are deleted explicitly (order-independent of whether
+            # the underlying schema already has ON DELETE CASCADE applied via
+            # Alembic). No raw-SQL fallback anymore.
+            from sqlalchemy import delete as sa_delete, update as sa_update
+
+            # Break self-referential referral links (FK has no ondelete action).
+            db.session.execute(
+                sa_update(User).where(User.referred_by_id == user_id).values(referred_by_id=None)
+            )
+
+            db.session.execute(sa_delete(Review).where(Review.customer_id == user_id))
+            db.session.execute(sa_delete(Address).where(Address.user_id == user_id))
+            db.session.execute(sa_delete(SupportTicket).where(SupportTicket.customer_id == user_id))
+            db.session.execute(sa_delete(WalletTransaction).where(WalletTransaction.user_id == user_id))
+            db.session.execute(sa_delete(Favorite).where(Favorite.customer_id == user_id))
+
+            # Delete order items before their parent orders (ORM cascade on
+            # Order.items also covers this when rows are loaded).
+            order_ids = db.session.scalars(
+                select(Order.id).where(Order.customer_id == user_id)
+            ).all()
+            if order_ids:
+                db.session.execute(sa_delete(OrderItem).where(OrderItem.order_id.in_(order_ids)))
+                db.session.execute(sa_delete(Order).where(Order.id.in_(order_ids)))
+
+            # Nullable audit/tracking FKs are ON DELETE SET NULL in the schema
+            # (stock_audit_logs.performed_by, product_batches.received_by,
+            # production_batches.produced_by, outlets.owner_id) and are handled
+            # by the database itself.
+
             db.session.delete(user)
             db.session.commit()
             return jsonify({"message": "Account deleted successfully"}), 200
         except sqlalchemy.exc.SQLAlchemyError as e:
             db.session.rollback()
-            import logging
-            logging.error(f"Error deleting account {user_id}: {str(e)}")
-            
-            # Fallback: manual deletion of known related records to bypass missing cascade
-            try:
-                from sqlalchemy import text
-                db.session.execute(text("DELETE FROM reviews WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM addresses WHERE user_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM support_tickets WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM favorites WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM orders WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
-                db.session.commit()
-                return jsonify({"message": "Account deleted successfully (manual cascade)"}), 200
-            except sqlalchemy.exc.SQLAlchemyError as e2:
-                db.session.rollback()
-                logging.error(f"Error during manual cascade delete: {str(e2)}")
-                return jsonify({"error": "Delete Failed", "message": "Could not delete account"}), 500
+            logger.error(f"Error deleting account {user_id}: {str(e)}")
+            return jsonify({"error": "Delete Failed", "message": "Could not delete account"}), 500
+
 
 
     # ============================================================
@@ -1400,7 +1486,17 @@ The FlavorFlow Team"""
 
             if actual_redeem > 0:
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
-                customer.loyalty_points = max(0, (customer.loyalty_points or 0) - actual_redeem)
+                # Atomic, guarded decrement: fails if a concurrent checkout
+                # already drained the balance below actual_redeem.
+                from sqlalchemy import update as _sa_update
+                redeem_res = db.session.execute(
+                    _sa_update(User).where(User.id == customer.id, User.loyalty_points >= actual_redeem)
+                    .values(loyalty_points=User.loyalty_points - actual_redeem)
+                )
+                if redeem_res.rowcount != 1:
+                    db.session.rollback()
+                    return jsonify({"error": "Conflict", "message": "Loyalty points changed during checkout. Please retry."}), 409
+                db.session.refresh(customer)
                 points_redeemed = actual_redeem
                 total = max(Decimal("0.00"), total - points_discount)
         
@@ -3468,7 +3564,17 @@ The FlavorFlow Team"""
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
                 total -= points_discount
                 total = max(Decimal("0.00"), total)
-                customer.loyalty_points = max(0, (customer.loyalty_points or 0) - actual_redeem)
+                # Atomic, guarded decrement (customer row already locked via
+                # with_for_update at lookup; this guards against drift).
+                from sqlalchemy import update as _sa_update
+                redeem_res = db.session.execute(
+                    _sa_update(User).where(User.id == customer.id, User.loyalty_points >= actual_redeem)
+                    .values(loyalty_points=User.loyalty_points - actual_redeem)
+                )
+                if redeem_res.rowcount != 1:
+                    db.session.rollback()
+                    return jsonify({"error": "Conflict", "message": "Loyalty points changed during checkout. Please retry."}), 409
+                db.session.refresh(customer)
                 points_redeemed = actual_redeem
 
         # Loyalty points: earning
