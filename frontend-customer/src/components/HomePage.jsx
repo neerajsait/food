@@ -225,11 +225,23 @@ function BestSellerHighlight({ item, cartQty, isFav, onAdd, onRemove, onToggleFa
   );
 }
 
-// ── Brand Story ──────────────────────────────────────────────
-function BrandStory() {
+// ── Brand Story (dynamic from admin) ────────────────────────
+function BrandStory({ storyBanners = [] }) {
+  const b = storyBanners[0]; // Use first active brand_story banner
+
+  const title       = b?.title       || "THE TASTE OF HOME";
+  const description = b?.description || "Every jar, every packet, every bite — crafted with the same love your grandmother put into her cooking. Traditional Andhra recipes, modern convenience. No shortcuts, no compromises.";
+  const eyebrow     = b?.eyebrow_text || "Our Story";
+  const bgColor     = b?.bg_color || null; // optional custom bg from admin
+  const stats = b?.stats_json
+    ? (() => { try { return JSON.parse(b.stats_json); } catch { return null; } })()
+    : null;
+  const defaultStats = [["35+", "Products"], ["100%", "Natural"], ["Pan India", "Delivery"]];
+  const statRows = Array.isArray(stats) ? stats : defaultStats;
+
   return (
     <div className="mb-2xl" style={{
-      background: "linear-gradient(135deg, var(--green-dark) 0%, var(--green) 100%)",
+      background: bgColor || "linear-gradient(135deg, var(--green-dark) 0%, var(--green) 100%)",
       borderRadius: "var(--radius-2xl)",
       padding: "3rem",
       color: "#fff",
@@ -238,24 +250,33 @@ function BrandStory() {
     }}>
       <div style={{ position: "absolute", top: -60, right: -60, width: 240, height: 240, borderRadius: "50%", background: "rgba(199,240,0,0.08)" }} />
       <div style={{ position: "absolute", bottom: -40, left: -40, width: 180, height: 180, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
+      {/* Optional background image overlay */}
+      {b?.image_url && (
+        <div style={{ position: "absolute", inset: 0, background: `url('${b.image_url}') center/cover`, opacity: 0.12, borderRadius: "var(--radius-2xl)" }} />
+      )}
       <div style={{ position: "relative", zIndex: 1, maxWidth: 600 }}>
         <span style={{ display: "inline-block", background: "rgba(199,240,0,0.15)", border: "1px solid rgba(199,240,0,0.3)", color: "var(--accent)", fontSize: "0.7rem", fontWeight: 800, letterSpacing: "1.5px", textTransform: "uppercase", padding: "0.3rem 0.875rem", borderRadius: "var(--radius-pill)", marginBottom: "1.25rem" }}>
-          Our Story
+          {eyebrow}
         </span>
         <h2 style={{ fontSize: "clamp(1.75rem, 3vw, 2.5rem)", fontWeight: 900, lineHeight: 1.1, letterSpacing: "-0.5px", marginBottom: "1rem" }}>
-          THE TASTE OF HOME
+          {title}
         </h2>
         <p style={{ fontSize: "1rem", lineHeight: 1.7, color: "rgba(255,255,255,0.8)", marginBottom: "1.75rem" }}>
-          Every jar, every packet, every bite — crafted with the same love your grandmother put into her cooking. Traditional Andhra recipes, modern convenience. No shortcuts, no compromises.
+          {description}
         </p>
         <div style={{ display: "flex", gap: "2.5rem", flexWrap: "wrap" }}>
-          {[["35+", "Products"], ["100%", "Natural"], ["Pan India", "Delivery"]].map(([v, l]) => (
+          {statRows.map(([v, l]) => (
             <div key={l}>
               <div style={{ fontSize: "1.75rem", fontWeight: 900, color: "var(--accent)", lineHeight: 1 }}>{v}</div>
               <div style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", marginTop: "0.25rem" }}>{l}</div>
             </div>
           ))}
         </div>
+        {b?.button_text && b?.target_url && (
+          <a href={b.target_url} style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", marginTop: "1.5rem", background: "var(--accent)", color: "var(--green-dark)", fontWeight: 800, fontSize: "0.875rem", padding: "0.6rem 1.25rem", borderRadius: "var(--radius-pill)", textDecoration: "none" }}>
+            {b.button_text} →
+          </a>
+        )}
       </div>
     </div>
   );
@@ -327,9 +348,11 @@ function Footer({ setActiveTab }) {
   return (
     <footer style={{
       background: "var(--text)", color: "rgba(255,255,255,0.7)",
-      borderRadius: "var(--radius-2xl) var(--radius-2xl) 0 0",
       padding: "2.5rem",
       marginTop: "auto",
+      width: "100%",
+      margin: 0,
+      borderRadius: 0,
     }}>
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "2rem", flexWrap: "wrap" }}>
         <div>
@@ -373,7 +396,7 @@ function Footer({ setActiveTab }) {
 }
 
 // ── Main HomePage Component ───────────────────────────────────
-export default function HomePage({ menu, banners, cart, favorites, loading, onAdd, onRemove, onToggleFav, onItemClick, setActiveTab, setActiveCategory }) {
+export default function HomePage({ menu, banners, storyBanners = [], cart, favorites, loading, onAdd, onRemove, onToggleFav, onItemClick, setActiveTab, setActiveCategory }) {
 
   const popularItems = [...menu]
     .sort((a, b) => (parseFloat(b.average_rating) || 0) - (parseFloat(a.average_rating) || 0))
@@ -417,7 +440,7 @@ export default function HomePage({ menu, banners, cart, favorites, loading, onAd
         />
 
         <TrustBadges />
-        <BrandStory />
+        <BrandStory storyBanners={storyBanners} />
         <ReviewsSection />
       </div>
       <Footer setActiveTab={setActiveTab} />

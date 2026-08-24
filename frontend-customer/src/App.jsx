@@ -23,6 +23,7 @@ export default function App() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [forceChangeLoading, setForceChangeLoading] = useState(false);
   const [forceChangeError, setForceChangeError] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
 
 
   const checkSession = async () => {
@@ -133,17 +134,24 @@ export default function App() {
     return <VerifyEmail />;
   }
 
-  // No user — show login (no sidebar)
-  if (!currentUser) {
-    return <Login onLoginSuccess={handleLoginSuccess} />;
+  // If user specifically requested login, or we need authentication to proceed (optional later)
+  if (showLogin && !currentUser) {
+    return <Login onLoginSuccess={(user) => { setShowLogin(false); handleLoginSuccess(user); }} />;
   }
 
-  // Render the correct view
+  // Render the correct view (allow guests)
   const renderView = () => {
     return (
       <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
-        {currentUser.role === 'customer' && <CustomerView onLogout={handleLogout} dbMode={dbMode} currentUser={currentUser} />}
-        {currentUser.role !== 'customer' && (
+        {(!currentUser || currentUser.role === 'customer') && (
+          <CustomerView 
+            onLogout={handleLogout} 
+            onLoginRequest={() => setShowLogin(true)} 
+            dbMode={dbMode} 
+            currentUser={currentUser} 
+          />
+        )}
+        {currentUser && currentUser.role !== 'customer' && (
           <div style={{ padding: "3rem", textAlign: "center" }}>
             <div className="empty-state">
               <div className="empty-state-icon">

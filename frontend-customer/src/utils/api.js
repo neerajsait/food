@@ -42,14 +42,14 @@ window.fetch = async (url, options) => {
           } else {
             sessionStorage.removeItem("token");
             sessionStorage.removeItem("refresh_token");
-            window.location.href = "/login";
+            window.location.href = "/";
             throw new Error("Session expired");
           }
         }).catch(err => {
           isRefreshing = false;
           sessionStorage.removeItem("token");
           sessionStorage.removeItem("refresh_token");
-          window.location.href = "/login";
+          window.location.href = "/";
           throw err;
         });
       }
@@ -63,7 +63,7 @@ window.fetch = async (url, options) => {
       }
     } else {
       sessionStorage.removeItem("token");
-      window.location.href = "/login";
+      window.location.href = "/";
     }
   }
   
@@ -1148,7 +1148,7 @@ export const api = {
     sessionStorage.removeItem("token");
     sessionStorage.removeItem("refresh_token");
     sessionStorage.removeItem("user");
-    window.location.href = "/login";
+    window.location.href = "/";
   },
 
   getCurrentUser() {
@@ -1211,17 +1211,32 @@ export const api = {
     return safeJson(res);
   },
 
-  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null, pointsToRedeem = 0, deliveryCharge = 0) {
+  async placeOrder(items, deliveryAddress, paymentMethod = "COD", couponCode = null, pointsToRedeem = 0, deliveryCharge = 0, guestDetails = null) {
     const live = await checkBackendAlive();
     const user = this.getCurrentUser();
-    if (!user) throw new Error("Unauthorized");
+    if (!user && !guestDetails) throw new Error("Unauthorized: Must be logged in or provide guest details");
 
-    if (!live) return mockApi.placeOrder(user.id, items, deliveryAddress, paymentMethod, couponCode, pointsToRedeem, deliveryCharge);
+    if (!live) return mockApi.placeOrder(user?.id || 'guest', items, deliveryAddress, paymentMethod, couponCode, pointsToRedeem, deliveryCharge);
+
+    const payload = { 
+      items, 
+      delivery_address: deliveryAddress, 
+      payment_method: paymentMethod, 
+      coupon_code: couponCode, 
+      redeem_loyalty_points: pointsToRedeem, 
+      delivery_charge: deliveryCharge,
+      ...(guestDetails || {}) 
+    };
+
+    const headers = { "Content-Type": "application/json" };
+    if (user) {
+      Object.assign(headers, getAuthHeader());
+    }
 
     const res = await fetch(`${API_BASE_URL}/foods/order`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify({ items, delivery_address: deliveryAddress, payment_method: paymentMethod, coupon_code: couponCode, redeem_loyalty_points: pointsToRedeem, delivery_charge: deliveryCharge })
+      headers,
+      body: JSON.stringify(payload)
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to place order");

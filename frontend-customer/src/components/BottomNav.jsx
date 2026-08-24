@@ -1,5 +1,5 @@
 import React from "react";
-import { Home, ShoppingBag, Search, ShoppingCart, User } from "lucide-react";
+import { Home, ShoppingBag, Search, ShoppingCart, User, LogIn } from "lucide-react";
 
 const NAV = [
   { id: "home",     icon: Home,         label: "Home" },
@@ -9,10 +9,13 @@ const NAV = [
   { id: "profile",  icon: User,         label: "Profile" },
 ];
 
-export default function BottomNav({ activeTab, setActiveTab, cartCount, onOpenCart }) {
+export default function BottomNav({ activeTab, setActiveTab, cartCount, onOpenCart, currentUser, onLoginRequest }) {
+  const isGuest = !currentUser;
+  
   const handleTap = (id) => {
     if (id === "cart") { onOpenCart(); return; }
     if (id === "search") { setActiveTab("shop"); return; }
+    if (id === "profile" && isGuest) { onLoginRequest(); return; }
     setActiveTab(id);
   };
 
@@ -25,7 +28,12 @@ export default function BottomNav({ activeTab, setActiveTab, cartCount, onOpenCa
   return (
     <nav className="bottom-nav" aria-label="Bottom navigation">
       {NAV.map(item => {
-        const Icon = item.icon;
+        let Icon = item.icon;
+        let label = item.label;
+        if (item.id === "profile" && isGuest) {
+          Icon = LogIn;
+          label = "Login";
+        }
         const active = isActive(item.id);
         return (
           <button

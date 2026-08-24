@@ -1,25 +1,33 @@
-# Food Ordering App
+# Food Ordering Platform & POS
 
-This is a comprehensive full-stack application providing POS, B2C, and B2B functionalities, built with a Flask backend and React frontends (Customer & Admin).
+A comprehensive full-stack application providing a complete ecosystem for food service management. It includes a Customer Storefront (B2C/B2B), a Point of Sale (POS) system, a Kitchen Display System (KDS), and a full Admin Dashboard.
 
-## Architecture
+## 🚀 Key Features
 
-*   **Backend:** Flask, SQLAlchemy, JWT Authentication, Redis (Blocklist & Rate Limiting), APScheduler (Background jobs)
+*   **Customer Storefront:** Browse menus, dynamic product detail pages, shopping cart, guest checkout, wallet system, coupon catalog, and order tracking.
+*   **Point of Sale (POS):** Fast order entry, POS lock screen, QR code generation, walk-in customer management, and receipt generation.
+*   **Kitchen Display System (KDS):** Real-time order synchronization for the kitchen, status toggling, and ticket management.
+*   **Admin & Management:** Granular audit logs, inventory management, role-based access control, bestseller tracking, and dynamic policy pages.
+*   **Security (Zero Trust):** Robust zero-trust schemas, strict JWT token validation with Redis blocklisting, token versioning, and rate limiting.
+
+## 🏗️ Architecture & Tech Stack
+
+*   **Backend:** Python, Flask, SQLAlchemy (ORM), Flask-Migrate (Alembic), JWT Authentication, Redis, APScheduler (Background jobs)
 *   **Customer Frontend:** React (Vite), Tailwind CSS
 *   **Admin/POS Frontend:** React (Vite), Tailwind CSS
 
-## Deployment & Production Requirements
+## ⚙️ Deployment & Production Requirements
 
 ### Environment Variables (Backend)
 
 *   `FLASK_ENV`: Set to `production` in live environments.
-*   `SECRET_KEY`: **Required in production.** Used for session signing, QR code generation, etc.
-*   `JWT_SECRET_KEY`: **Required in production.** Used for JWT signature.
-*   `REDIS_URL`: **Required in production.** Used for JWT token blocklisting. Example: `redis://localhost:6379/0`
-*   `ALLOW_SEED=1`: (Optional) only if you intentionally want demo seeds in prod
+*   `SECRET_KEY`: **Required.** Used for session signing, QR code generation, etc.
+*   `JWT_SECRET_KEY`: **Required.** Used for JWT signature.
+*   `REDIS_URL`: **Required in production.** Used for JWT token blocklisting (e.g., `redis://localhost:6379/0`).
+*   `ALLOW_SEED=1`: (Optional) Use only if you intentionally want demo seeds.
 *   `DATABASE_URL`: (Optional) Full connection string. Defaults to SQLite if not provided (except in production).
 *   **MySQL Variables (Alternative to `DATABASE_URL`)**:
-    *   `MYSQL_HOST`: e.g. `localhost`
+    *   `MYSQL_HOST`: e.g., `localhost`
     *   `MYSQL_USER`: Database username
     *   `MYSQL_PASSWORD`: Database password
     *   `MYSQL_DB`: Database name
@@ -28,14 +36,24 @@ This is a comprehensive full-stack application providing POS, B2C, and B2B funct
 
 ### Redis Requirement
 
-**Redis is strictly required in production (`FLASK_ENV=production`).** If `REDIS_URL` is missing or the Redis instance cannot be pinged on startup, the application will refuse to start and will throw a `RuntimeError`.
+**Redis is strictly required in production (`FLASK_ENV=production`).** The application uses Redis for token revocation (blocklist) and rate-limiting. If `REDIS_URL` is missing or the Redis instance cannot be pinged on startup, the application will refuse to start.
 
 To run Redis locally via Docker:
 ```bash
 docker run --name my-redis -p 6379:6379 -d redis
 ```
 
-### Authentication & JWT Lifecycle
+## 🗄️ Database Migrations
+
+The project uses `Flask-Migrate` (Alembic) to handle database schema changes.
+
+When deploying a new version with schema changes, you can simply run:
+```bash
+flask db upgrade
+```
+*(Note: Manual `ALTER TABLE` commands are no longer needed as Alembic handles schema evolution automatically).*
+
+## 🔐 Authentication & JWT Lifecycle
 
 *   **Access Token**: Expires in 15 minutes.
 *   **Refresh Token**: Expires in 7 days.
@@ -44,19 +62,12 @@ docker run --name my-redis -p 6379:6379 -d redis
     *   `POST /api/auth/refresh`: Accepts `Authorization: Bearer <refresh_token>` and returns a new `access_token` and `refresh_token`.
     *   `POST /api/auth/logout`: Accepts `Authorization: Bearer <access_token>` and body `{"refresh_token": "<token>"}` to revoke tokens using the Redis blocklist.
 
-### Database Migration
+## 🛡️ Security & Privacy Notes
 
-If you are updating an existing database to the latest schema, you must run this migration to add the JWT token version field:
-```sql
-ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0;
-```
-
-## Security & Privacy Notes
-
-*   **Ticket Attachments**: Ticket attachment URLs are located under `/static/uploads/tickets/`. Currently, these URLs are unguessable due to timestamp prefixing. A recommended follow-up is to serve these files through an authenticated `GET /api/customer/tickets/<id>/attachment` route.
+*   **Ticket Attachments**: Ticket attachment URLs are located under `/static/uploads/tickets/`. Currently, these URLs are unguessable due to timestamp prefixing.
 *   **Token Caching**: For improved performance at scale, it is recommended to cache `user.token_version` in Redis using a short TTL and invalidate it upon password change.
 
-## Running Tests
+## 🧪 Running Tests
 
 To run the backend test suite, navigate to the `backend` directory and use pytest:
 ```bash

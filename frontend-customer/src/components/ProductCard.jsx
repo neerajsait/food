@@ -36,8 +36,8 @@ export default function ProductCard({ item, cartQty = 0, isFav = false, onAdd, o
       </div>
 
       <div className="product-card-body">
-        <div className="product-card-name">{item.name}</div>
-        {item.category && <div className="product-card-weight">{item.category}</div>}
+        <div className="product-card-name">{item.name ? item.name.replace(/&amp;/g, '&') : ''}</div>
+        {item.category && <div className="product-card-weight">{item.category.replace(/&amp;/g, '&')}</div>}
 
         <div className="rating-row" style={{ marginTop: 2 }}>
           <Rating value={parseFloat(item.average_rating || 0)} count={item.reviews_count} size={12} />

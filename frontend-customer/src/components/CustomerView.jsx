@@ -9,7 +9,6 @@ import BannerZone from "./BannerZone";
 
 // New design components
 import Header, { MobileHeader } from "./Header";
-import DesktopSidebar from "./DesktopSidebar";
 import BottomNav from "./BottomNav";
 import HomePage from "./HomePage";
 import ShopPage from "./ShopPage";
@@ -93,7 +92,7 @@ function StoreBanner({ storeSettings }) {
 // ────────────────────────────────────────────────────────────
 // Main CustomerView (router shell)
 // ────────────────────────────────────────────────────────────
-export default function CustomerView({ onLogout, dbMode }) {
+export default function CustomerView({ onLogout, onLoginRequest, dbMode, currentUser }) {
   // ── Toast + Confirm helpers ──────────────────────────────
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
@@ -134,6 +133,7 @@ export default function CustomerView({ onLogout, dbMode }) {
   const [favorites, setFavorites] = useState([]);
   const [addresses, setAddresses] = useState([]);
   const [banners, setBanners] = useState([]);
+  const [storyBanners, setStoryBanners] = useState([]);
   const [middleBanners, setMiddleBanners] = useState([]);
   const [bottomBanners, setBottomBanners] = useState([]);
   const [checkoutBanners, setCheckoutBanners] = useState([]);
@@ -166,6 +166,11 @@ export default function CustomerView({ onLogout, dbMode }) {
   // ── Cart state ───────────────────────────────────────────
   const [cart, setCart] = useState({});
 
+  // ── Guest Checkout state ──────────────────────────────────
+  const [guestName, setGuestName] = useState("");
+  const [guestEmail, setGuestEmail] = useState("");
+  const [guestPhone, setGuestPhone] = useState("");
+
   // ── Coupon & loyalty ─────────────────────────────────────
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [appliedCoupon, setAppliedCoupon] = useState(null);
@@ -190,6 +195,44 @@ export default function CustomerView({ onLogout, dbMode }) {
   // ── QR Scanner ───────────────────────────────────────────
   const [isScanning, setIsScanning] = useState(false);
 
+  // ── Browser History Sync ─────────────────────────────────
+  useEffect(() => {
+    const handlePopState = (event) => {
+      if (event.state) {
+        if (event.state.selectedItemId && menu.length > 0) {
+          const item = menu.find(m => m.id === event.state.selectedItemId);
+          setSelectedItem(item || null);
+        } else {
+          setSelectedItem(null);
+        }
+        if (event.state.activeTab) {
+          setActiveTab(event.state.activeTab);
+        }
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [menu]);
+
+  useEffect(() => {
+    const currentState = { activeTab, selectedItemId: selectedItem?.id || null };
+    // Prevent pushing duplicate state if it already matches
+    if (window.history.state) {
+      const prev = window.history.state;
+      if (prev.activeTab === currentState.activeTab && prev.selectedItemId === currentState.selectedItemId) {
+        return;
+      }
+    }
+    
+    // Replace initial empty state instead of pushing to avoid breaking the first back press
+    // Pass window.location.pathname so the URL doesn't visually show query parameters
+    if (!window.history.state) {
+      window.history.replaceState(currentState, "", window.location.pathname);
+    } else {
+      window.history.pushState(currentState, "", window.location.pathname);
+    }
+  }, [activeTab, selectedItem]);
+
   // ────────────────────────────────────────────────────────────
   // Data loading
   // ────────────────────────────────────────────────────────────
@@ -199,9 +242,9 @@ export default function CustomerView({ onLogout, dbMode }) {
     try {
       const [menuData, ordersData, favsData, addrData] = await Promise.all([
         api.getFoodsMenu(),
-        api.getOrderHistory(),
-        api.getFavorites(),
-        api.getAddresses(),
+        currentUser ? api.getOrderHistory().catch(() => []) : Promise.resolve([]),
+        currentUser ? api.getFavorites().catch(() => []) : Promise.resolve([]),
+        currentUser ? api.getAddresses().catch(() => []) : Promise.resolve([]),
       ]);
 
       try { const c = await api.getActiveCoupons(); setActiveCoupons(c); } catch {}
@@ -209,22 +252,26 @@ export default function CustomerView({ onLogout, dbMode }) {
       const bannersData = await api.getPublicBanners().catch(() => []);
       const settingsData = await api.getPublicStoreSettings().catch(() => ({}));
 
-      api.refreshUser().then(u => { if (u) setLiveUser(u); }).catch(() => {});
-      api.getCustomerTickets().then(setTickets).catch(() => {});
-      api.getCustomerReviews().then(setMyReviews).catch(() => {});
+      if (currentUser) {
+        api.refreshUser().then(u => { if (u) setLiveUser(u); }).catch(() => {});
+        api.getCustomerTickets().then(setTickets).catch(() => {});
+        api.getCustomerReviews().then(setMyReviews).catch(() => {});
+      }
 
       setMenu(menuData);
       setOrders(ordersData);
       setFavorites(favsData.map(f => f.menu_item_id));
       setAddresses(addrData.length > 0 ? addrData : DEFAULT_ADDRESSES);
 
-      const topBanners   = bannersData.filter(b => ["home", "home_top"].includes(b.display_location));
+      const topBanners   = bannersData.filter(b => ["home", "home_top", "hero"].includes(b.display_location)).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       const midBanners   = bannersData.filter(b => b.display_location === "home_middle");
       const botBanners   = bannersData.filter(b => b.display_location === "home_bottom");
       const chkBanners   = bannersData.filter(b => b.display_location === "checkout");
       const pBanner      = bannersData.find(b => ["popup", "popup_after_login"].includes(b.display_location));
+      const storyBans    = bannersData.filter(b => b.display_location === "brand_story").sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
       setBanners(topBanners);
+      setStoryBanners(storyBans);
       setMiddleBanners(midBanners);
       setBottomBanners(botBanners);
       setCheckoutBanners(chkBanners);
@@ -305,6 +352,10 @@ export default function CustomerView({ onLogout, dbMode }) {
   // ────────────────────────────────────────────────────────────
   const toggleFavorite = async (itemId, e) => {
     e?.stopPropagation?.();
+    if (!currentUser) {
+      alert("Please login to save your favorite items!");
+      return;
+    }
     const isFav = favorites.includes(itemId);
     setFavorites(prev => isFav ? prev.filter(id => id !== itemId) : [...prev, itemId]);
     try {
@@ -333,6 +384,13 @@ export default function CustomerView({ onLogout, dbMode }) {
     if (!items.length) return;
     if (!checkoutAddress.trim()) { alert("Please select or add a delivery address."); return; }
 
+    if (!currentUser) {
+      if (!guestName.trim() || !guestEmail.trim() || !guestPhone.trim()) {
+        alert("Please provide your contact details (Name, Email, Phone) to place a guest order.");
+        return;
+      }
+    }
+
     if (paymentMethod === "CARD") {
       if (!cardName.trim()) { alert("Please enter cardholder name."); return; }
       const raw = cardNumber.replace(/\s+/g, "");
@@ -345,15 +403,27 @@ export default function CustomerView({ onLogout, dbMode }) {
     try {
       if (paymentMethod !== "COD") await new Promise(r => setTimeout(r, 1500));
       const pointsToRedeem = useLoyaltyPoints && user?.loyalty_points ? user.loyalty_points : 0;
-      await api.placeOrder(items, checkoutAddress.trim(), paymentMethod, appliedCoupon?.code || null, pointsToRedeem, deliveryCharge);
+      
+      const guestDetails = !currentUser ? {
+        guest_name: guestName.trim(),
+        guest_email: guestEmail.trim(),
+        guest_phone: guestPhone.trim()
+      } : null;
+
+      await api.placeOrder(items, checkoutAddress.trim(), paymentMethod, appliedCoupon?.code || null, pointsToRedeem, deliveryCharge, guestDetails);
 
       setCart({});
       setAppliedCoupon(null); setCouponCodeInput(""); setUseLoyaltyPoints(false);
       setCardNumber(""); setCardExpiry(""); setCardCvv(""); setCardName("");
       setPaymentMethod("COD"); setCheckoutAddress("");
-      setActiveTab("orders");
-      api.refreshUser().then(u => { if (u) setLiveUser(u); }).catch(() => {});
-      loadData();
+      setGuestName(""); setGuestEmail(""); setGuestPhone("");
+      if (currentUser) {
+        setActiveTab("orders");
+        api.refreshUser().then(u => { if (u) setLiveUser(u); }).catch(() => {});
+        loadData();
+      } else {
+        setActiveTab("home");
+      }
       alert("Order placed successfully! Your order is being prepared. 🎉");
     } catch (err) {
       alert("Order failed: " + err.message);
@@ -363,16 +433,39 @@ export default function CustomerView({ onLogout, dbMode }) {
   };
 
   const handleApplyCoupon = async (codeOverride) => {
-    const code = (typeof codeOverride === "string" ? codeOverride : couponCodeInput).trim();
+    const code = (typeof codeOverride === "string" ? codeOverride : couponCodeInput).trim().toUpperCase();
     if (!code) return;
     setCouponError("");
     try {
+      // First check eligibility against local coupon list for better error messages
+      const localCoupon = activeCoupons.find(c => c.code === code);
+      if (localCoupon) {
+        const cartTotal = getCartTotal();
+        const cartItemIds = Object.keys(cart).map(id => parseInt(id));
+        if (localCoupon.min_order_value && cartTotal < localCoupon.min_order_value) {
+          const needed = (localCoupon.min_order_value - cartTotal).toFixed(0);
+          setCouponError(`Add ₹${needed} more to your cart to use this coupon (min. ₹${localCoupon.min_order_value})`);
+          return;
+        }
+        if (localCoupon.applicable_customer_id && currentUser?.id !== localCoupon.applicable_customer_id) {
+          setCouponError("This coupon is not available for your account");
+          return;
+        }
+        if (localCoupon.is_first_order_only && orders.filter(o => o.status !== "cancelled").length > 0) {
+          setCouponError("This coupon is for first-time orders only");
+          return;
+        }
+        if (localCoupon.applicable_menu_item_id && !cartItemIds.includes(localCoupon.applicable_menu_item_id)) {
+          setCouponError("Add the required product to your cart to use this coupon");
+          return;
+        }
+      }
+
       const coupon = await api.validateCoupon(code);
       setAppliedCoupon(coupon);
       setCouponCodeInput("");
-      alert(`Coupon "${coupon.code}" applied! ${coupon.discount_pct}% off`);
     } catch (err) {
-      setCouponError(err.message || "Invalid coupon");
+      setCouponError(err.message || "Invalid coupon code");
       setAppliedCoupon(null);
     }
   };
@@ -567,6 +660,11 @@ export default function CustomerView({ onLogout, dbMode }) {
   };
 
   const renderPage = () => {
+    if (!currentUser && ["orders", "wishlist", "tickets", "profile"].includes(activeTab)) {
+      setActiveTab("home");
+      return null;
+    }
+
     // Product detail overlay
     if (selectedItem) {
       return (
@@ -576,6 +674,7 @@ export default function CustomerView({ onLogout, dbMode }) {
           cartQty={cart[selectedItem.id] || 0}
           isFav={favorites.includes(selectedItem.id)}
           onBack={() => setSelectedItem(null)}
+          onGoToCart={() => { setSelectedItem(null); setActiveTab("cart"); }}
         />
       );
     }
@@ -586,6 +685,7 @@ export default function CustomerView({ onLogout, dbMode }) {
           <HomePage
             {...commonProductProps}
             banners={banners}
+            storyBanners={storyBanners}
             loading={loading}
             setActiveTab={setActiveTab}
             setActiveCategory={setActiveCategory}
@@ -630,12 +730,15 @@ export default function CustomerView({ onLogout, dbMode }) {
             storeSettings={storeSettings}
             checkoutBanners={checkoutBanners}
             onCheckout={() => setActiveTab("checkout-flow")}
+            currentUser={currentUser}
+            orders={orders}
           />
         );
 
       case "checkout-flow":
         return (
           <CheckoutPage
+            currentUser={currentUser}
             cart={cart} menu={menu}
             addresses={addresses}
             selectedAddressId={selectedAddressId} setSelectedAddressId={setSelectedAddressId}
@@ -658,6 +761,9 @@ export default function CustomerView({ onLogout, dbMode }) {
             discountAmount={discountAmount} actualLoyaltyDiscount={actualLoyaltyDiscount}
             paymentProcessing={paymentProcessing} onPlaceOrder={handlePlaceOrder}
             storeSettings={storeSettings} checkoutBanners={checkoutBanners}
+            guestName={guestName} setGuestName={setGuestName}
+            guestEmail={guestEmail} setGuestEmail={setGuestEmail}
+            guestPhone={guestPhone} setGuestPhone={setGuestPhone}
           />
         );
 
@@ -759,14 +865,6 @@ export default function CustomerView({ onLogout, dbMode }) {
         </div>
       )}
 
-      {/* Desktop sidebar */}
-      <DesktopSidebar
-        activeTab={activeTab}
-        setActiveTab={(tab) => { setSelectedItem(null); setActiveTab(tab); }}
-        cartCount={cartCount}
-        onLogout={onLogout}
-      />
-
       {/* Main content area */}
       <div className="desk-main">
         {/* Store status banner */}
@@ -780,6 +878,8 @@ export default function CustomerView({ onLogout, dbMode }) {
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           onOpenCart={openCartDrawer}
+          onLogout={currentUser ? onLogout : onLoginRequest}
+          currentUser={currentUser}
         />
 
         {/* Mobile header */}
@@ -811,6 +911,8 @@ export default function CustomerView({ onLogout, dbMode }) {
         setActiveTab={(tab) => { setSelectedItem(null); setActiveTab(tab); }}
         cartCount={cartCount}
         onOpenCart={openCartDrawer}
+        currentUser={currentUser}
+        onLoginRequest={onLoginRequest}
       />
     </div>
   );

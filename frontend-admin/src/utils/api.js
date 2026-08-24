@@ -2509,5 +2509,299 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || "Failed to update ticket");
     return data;
+  },
+
+  // --- Audit Logs ---
+  async adminGetAuditLogs(page = 1, limit = 100) {
+    const res = await fetch(`${API_BASE_URL}/admin/audit-logs?limit=${limit}`, { headers: getAuthHeader() });
+    if (!res.ok) return { logs: [] };
+    const data = await safeJson(res);
+    return { logs: Array.isArray(data) ? data : (data.logs || []) };
+  },
+
+  // --- Revenue History & Reset ---
+  async adminGetRevenueHistory() {
+    const res = await fetch(`${API_BASE_URL}/admin/revenue/history`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load revenue history");
+    return safeJson(res);
+  },
+  async adminResetRevenue(outlet_id) {
+    const res = await fetch(`${API_BASE_URL}/admin/revenue/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ outlet_id })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to reset revenue");
+    return data;
+  },
+
+  // --- Refunds ---
+  async adminRefundOrder(orderId, payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/refund`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to process refund");
+    return data;
+  },
+
+  // --- Admin Profile ---
+  async patchAdminProfile(payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/profile`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update admin profile");
+},
+
+  // --- Banners & Store Settings ---
+  async getPublicBanners() {
+    const live = await checkBackendAlive(true);
+    if (!live) return [];
+    const res = await fetch(`${API_BASE_URL}/public/banners`);
+    if (!res.ok) throw new Error("Failed to load banners");
+    return safeJson(res);
+  },
+  async adminGetBanners() {
+    const res = await fetch(`${API_BASE_URL}/admin/banners`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load banners");
+    return safeJson(res);
+  },
+  async adminCreateBanner(payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/banners`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to create banner");
+    return data;
+  },
+  async adminUpdateBanner(id, payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/banners/${id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update banner");
+    return data;
+  },
+  async adminDeleteBanner(id) {
+    const res = await fetch(`${API_BASE_URL}/admin/banners/${id}`, {
+      method: "DELETE", headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to delete banner");
+    return data;
+  },
+  async getPublicStoreSettings() {
+    const live = await checkBackendAlive(true);
+    if (!live) return { is_store_online: "true" };
+    const res = await fetch(`${API_BASE_URL}/public/store-settings`);
+    if (!res.ok) throw new Error("Failed to load store settings");
+    return safeJson(res);
+  },
+  async adminGetMarketPurchases() {
+    const live = await checkBackendAlive();
+    if (!live) return [];
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load market purchases");
+    return safeJson(res);
+  },
+  
+  async adminAddMarketPurchase(payload) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to add market purchase");
+    return data;
+  },
+
+  async adminEditMarketPurchase(id, payload) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to update market purchase");
+    return data;
+  },
+
+  async adminDeleteMarketPurchase(id) {
+    const live = await checkBackendAlive();
+    if (!live) throw new Error("Market purchases requires live backend");
+
+    const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to delete market purchase");
+    return data;
+  },
+
+  async adminGetStoreSettings() {
+    const live = await checkBackendAlive();
+    if (!live) return { is_store_online: "true" };
+    const res = await fetch(`${API_BASE_URL}/admin/store-settings`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load store settings");
+    return safeJson(res);
+  },
+  async adminUpdateStoreSettings(payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/store-settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update store settings");
+    return data;
+  },
+
+  // --- Ticketing ---
+  async getCustomerTickets() {
+    const res = await fetch(`${API_BASE_URL}/customer/tickets`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load tickets");
+    return safeJson(res);
+  },
+  async createTicket(payload) {
+    const res = await fetch(`${API_BASE_URL}/customer/tickets`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to create ticket");
+    return data;
+  },
+  async getForecast() {
+    return _fetch('/api/admin/forecast');
+  },
+  async adminGetWhatsAppMessages() {
+    return _fetch('/api/admin/whatsapp');
+  },
+
+  async adminGetTickets() {
+    const res = await fetch(`${API_BASE_URL}/admin/tickets`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load tickets");
+    return safeJson(res);
+  },
+  async adminReplyTicket(id, payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/tickets/${id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update ticket");
+    return data;
+  },
+
+  // --- Audit Logs ---
+  async adminGetAuditLogs(page = 1, limit = 100) {
+    const res = await fetch(`${API_BASE_URL}/admin/audit-logs?limit=${limit}`, { headers: getAuthHeader() });
+    if (!res.ok) return { logs: [] };
+    const data = await safeJson(res);
+    return { logs: Array.isArray(data) ? data : (data.logs || []) };
+  },
+
+  // --- Revenue History & Reset ---
+  async adminGetRevenueHistory() {
+    const res = await fetch(`${API_BASE_URL}/admin/revenue/history`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load revenue history");
+    return safeJson(res);
+  },
+  async adminResetRevenue(outlet_id) {
+    const res = await fetch(`${API_BASE_URL}/admin/revenue/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ outlet_id })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to reset revenue");
+    return data;
+  },
+
+  // --- Refunds ---
+  async adminRefundOrder(orderId, payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/refund`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to process refund");
+    return data;
+  },
+
+  // --- Admin Profile ---
+  async patchAdminProfile(payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/profile`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update admin profile");
+    return data;
+  },
+
+  // --- POS Fast-Switch ---
+  async posUnlock(payload) {
+    const res = await fetch(`${API_BASE_URL}/auth/pos/unlock`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Unlock failed");
+    return data;
+  },
+
+  // --- Kitchen Active Orders ---
+  async kitchenGetActiveOrders() {
+    const res = await fetch(`${API_BASE_URL}/kitchen/active-orders`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load kitchen orders");
+    return safeJson(res);
+  },
+  async kitchenUpdateOrderStatus(orderId, status) {
+    const res = await fetch(`${API_BASE_URL}/kitchen/orders/${orderId}/status`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ status })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to update status");
+    return data;
+  },
+
+  // --- System Data Reset ---
+  async resetTestOrders() {
+    const res = await fetch(`${API_BASE_URL}/admin/reset/orders`, { method: "POST", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to reset test orders");
+    return data;
+  },
+  async resetReviews() {
+    const res = await fetch(`${API_BASE_URL}/admin/reset/reviews`, { method: "POST", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to clear reviews");
+    return data;
+  },
+  async resetStockLevels() {
+    const res = await fetch(`${API_BASE_URL}/admin/reset/stock`, { method: "POST", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to reset stock levels");
+    return data;
+  },
+  async resetTestCustomers() {
+    const res = await fetch(`${API_BASE_URL}/admin/reset/customers`, { method: "POST", headers: getAuthHeader() });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to clear test customers");
+    return data;
   }
 };

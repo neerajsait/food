@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { MapPin, CreditCard, Banknote, Smartphone, Plus, Check } from "lucide-react";
 
 export default function CheckoutPage({
+  currentUser,
   cart, menu, addresses, selectedAddressId, setSelectedAddressId,
   checkoutAddress, setCheckoutAddress,
   newAddrVal, setNewAddrVal, newAddrLabel, setNewAddrLabel,
@@ -12,7 +13,8 @@ export default function CheckoutPage({
   appliedCoupon, onRemoveCoupon, couponCodeInput, setCouponCodeInput, onApplyCoupon, couponError, activeCoupons,
   useLoyaltyPoints, setUseLoyaltyPoints, loyaltyPoints, maxLoyaltyDiscount,
   finalSubtotal, deliveryCharge, finalTotal, discountAmount, actualLoyaltyDiscount,
-  paymentProcessing, onPlaceOrder, storeSettings, checkoutBanners
+  paymentProcessing, onPlaceOrder, storeSettings, checkoutBanners,
+  guestName, setGuestName, guestEmail, setGuestEmail, guestPhone, setGuestPhone
 }) {
   const [step, setStep] = useState(1); // 1: address, 2: payment, 3: review
 
@@ -57,62 +59,87 @@ export default function CheckoutPage({
           {step === 1 && (
             <div className="card card-padded animate-fade-in">
               <h2 style={{ fontSize: "1.1rem", fontWeight: 800, marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <MapPin size={18} color="var(--green)" /> Delivery Address
+                <MapPin size={18} color="var(--green)" /> {currentUser ? "Delivery Address" : "Contact & Delivery Info"}
               </h2>
 
-              {/* Existing addresses */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.625rem", marginBottom: "1.25rem" }}>
-                {addresses.map(addr => (
-                  <div
-                    key={addr.id}
-                    onClick={() => { setSelectedAddressId(addr.id); setCheckoutAddress(addr.address_line); }}
-                    style={{
-                      display: "flex", alignItems: "flex-start", gap: "0.875rem",
-                      padding: "1rem", borderRadius: "var(--radius-lg)", cursor: "pointer",
-                      border: `1.5px solid ${selectedAddressId === addr.id ? "var(--green)" : "var(--border)"}`,
-                      background: selectedAddressId === addr.id ? "var(--green-dim)" : "var(--bg-card)",
-                      transition: "all var(--t-fast)",
-                    }}
-                  >
-                    <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${selectedAddressId === addr.id ? "var(--green)" : "var(--border)"}`, background: selectedAddressId === addr.id ? "var(--green)" : "transparent", boxShadow: selectedAddressId === addr.id ? "inset 0 0 0 3px var(--bg-card)" : "none", flexShrink: 0, marginTop: 2, transition: "all var(--t-fast)" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, fontSize: "0.875rem", marginBottom: "0.25rem" }}>{addr.label || "Address"}</div>
-                      <div style={{ fontSize: "0.8125rem", color: "var(--text-2)", lineHeight: 1.5 }}>{addr.address_line}</div>
-                    </div>
-                    <button
-                      onClick={e => { e.stopPropagation(); onDeleteAddress(addr.id, e); }}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: "0.75rem", padding: "0.25rem", flexShrink: 0 }}
-                      aria-label="Delete address"
-                    >✕</button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Add new address */}
-              {!showAddressManager ? (
-                <button className="btn btn-ghost btn-sm" onClick={() => setShowAddressManager(true)} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <Plus size={15} /> Add New Address
-                </button>
-              ) : (
-                <form onSubmit={onAddAddress} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              {!currentUser && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1.5rem" }}>
                   <div className="form-group">
-                    <label className="form-label">Label</label>
-                    <select className="form-input" value={newAddrLabel} onChange={e => setNewAddrLabel(e.target.value)}>
-                      <option>Home</option><option>Work</option><option>Other</option>
-                    </select>
+                    <label className="form-label">Full Name</label>
+                    <input className="form-input" placeholder="Enter your name" value={guestName} onChange={e => setGuestName(e.target.value)} required />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Address</label>
-                    <textarea className="form-input" placeholder="Enter full address…" value={newAddrVal} onChange={e => setNewAddrVal(e.target.value)} rows={3} required />
+                    <label className="form-label">Email</label>
+                    <input className="form-input" type="email" placeholder="Enter your email" value={guestEmail} onChange={e => setGuestEmail(e.target.value)} required />
                   </div>
-                  <div style={{ display: "flex", gap: "0.5rem" }}>
-                    <button type="submit" className="btn btn-primary btn-sm">Save Address</button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAddressManager(false)}>Cancel</button>
+                  <div className="form-group">
+                    <label className="form-label">Phone</label>
+                    <input className="form-input" type="tel" placeholder="Enter your phone number" value={guestPhone} onChange={e => setGuestPhone(e.target.value)} required />
                   </div>
-                </form>
+                  <div className="form-group">
+                    <label className="form-label">Delivery Address</label>
+                    <textarea className="form-input" placeholder="Enter full delivery address…" value={checkoutAddress} onChange={e => setCheckoutAddress(e.target.value)} rows={3} required />
+                  </div>
+                </div>
               )}
 
-              <button className="btn btn-primary" style={{ width: "100%", marginTop: "1.5rem" }} onClick={() => setStep(2)} disabled={!checkoutAddress.trim()}>
+              {currentUser && (
+                <>
+                  {/* Existing addresses */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.625rem", marginBottom: "1.25rem" }}>
+                    {addresses.map(addr => (
+                      <div
+                        key={addr.id}
+                        onClick={() => { setSelectedAddressId(addr.id); setCheckoutAddress(addr.address_line); }}
+                        style={{
+                          display: "flex", alignItems: "flex-start", gap: "0.875rem",
+                          padding: "1rem", borderRadius: "var(--radius-lg)", cursor: "pointer",
+                          border: `1.5px solid ${selectedAddressId === addr.id ? "var(--green)" : "var(--border)"}`,
+                          background: selectedAddressId === addr.id ? "var(--green-dim)" : "var(--bg-card)",
+                          transition: "all var(--t-fast)",
+                        }}
+                      >
+                        <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${selectedAddressId === addr.id ? "var(--green)" : "var(--border)"}`, background: selectedAddressId === addr.id ? "var(--green)" : "transparent", boxShadow: selectedAddressId === addr.id ? "inset 0 0 0 3px var(--bg-card)" : "none", flexShrink: 0, marginTop: 2, transition: "all var(--t-fast)" }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: "0.875rem", marginBottom: "0.25rem" }}>{addr.label || "Address"}</div>
+                          <div style={{ fontSize: "0.8125rem", color: "var(--text-2)", lineHeight: 1.5 }}>{addr.address_line}</div>
+                        </div>
+                        <button
+                          onClick={e => { e.stopPropagation(); onDeleteAddress(addr.id, e); }}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: "0.75rem", padding: "0.25rem", flexShrink: 0 }}
+                          aria-label="Delete address"
+                        >✕</button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Add new address */}
+                  {!showAddressManager ? (
+                    <button className="btn btn-ghost btn-sm" onClick={() => setShowAddressManager(true)} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Plus size={15} /> Add New Address
+                    </button>
+                  ) : (
+                    <form onSubmit={onAddAddress} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                      <div className="form-group">
+                        <label className="form-label">Label</label>
+                        <select className="form-input" value={newAddrLabel} onChange={e => setNewAddrLabel(e.target.value)}>
+                          <option>Home</option><option>Work</option><option>Other</option>
+                        </select>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Address</label>
+                        <textarea className="form-input" placeholder="Enter full address…" value={newAddrVal} onChange={e => setNewAddrVal(e.target.value)} rows={3} required />
+                      </div>
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button type="submit" className="btn btn-primary btn-sm">Save Address</button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAddressManager(false)}>Cancel</button>
+                      </div>
+                    </form>
+                  )}
+                </>
+              )}
+
+              <button className="btn btn-primary" style={{ width: "100%", marginTop: "1.5rem" }} onClick={() => setStep(2)} disabled={!checkoutAddress.trim() || (!currentUser && (!guestName.trim() || !guestEmail.trim() || !guestPhone.trim()))}>
                 Continue to Payment →
               </button>
             </div>

@@ -4,16 +4,16 @@ import Login from "./components/Login";
 import ErrorBoundary from "./components/ErrorBoundary";
 import VerifyEmail from "./components/VerifyEmail";
 import SkeletonLoader from "./components/SkeletonLoader";
+import {
+  LogOut, Zap, 
+  ChevronRight, Lock
+} from "lucide-react";
 
 // Lazy load views for code splitting
 const AdminView = lazy(() => import("./components/AdminView"));
 const StaffPOS = lazy(() => import("./components/StaffPOS"));
 const OutletOwnerView = lazy(() => import("./components/OutletOwnerView"));
 const KitchenView = lazy(() => import("./components/KitchenView"));
-import {
-  LogOut, Zap, 
-  ChevronRight, Lock
-} from "lucide-react";
 
 
 
@@ -39,6 +39,9 @@ export default function App() {
         const user = await api.getMe();
         if (user) {
           setCurrentUser(user);
+          if (window.location.pathname === '/login') {
+            window.history.replaceState({}, '', window.location.hash || '/');
+          }
         } else {
           api.logout();
           setCurrentUser(null);
@@ -58,6 +61,9 @@ export default function App() {
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
     api.getMode().then(setDbMode);
+    if (window.location.pathname === '/login') {
+      window.history.replaceState({}, '', window.location.hash || '/');
+    }
   };
 
   const handleLogout = () => {

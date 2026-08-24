@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { SlidersHorizontal, X } from "lucide-react";
+import { SlidersHorizontal, X, Star } from "lucide-react";
 import ProductCard from "./ProductCard";
 import { ProductGridSkeleton } from "./SkeletonLoader";
 
@@ -22,9 +22,9 @@ const SORT_OPTIONS = [
   { value: "discount",   label: "Biggest Discount" },
 ];
 
-function FilterSidebar({ activeCategory, setActiveCategory, sortBy, setSortBy, priceMax, setPriceMax, showOnlyVeg, setShowOnlyVeg, spiceFilter, setSpiceFilter, onReset, count, total }) {
+function FilterSidebar({ className = "", activeCategory, setActiveCategory, sortBy, setSortBy, priceMax, setPriceMax, showOnlyVeg, setShowOnlyVeg, spiceFilter, setSpiceFilter, ratingFilter, setRatingFilter, onReset, count, total }) {
   return (
-    <div className="filter-sidebar">
+    <div className={`filter-sidebar ${className}`.trim()}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
         <h3 style={{ fontSize: "1.25rem", fontWeight: 900, color: "var(--text)", margin: 0, letterSpacing: "-0.5px" }}>Filters</h3>
         <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8125rem", color: "var(--text-3)", textDecoration: "underline", fontWeight: 500, padding: 0 }}>Clear all</button>
@@ -46,27 +46,38 @@ function FilterSidebar({ activeCategory, setActiveCategory, sortBy, setSortBy, p
         </div>
       </div>
 
-      <div className="filter-group">
-        <div className="filter-group-title">Sort By</div>
-        <div style={{ position: "relative" }}>
-          <select
-            className="form-input"
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value)}
-            style={{ fontSize: "0.875rem", padding: "0.75rem 1rem", borderRadius: "var(--radius-md)", background: "var(--bg-card)", border: "1px solid var(--border)", width: "100%", cursor: "pointer", appearance: "none" }}
-          >
-            {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <div style={{ position: "absolute", right: "1rem", top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "var(--text-3)" }}>
-            ▼
-          </div>
-        </div>
-      </div>
+      
 
       <div className="filter-group">
-        <div className="filter-group-title" style={{ display: "flex", justifyContent: "space-between" }}>
+        <div className="filter-group-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span>Max Price</span>
-          <span style={{ color: "var(--text)", fontWeight: 700 }}>₹{priceMax}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            <span style={{ color: "var(--text)", fontWeight: 700 }}>₹</span>
+            <input
+              type="number"
+              className="price-input"
+              value={priceMax}
+              min={0}
+              max={1000}
+              onChange={e => {
+                let val = parseInt(e.target.value) || 0;
+                if (val > 1000) val = 1000;
+                if (val < 0) val = 0;
+                setPriceMax(val);
+              }}
+              style={{
+                width: "60px",
+                padding: "2px 6px",
+                border: "1px solid var(--border)",
+                borderRadius: "4px",
+                background: "var(--bg-card)",
+                color: "var(--text)",
+                fontWeight: 700,
+                fontSize: "0.875rem",
+                outline: "none"
+              }}
+            />
+          </div>
         </div>
         <input 
           type="range" min={0} max={1000} step={50} value={priceMax}
@@ -78,14 +89,31 @@ function FilterSidebar({ activeCategory, setActiveCategory, sortBy, setSortBy, p
         </div>
       </div>
 
+
       <div className="filter-group">
-        <div className="filter-group-title">Spice Level</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-          {["all", "mild", "medium", "hot"].map(s => (
-            <button key={s} className={`filter-chip${spiceFilter === s ? " active" : ""}`} onClick={() => setSpiceFilter(s)}>
-              {s === "all" ? "Any" : s.charAt(0).toUpperCase() + s.slice(1)}
+        <div className="filter-group-title">Minimum Rating</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+          {[4, 3, 2, 1].map(stars => (
+            <button
+              key={stars}
+              className={`category-item${ratingFilter === stars ? " active" : ""}`}
+              onClick={() => setRatingFilter(stars)}
+              style={{ justifyContent: "flex-start", gap: "0.5rem" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "2px", flex: 1 }}>
+                {stars} <Star size={14} fill="var(--warning)" color="var(--warning)" /> & Up
+              </div>
+              {ratingFilter === stars && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)" }} />}
             </button>
           ))}
+          <button
+            className={`category-item${ratingFilter === 0 ? " active" : ""}`}
+            onClick={() => setRatingFilter(0)}
+            style={{ justifyContent: "flex-start" }}
+          >
+            <span style={{ flex: 1 }}>Any Rating</span>
+            {ratingFilter === 0 && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)" }} />}
+          </button>
         </div>
       </div>
     </div>
@@ -97,6 +125,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
   const [priceMax, setPriceMax] = useState(1000);
   const [showOnlyVeg, setShowOnlyVeg] = useState(false);
   const [spiceFilter, setSpiceFilter] = useState("all");
+  const [ratingFilter, setRatingFilter] = useState(0);
   const [showMobileFilter, setShowMobileFilter] = useState(false);
 
   const handleReset = () => {
@@ -104,6 +133,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
     setPriceMax(1000);
     setShowOnlyVeg(false);
     setSpiceFilter("all");
+    setRatingFilter(0);
     setActiveCategory("all");
   };
 
@@ -118,6 +148,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
       if (item.price > priceMax) return false;
       if (showOnlyVeg && !item.is_veg) return false;
       if (spiceFilter !== "all" && item.spice_level !== spiceFilter) return false;
+      if (ratingFilter > 0 && (parseFloat(item.average_rating) || 0) < ratingFilter) return false;
       return true;
     });
 
@@ -132,7 +163,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
       }); break;
     }
     return result;
-  }, [menu, activeCategory, favorites, searchQuery, priceMax, showOnlyVeg, spiceFilter, sortBy]);
+  }, [menu, activeCategory, favorites, searchQuery, priceMax, showOnlyVeg, spiceFilter, ratingFilter, sortBy]);
 
   return (
     <div className="page-content">
@@ -161,6 +192,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
               priceMax={priceMax} setPriceMax={setPriceMax}
               showOnlyVeg={showOnlyVeg} setShowOnlyVeg={setShowOnlyVeg}
               spiceFilter={spiceFilter} setSpiceFilter={setSpiceFilter}
+              ratingFilter={ratingFilter} setRatingFilter={setRatingFilter}
               onReset={handleReset}
               count={filtered.length} total={menu.length}
             />
@@ -169,17 +201,19 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
       )}
 
       <div className="shop-layout">
-        {/* Desktop filter */}
-        <div className="desktop-only">
-          <FilterSidebar
-            activeCategory={activeCategory} setActiveCategory={setActiveCategory}
-            sortBy={sortBy} setSortBy={setSortBy}
-            priceMax={priceMax} setPriceMax={setPriceMax}
-            showOnlyVeg={showOnlyVeg} setShowOnlyVeg={setShowOnlyVeg}
-            spiceFilter={spiceFilter} setSpiceFilter={setSpiceFilter}
-            onReset={handleReset}
-            count={filtered.length} total={menu.length}
-          />
+        <div className="desktop-only" style={{ width: "240px", flexShrink: 0 }}>
+          <div style={{ position: "fixed", top: "100px", width: "240px", height: "calc(100vh - 120px)", overflowY: "auto", paddingRight: "1rem" }}>
+            <FilterSidebar
+              activeCategory={activeCategory} setActiveCategory={setActiveCategory}
+              sortBy={sortBy} setSortBy={setSortBy}
+              priceMax={priceMax} setPriceMax={setPriceMax}
+              showOnlyVeg={showOnlyVeg} setShowOnlyVeg={setShowOnlyVeg}
+              spiceFilter={spiceFilter} setSpiceFilter={setSpiceFilter}
+              ratingFilter={ratingFilter} setRatingFilter={setRatingFilter}
+              onReset={handleReset}
+              count={filtered.length} total={menu.length}
+            />
+          </div>
         </div>
 
         {/* Product grid */}

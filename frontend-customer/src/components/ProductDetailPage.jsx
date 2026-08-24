@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ArrowLeft, Heart, Share2, Plus, Minus, ShoppingCart, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, Heart, Share2, Plus, Minus, ShoppingCart, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from "lucide-react";
 import Rating from "./Rating";
 import PriceDisplay from "./PriceDisplay";
 import ProductCard from "./ProductCard";
@@ -7,32 +7,20 @@ import { api } from "../utils/api";
 
 const FALLBACK = "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=800&q=80";
 
-function AccordionSection({ title, children, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div style={{ borderTop: "1px solid var(--border)" }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem 0", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "0.9375rem", fontWeight: 700, color: "var(--text)" }}
-      >
-        {title}
-        {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-      </button>
-      {open && <div style={{ paddingBottom: "1rem", fontSize: "0.875rem", color: "var(--text-2)", lineHeight: 1.7 }}>{children}</div>}
-    </div>
-  );
-}
 
-export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemove, onToggleFav, onBack, menu, cart, favorites, onItemClick }) {
+
+export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemove, onToggleFav, onBack, menu, cart, favorites, onItemClick, onGoToCart }) {
+  const [activeTab, setActiveTab] = useState("ingredients");
   const [qty, setQty] = useState(Math.max(1, cartQty));
+  const carouselRef = React.useRef(null);
+  const [descExpanded, setDescExpanded] = useState(false);
   const [reviews, setReviews] = useState([]);
   const [reviewsLoaded, setReviewsLoaded] = useState(false);
-  const [newRating, setNewRating] = useState(5);
-  const [newComment, setNewComment] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [reviewMsg, setReviewMsg] = useState("");
+
 
   React.useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    
     if (!reviewsLoaded && item?.id) {
       api.getMenuItemReviews(item.id)
         .then(data => { setReviews(data); setReviewsLoaded(true); })
@@ -49,7 +37,20 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
     ? parseFloat((reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1))
     : parseFloat(item.average_rating || 0);
 
-  const related = menu.filter(m => m.category === item.category && m.id !== item.id).slice(0, 6);
+  const related = React.useMemo(() => {
+    if (!menu || !item) return [];
+    let rel = menu.filter(m => m.category === item.category && m.id !== item.id);
+    if (rel.length === 0) {
+      rel = menu.filter(m => m.id !== item.id);
+    }
+    return [...rel].sort(() => 0.5 - Math.random()).slice(0, 8);
+  }, [item?.id, menu]);
+
+  const scrollCarousel = (dir) => {
+    if (carouselRef.current) {
+      carouselRef.current.scrollBy({ left: dir * 300, behavior: 'smooth' });
+    }
+  };
 
   const handleAddQty = () => {
     // Add qty to cart
@@ -58,23 +59,7 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
     for (let i = currentInCart; i > qty; i--) onRemove(item.id);
   };
 
-  const handleSubmitReview = async (e) => {
-    e.preventDefault();
-    if (!newComment.trim()) return;
-    setSubmitting(true);
-    try {
-      await api.submitMenuItemReview(item.id, { rating: newRating, comment: newComment.trim() });
-      const data = await api.getMenuItemReviews(item.id);
-      setReviews(data);
-      setNewComment("");
-      setNewRating(5);
-      setReviewMsg("Review submitted! Thank you.");
-    } catch (err) {
-      setReviewMsg("Failed: " + err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
+
 
   return (
     <div>
@@ -87,10 +72,10 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
 
       {/* Main detail */}
       <div className="page-content" style={{ paddingTop: 0 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 450px) 1fr", gap: "2.5rem", alignItems: "start", marginBottom: "2rem", justifyContent: "center" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 300px) 1fr", gap: "2.5rem", alignItems: "start", marginBottom: "2rem", justifyContent: "center" }}>
 
           {/* Left: Image */}
-          <div style={{ position: "relative", borderRadius: "var(--radius-2xl)", overflow: "hidden", background: "var(--bg-hover)", aspectRatio: "1", maxWidth: "450px", width: "100%", margin: "0 auto" }}>
+          <div style={{ position: "relative", borderRadius: "var(--radius-2xl)", overflow: "hidden", background: "var(--bg-hover)", aspectRatio: "1", maxWidth: "300px", width: "100%", margin: "0 auto" }}>
             <img
               src={item.image_url || FALLBACK}
               alt={item.name}
@@ -103,7 +88,9 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
           {/* Right: Info */}
           <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
             <div>
-              <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--green)", textTransform: "uppercase", letterSpacing: "1px" }}>{item.category}</span>
+              <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--green)", textTransform: "uppercase", letterSpacing: "1px" }}>
+                {item.category?.replace(/&amp;/g, '&')}
+              </span>
               <h1 style={{ fontSize: "clamp(1.5rem, 3vw, 2rem)", fontWeight: 900, color: "var(--text)", marginTop: "0.375rem", lineHeight: 1.15, letterSpacing: "-0.3px" }}>
                 {item.name}
               </h1>
@@ -113,7 +100,25 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
 
             <PriceDisplay price={item.price} originalPrice={item.original_price} size="lg" />
 
-            <p style={{ fontSize: "0.9375rem", color: "var(--text-2)", lineHeight: 1.7 }}>{item.description}</p>
+            <div>
+              <p style={{
+                fontSize: "0.9375rem", color: "var(--text-2)", lineHeight: 1.7,
+                display: descExpanded ? "block" : "-webkit-box",
+                WebkitLineClamp: descExpanded ? "unset" : 3,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden"
+              }}>
+                {item.description}
+              </p>
+              {item.description && item.description.length > 120 && (
+                <button 
+                  onClick={() => setDescExpanded(!descExpanded)} 
+                  style={{ background: 'none', border: 'none', color: 'var(--green)', fontSize: '0.875rem', fontWeight: 600, padding: 0, marginTop: '0.25rem', cursor: 'pointer', transition: 'color var(--t-fast)' }}
+                >
+                  {descExpanded ? "Show less" : "Read more"}
+                </button>
+              )}
+            </div>
 
             {/* Quantity + Add */}
             <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
@@ -127,14 +132,25 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
               </div>
 
               <div style={{ display: "flex", gap: "0.75rem" }}>
-                <button
-                  className="btn btn-primary"
-                  style={{ flex: 1 }}
-                  onClick={handleAddQty}
-                >
-                  <ShoppingCart size={18} />
-                  {cartQty > 0 ? "Update Cart" : "Add to Cart"}
-                </button>
+                {cartQty > 0 ? (
+                  <button
+                    className="btn btn-primary"
+                    style={{ flex: 1 }}
+                    onClick={onGoToCart}
+                  >
+                    <ShoppingCart size={18} />
+                    Go to Cart
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-primary"
+                    style={{ flex: 1 }}
+                    onClick={handleAddQty}
+                  >
+                    <ShoppingCart size={18} />
+                    Add to Cart
+                  </button>
+                )}
                 <button
                   className={`btn btn-secondary btn-icon${isFav ? " active" : ""}`}
                   onClick={e => onToggleFav(item.id, e)}
@@ -145,28 +161,50 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
               </div>
             </div>
 
-            {/* Item code */}
-            {item.code && (
-              <div style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>
-                Product Code: <strong style={{ color: "var(--text-2)" }}>{item.code}</strong>
-              </div>
-            )}
+
           </div>
         </div>
 
         {/* Mobile: stack vertically (CSS handles this via media queries for the grid) */}
 
-        {/* Accordion sections */}
-        <div className="card card-padded mb-lg">
-          <AccordionSection title="Description" defaultOpen>
-            <p>{item.description || "No description available."}</p>
-          </AccordionSection>
-          <AccordionSection title="Storage & Shelf Life">
-            <p>Store in a cool, dry place. Best consumed within 3 months of opening. Refrigerate after opening.</p>
-          </AccordionSection>
-          <AccordionSection title="Shipping Information">
-            <p>Orders ship within 1-2 business days. Free delivery on orders above ₹499. Pan-India delivery available.</p>
-          </AccordionSection>
+        {/* Horizontal Detail Tabs */}
+        <div className="card mb-lg" style={{ overflow: "hidden" }}>
+          <div style={{ display: "flex", borderBottom: "1px solid var(--border)", background: "var(--bg-hover)", overflowX: "auto", gap: "0.5rem" }}>
+            {[
+              { id: "ingredients", label: "Ingredients" },
+              { id: "nutrition", label: "Nutritional Info" },
+              { id: "dietary", label: "Dietary Guidelines" },
+              { id: "storage", label: "Storage & Shelf Life" },
+              { id: "shipping", label: "Shipping Info" }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                style={{
+                  flex: "1 0 auto",
+                  padding: "1rem 1.5rem",
+                  background: activeTab === tab.id ? "var(--bg-card)" : "transparent",
+                  border: "none",
+                  borderBottom: activeTab === tab.id ? "2px solid var(--green)" : "2px solid transparent",
+                  color: activeTab === tab.id ? "var(--green)" : "var(--text-2)",
+                  fontWeight: activeTab === tab.id ? 700 : 600,
+                  fontSize: "0.875rem",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  transition: "all var(--t-fast)"
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ padding: "1.5rem", fontSize: "0.875rem", color: "var(--text-2)", lineHeight: 1.7 }}>
+            {activeTab === "ingredients" && <p>{item.ingredients || "Premium quality ingredients sourced from the best farms."}</p>}
+            {activeTab === "nutrition" && <p>{item.nutritional_info || "Energy: 250 kcal, Protein: 5g, Carbs: 30g, Fat: 10g per 100g."}</p>}
+            {activeTab === "dietary" && <p>{item.dietary_guidelines || "Suitable for vegetarians. May contain traces of nuts and dairy."}</p>}
+            {activeTab === "storage" && <p>Store in a cool, dry place. Best consumed within 3 months of opening. Refrigerate after opening.</p>}
+            {activeTab === "shipping" && <p>Orders ship within 1-2 business days. Free delivery on orders above ₹499. Pan-India delivery available.</p>}
+          </div>
         </div>
 
         {/* Reviews */}
@@ -174,7 +212,7 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
           <h2 className="section-title" style={{ marginBottom: "1.25rem" }}>Customer Reviews</h2>
 
           {reviews.length === 0 && reviewsLoaded && (
-            <p style={{ color: "var(--text-2)", fontSize: "0.875rem" }}>No reviews yet. Be the first to review!</p>
+            <p style={{ color: "var(--text-2)", fontSize: "0.875rem" }}>No reviews yet. Be our first customer to give a review.</p>
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginBottom: reviews.length ? "1.5rem" : "0" }}>
@@ -195,40 +233,16 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
             ))}
           </div>
 
-          {/* Write review */}
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "1.25rem" }}>
-            <h3 style={{ fontWeight: 700, fontSize: "0.9375rem", marginBottom: "1rem" }}>Write a Review</h3>
-            <form onSubmit={handleSubmitReview} style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
-              <div className="form-group">
-                <label className="form-label">Your Rating</label>
-                <Rating value={newRating} interactive onRate={setNewRating} size={20} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Your Review</label>
-                <textarea
-                  className="form-input"
-                  placeholder="Share your experience with this product…"
-                  value={newComment}
-                  onChange={e => setNewComment(e.target.value)}
-                  rows={3}
-                  required
-                />
-              </div>
-              {reviewMsg && <p style={{ fontSize: "0.8125rem", color: reviewMsg.startsWith("Failed") ? "var(--error)" : "var(--green)" }}>{reviewMsg}</p>}
-              <button type="submit" className="btn btn-primary btn-sm" disabled={submitting} style={{ alignSelf: "flex-start" }}>
-                {submitting ? <><span className="spinner" /> Submitting…</> : "Submit Review"}
-              </button>
-            </form>
-          </div>
+
         </div>
 
         {/* You may also like */}
         {related.length > 0 && (
           <div className="mb-2xl">
-            <div className="section-header">
+            <div className="section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2 className="section-title">You May Also Like</h2>
             </div>
-            <div className="carousel-wrap">
+            <div className="carousel-wrap" ref={carouselRef}>
               {related.map(rel => (
                 <div key={rel.id} style={{ width: 200, flexShrink: 0 }}>
                   <ProductCard
@@ -255,20 +269,31 @@ export default function ProductDetailPage({ item, cartQty, isFav, onAdd, onRemov
             <div style={{ fontSize: "0.75rem", color: "var(--text-3)", textDecoration: "line-through" }}>₹{item.original_price}</div>
           )}
         </div>
-        <button
-          className="btn btn-primary"
-          style={{ flex: 1, maxWidth: 220 }}
-          onClick={() => onAdd(item.id)}
-        >
-          <ShoppingCart size={18} />
-          {cartQty > 0 ? `In Cart (${cartQty})` : "Add to Cart"}
-        </button>
+        {cartQty > 0 ? (
+          <button
+            className="btn btn-primary"
+            style={{ flex: 1, maxWidth: 220 }}
+            onClick={onGoToCart}
+          >
+            <ShoppingCart size={18} />
+            Go to Cart ({cartQty})
+          </button>
+        ) : (
+          <button
+            className="btn btn-primary"
+            style={{ flex: 1, maxWidth: 220 }}
+            onClick={() => onAdd(item.id)}
+          >
+            <ShoppingCart size={18} />
+            Add to Cart
+          </button>
+        )}
       </div>
 
       {/* Responsive styles */}
       <style>{`
         @media (max-width: 768px) {
-          [style*="grid-template-columns: minmax(0, 450px) 1fr"][style*="alignItems: start"] {
+          [style*="grid-template-columns: minmax(0, 300px) 1fr"][style*="alignItems: start"] {
             display: flex !important;
             flex-direction: column !important;
             gap: 1.5rem !important;

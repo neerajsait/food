@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+﻿import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { api, API_BASE_URL } from "../utils/api";
 import {
@@ -13,6 +13,36 @@ import QRGenerator from "./QRGenerator";
 import EmptyState from "./EmptyState";
 import { formatCurrency } from "../utils/formatters";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+
+const processImageUrl = (url) => {
+  if (!url) return url;
+  
+  // 1. Convert Google Drive links to reliable thumbnail links
+  let fileId = null;
+  const gdriveMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (gdriveMatch && gdriveMatch[1]) {
+    fileId = gdriveMatch[1];
+  } else if (url.includes('drive.google.com') && url.includes('id=')) {
+    const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (idMatch && idMatch[1]) fileId = idMatch[1];
+  }
+
+  if (fileId) {
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+  }
+  
+  // 2. Allow specific URLs to pass through untouched (already proxied, safe CDNs, relative paths)
+  if (url.includes('/api/public/proxy-image') || url.includes('drive.google.com') || url.includes('images.unsplash.com') || url.startsWith('/')) {
+    return url;
+  }
+  
+  // 3. For any other absolute URL, use our own backend proxy to bypass CORS/hotlinking
+  if (url.startsWith('http')) {
+    return `${API_BASE_URL}/public/proxy-image?url=${encodeURIComponent(url)}`;
+  }
+  
+  return url;
+};
 
 
 
@@ -49,7 +79,31 @@ export default function AdminView({ onLogout, dbMode }) {
     }
   }, [toast]);
 
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTabState, setActiveTabState] = useState("overview");
+  const activeTab = activeTabState;
+
+  const setActiveTab = (tab, replace = false) => {
+    setActiveTabState(tab);
+    window.scrollTo(0, 0);
+    if (replace) {
+      window.history.replaceState({ tab }, "", window.location.pathname);
+    } else {
+      window.history.pushState({ tab }, "", window.location.pathname);
+    }
+  };
+
+  useEffect(() => {
+    // Initial load: keep URL clean but set initial state
+    window.history.replaceState({ tab: "overview" }, "", window.location.pathname);
+
+    const handlePopState = (event) => {
+      if (event.state && event.state.tab) {
+        setActiveTabState(event.state.tab);
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [orders, setOrders] = useState([]);
   const [outlets, setOutlets] = useState([]);
@@ -164,6 +218,9 @@ export default function AdminView({ onLogout, dbMode }) {
   const [menuCustomCategory, setMenuCustomCategory] = useState("");
   const [menuType, setMenuType] = useState("home_foods");
   const [menuDesc, setMenuDesc] = useState("");
+  const [menuIngredients, setMenuIngredients] = useState("");
+  const [menuNutritionalInfo, setMenuNutritionalInfo] = useState("");
+  const [menuDietaryGuidelines, setMenuDietaryGuidelines] = useState("");
   const [menuImageUrl, setMenuImageUrl] = useState("");
   const [menuGlobalStock, setMenuGlobalStock] = useState("");
   const [menuIsVeg, setMenuIsVeg] = useState(true);
@@ -172,6 +229,7 @@ export default function AdminView({ onLogout, dbMode }) {
   const [menuTag, setMenuTag] = useState("");
   const [menuAdminRating, setMenuAdminRating] = useState("");
   const [menuIsBestSeller, setMenuIsBestSeller] = useState(false);
+  const [menuIsPopular, setMenuIsPopular] = useState(false);
   const [showEditMenu, setShowEditMenu] = useState(false);
   const [editMenuId, setEditMenuId] = useState(null);
   const [whatsappMessages, setWhatsappMessages] = useState([]);
@@ -218,7 +276,13 @@ export default function AdminView({ onLogout, dbMode }) {
         setTrackingCodes(prev => ({ ...generatedCodes, ...prev }));
       }
       if (outletsData.status === "fulfilled") setOutlets(outletsData.value);
-      if (menuData.status === "fulfilled") setMenu(menuData.value);
+      if (menuData.status === "fulfilled") {
+        setMenu(menuData.value.map(item => ({
+          ...item,
+          name: item.name ? item.name.replace(/&amp;/g, '&') : item.name,
+          category: item.category ? item.category.replace(/&amp;/g, '&') : item.category
+        })));
+      }
       if (usersData.status === "fulfilled") setUsers(usersData.value);
       try {
         const couponsData = await api.adminGetCoupons();
@@ -342,6 +406,9 @@ export default function AdminView({ onLogout, dbMode }) {
   const [showBannerModal, setShowBannerModal] = useState(false);
   const [editingBannerId, setEditingBannerId] = useState(null);
   const [bannerTitle, setBannerTitle] = useState("");
+  const [bannerDescription, setBannerDescription] = useState("");
+  const [bannerEyebrowText, setBannerEyebrowText] = useState("");
+  const [bannerButtonText, setBannerButtonText] = useState("");
   const [bannerImageUrl, setBannerImageUrl] = useState("");
   const [bannerTargetUrl, setBannerTargetUrl] = useState("");
   const [bannerDisplayLocation, setBannerDisplayLocation] = useState("home");
@@ -356,6 +423,9 @@ export default function AdminView({ onLogout, dbMode }) {
   const [bannerCountdownEndTime, setBannerCountdownEndTime] = useState("");
   const [bannerLinkedProductId, setBannerLinkedProductId] = useState("");
   const [bannerLinkedCouponCode, setBannerLinkedCouponCode] = useState("");
+  const [bannerSortOrder, setBannerSortOrder] = useState(0);
+  const [bannerBgColor, setBannerBgColor] = useState("");
+  const [bannerStatsJson, setBannerStatsJson] = useState("");
 
   // ── Confirm-delete / prompt-replacement modals ──
   const [confirmDeleteModal, setConfirmDeleteModal] = useState(null); // { message, onConfirm }
@@ -457,9 +527,9 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
-      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller });
+      await api.adminAddMenuItem({ name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, is_veg: menuIsVeg, is_gluten_free: menuIsGlutenFree, spice_level: menuSpiceLevel, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller, is_popular: menuIsPopular, ingredients: menuIngredients, nutritional_info: menuNutritionalInfo, dietary_guidelines: menuDietaryGuidelines });
       showToast("Product created successfully!", "success"); setShowAddMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false);
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuIngredients(""); setMenuNutritionalInfo(""); setMenuDietaryGuidelines(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuIsVeg(true); setMenuIsGlutenFree(false); setMenuSpiceLevel("medium"); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false); setMenuIsPopular(false);
       loadData();
     } catch (err) { showToast("Failed: " + err.message, "error"); }
   };
@@ -480,11 +550,15 @@ export default function AdminView({ onLogout, dbMode }) {
     }
     setMenuType(item.business_type || "home_foods");
     setMenuDesc(item.description || "");
+    setMenuIngredients(item.ingredients || "");
+    setMenuNutritionalInfo(item.nutritional_info || "");
+    setMenuDietaryGuidelines(item.dietary_guidelines || "");
     setMenuImageUrl(item.image_url || "");
     setMenuGlobalStock(item.global_stock !== null ? item.global_stock : "");
     setMenuTag(item.tag || "");
     setMenuAdminRating(item.admin_rating || "");
     setMenuIsBestSeller(item.is_best_seller || false);
+    setMenuIsPopular(item.is_popular || false);
     setShowEditMenu(true);
   };
 
@@ -492,10 +566,10 @@ export default function AdminView({ onLogout, dbMode }) {
     e.preventDefault();
     try {
       const finalCategory = menuCategory === "Other" && menuCustomCategory.trim() !== "" ? menuCustomCategory.trim() : menuCategory;
-      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller });
+      await api.adminUpdateMenuItem(editMenuId, { name: menuName, code: menuCode, price: parseFloat(menuPrice), original_price: menuOriginalPrice ? parseFloat(menuOriginalPrice) : null, category: finalCategory, business_type: menuType, description: menuDesc, image_url: menuImageUrl || null, global_stock: menuGlobalStock !== "" ? parseInt(menuGlobalStock) : null, tag: menuTag || null, admin_rating: menuAdminRating !== "" ? parseFloat(menuAdminRating) : null, is_best_seller: menuIsBestSeller, is_popular: menuIsPopular, ingredients: menuIngredients, nutritional_info: menuNutritionalInfo, dietary_guidelines: menuDietaryGuidelines });
       showToast("Product updated!", "success");
       setShowEditMenu(false);
-      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false);
+      setMenuName(""); setMenuCode(""); setMenuPrice(""); setMenuOriginalPrice(""); setMenuCategory("Pickles"); setMenuCustomCategory(""); setMenuDesc(""); setMenuIngredients(""); setMenuNutritionalInfo(""); setMenuDietaryGuidelines(""); setMenuImageUrl(""); setMenuGlobalStock(""); setMenuTag(""); setMenuAdminRating(""); setMenuIsBestSeller(false); setMenuIsPopular(false);
       loadData();
     } catch (err) { showToast("Failed to update: " + err.message, "error"); }
   };
@@ -951,6 +1025,9 @@ export default function AdminView({ onLogout, dbMode }) {
     try {
       const bannerPayload = {
         title: bannerTitle,
+        description: bannerDescription,
+        eyebrow_text: bannerEyebrowText,
+        button_text: bannerButtonText,
         image_url: bannerImageUrl,
         target_url: bannerTargetUrl,
         display_location: bannerDisplayLocation,
@@ -962,7 +1039,10 @@ export default function AdminView({ onLogout, dbMode }) {
         has_countdown: bannerHasCountdown,
         countdown_end_time: bannerCountdownEndTime || null,
         linked_product_id: bannerLinkedProductId || null,
-        linked_coupon_code: bannerLinkedCouponCode || null
+        linked_coupon_code: bannerLinkedCouponCode || null,
+        sort_order: parseInt(bannerSortOrder) || 0,
+        bg_color: bannerBgColor || null,
+        stats_json: bannerStatsJson || null
       };
 
       if (editingBannerId) {
@@ -1836,7 +1916,7 @@ export default function AdminView({ onLogout, dbMode }) {
                             {mp.receipt_url && (
                               <button className="btn btn-secondary" style={{ padding: "0.2rem 0.5rem", fontSize: "0.7rem", alignSelf: "flex-start" }} onClick={() => {
                                 const w = window.open("");
-                                w.document.write(`<img src="${mp.receipt_url}" style="max-width: 100%; height: auto;" />`);
+                                w.document.write(`<img referrerPolicy="no-referrer" src="${mp.receipt_url}" style="max-width: 100%; height: auto;" />`);
                               }}>View Receipt</button>
                             )}
                             {mp.notes && <div style={{ color: "var(--text-muted)", marginTop: "4px" }}>{mp.notes}</div>}
@@ -2531,7 +2611,8 @@ export default function AdminView({ onLogout, dbMode }) {
             <h2>Dynamic Banners</h2>
             <button className="btn btn-primary" onClick={() => {
               setEditingBannerId(null);
-              setBannerTitle(""); setBannerImageUrl(""); setBannerTargetUrl(""); setBannerDisplayLocation("home");
+              setBannerTitle(""); setBannerDescription(""); setBannerEyebrowText(""); setBannerButtonText("");
+              setBannerImageUrl(""); setBannerTargetUrl(""); setBannerDisplayLocation("home");
               setBannerStartDate(""); setBannerEndDate(""); setBannerTargetAudience("all");
               setBannerPlacementZone("hero_carousel"); setBannerDisplayStyle("cinematic_21_9");
               setBannerHasCountdown(false); setBannerCountdownEndTime("");
@@ -2562,7 +2643,7 @@ export default function AdminView({ onLogout, dbMode }) {
                   <tr key={b.id} style={{ background: "var(--bg-card)", boxShadow: "0 2px 4px rgba(0,0,0,0.02)" }}>
                     <td style={{ padding: "1rem", borderRadius: "var(--r-md) 0 0 var(--r-md)" }}>
                     <div style={{ width: "120px", height: "60px", borderRadius: "8px", overflow: "hidden", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      {b.image_url ? <img src={b.image_url} alt={b.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>No Image</span>}
+                      {b.image_url ? <img referrerPolicy="no-referrer" src={b.image_url} alt={b.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { e.target.style.display = 'none'; }} /> : <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>No Image</span>}
                     </div>
                   </td>
                   <td style={{ padding: "1rem", fontWeight: 600 }}>{b.title}</td>
@@ -2586,15 +2667,27 @@ export default function AdminView({ onLogout, dbMode }) {
                     </div>
                   </td>
                   <td style={{ padding: "1rem" }}>
-                    <span className={`status-pill ${b.is_active ? 'status-shipped' : 'status-cancelled'}`}>
-                      {b.is_active ? "Yes" : "No"}
-                    </span>
+                    <button
+                      className={`btn btn-sm ${b.is_active ? 'btn-secondary' : 'btn-primary'}`}
+                      style={{ padding: "0.2rem 0.6rem", fontSize: "0.72rem", fontWeight: 700 }}
+                      onClick={async () => {
+                        try {
+                          await api.adminUpdateBanner(b.id, { is_active: !b.is_active });
+                          showToast(`Banner "${b.title}" ${b.is_active ? "deactivated" : "activated"}.`, "success");
+                          api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
+                        } catch (err) { showToast("Failed: " + err.message, "error"); }
+                      }}
+                    >
+                      {b.is_active ? "âœ“ Active" : "âœ— Inactive"}
+                    </button>
                   </td>
                   <td style={{ padding: "1rem", borderRadius: "0 var(--r-md) var(--r-md) 0" }}>
-                    <div style={{ display: "flex", gap: "0.5rem" }}>
-                      <button className="btn btn-secondary btn-sm" onClick={() => {
+                    <div style={{ display: "flex", gap: "0.5rem" }}>                      <button className="btn btn-secondary btn-sm" onClick={() => {
                         setEditingBannerId(b.id);
                         setBannerTitle(b.title);
+                        setBannerDescription(b.description || "");
+                        setBannerEyebrowText(b.eyebrow_text || "");
+                        setBannerButtonText(b.button_text || "");
                         setBannerImageUrl(b.image_url);
                         setBannerTargetUrl(b.target_url || "");
                         setBannerDisplayLocation(b.display_location || "home");
@@ -2613,6 +2706,8 @@ export default function AdminView({ onLogout, dbMode }) {
                         setConfirmDeleteModal({
                           message: "Delete this banner? It will immediately stop showing on the storefront.",
                           onConfirm: async () => {
+                            // Optimistic update
+                            setBanners(prev => prev.filter(banner => banner.id !== b.id));
                             try {
                               await api.adminDeleteBanner(b.id);
                               showToast("Banner deleted.", "success");
@@ -2730,7 +2825,7 @@ export default function AdminView({ onLogout, dbMode }) {
               </div>
 
               <div className="form-group" style={{ margin: 0 }}>
-                <label className="form-label">Loyalty: Points for Review</label>
+                <label className="form-label">Loyalty: Review Reward (% of Item Price)</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <input type="number" className="form-input" value={storeSettings.loyalty_review_points || "10"} onChange={e => setStoreSettings(prev => ({ ...prev, loyalty_review_points: e.target.value }))} />
                 </div>
@@ -2744,9 +2839,71 @@ export default function AdminView({ onLogout, dbMode }) {
               </div>
               
             </div>
-          </div>
-          
-          <div style={{ marginTop: "2rem", paddingTop: "1.5rem", borderTop: "1px solid var(--border-light)", display: "flex", justifyContent: "flex-end", position: "sticky", bottom: "1rem", background: "transparent", zIndex: 10 }}>
+            </div>
+
+            {/* System Data Reset */}
+            <div style={{ marginTop: "3rem", borderTop: "1px solid var(--border-light)", paddingTop: "2rem" }}>
+              <h3 style={{ fontSize: "1.2rem", fontWeight: 800, color: "var(--danger)", marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <AlertTriangle size={20} /> System Data Reset
+              </h3>
+              <p style={{ color: "var(--text-muted)", marginBottom: "1.5rem", fontSize: "0.9rem" }}>
+                Warning: These actions are destructive and cannot be undone. Use them primarily to clear out test data before going live.
+              </p>
+              
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "1rem" }}>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to clear Analytics, Sales Data & Wallets? This will reset revenue to ₹0.")) {
+                    api.resetAnalytics().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Clear Analytics & Sales Data
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to clear all abandoned carts?")) {
+                    api.clearAbandonedCarts().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Clear Abandoned Carts
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)", backgroundColor: "#fee2e2" }} onClick={() => {
+                  if (window.confirm("DANGER: Are you sure you want to Factory Reset the Menu? This deletes ALL menu items and categories!")) {
+                    api.resetMenu().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Factory Reset Menu
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to delete all TEST orders?")) {
+                    api.resetTestOrders().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Delete Test Orders
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to clear ALL reviews?")) {
+                    api.resetReviews().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Clear All Reviews
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to reset ALL stock levels to 100?")) {
+                    api.resetStockLevels().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Reset Stock Levels
+                </button>
+                <button type="button" className="btn btn-outline" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => {
+                  if (window.confirm("Are you sure you want to clear ALL test customers (non-admins)?")) {
+                    api.resetTestCustomers().then(res => alert(res.message)).catch(err => alert(err.message));
+                  }
+                }}>
+                  Clear Test Accounts
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: "2rem", paddingTop: "1.5rem", borderTop: "1px solid var(--border-light)", display: "flex", justifyContent: "flex-end", position: "sticky", bottom: "1rem", background: "transparent", zIndex: 10 }}>
             <button type="submit" className="btn btn-primary" style={{ padding: "0.75rem 2rem" }}>
               Save All Changes
             </button>
@@ -2958,11 +3115,23 @@ export default function AdminView({ onLogout, dbMode }) {
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Image URL</label>
-            <input type="text" className="form-input" placeholder="https://images.unsplash.com/..." value={menuImageUrl} onChange={e => setMenuImageUrl(e.target.value)} />
+            <input type="text" className="form-input" placeholder="https://images.unsplash.com/..." value={menuImageUrl} onChange={e => setMenuImageUrl(processImageUrl(e.target.value))} />
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Description</label>
-            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Ingredients, freshness, etc." value={menuDesc} onChange={e => setMenuDesc(e.target.value)} />
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Short product description" value={menuDesc} onChange={e => setMenuDesc(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Ingredients</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="List of ingredients..." value={menuIngredients} onChange={e => setMenuIngredients(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Nutritional Information</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Energy, Protein, Carbs, etc." value={menuNutritionalInfo} onChange={e => setMenuNutritionalInfo(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Dietary Guidelines</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Allergies, who should eat this, etc." value={menuDietaryGuidelines} onChange={e => setMenuDietaryGuidelines(e.target.value)} />
           </div>
           <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -2973,9 +3142,15 @@ export default function AdminView({ onLogout, dbMode }) {
               <label className="form-label">Manual Rating Override</label>
               <input type="number" step="0.1" max="5" min="1" className="form-input" placeholder="e.g. 4.5" value={menuAdminRating} onChange={e => setMenuAdminRating(e.target.value)} />
             </div>
-            <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <input type="checkbox" id="addBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
-              <label htmlFor="addBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
+            <div style={{ display: "flex", gap: "1.5rem" }}>
+              <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <input type="checkbox" id="addBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+                <label htmlFor="addBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
+              </div>
+              <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <input type="checkbox" id="addPopular" checked={menuIsPopular} onChange={e => setMenuIsPopular(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+                <label htmlFor="addPopular" className="form-label" style={{ margin: 0 }}>Mark as Popular Item</label>
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: "0.75rem" }}>
@@ -3036,7 +3211,19 @@ export default function AdminView({ onLogout, dbMode }) {
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Description</label>
-            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Ingredients, freshness, etc." value={menuDesc} onChange={e => setMenuDesc(e.target.value)} />
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Short product description" value={menuDesc} onChange={e => setMenuDesc(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Ingredients</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="List of ingredients..." value={menuIngredients} onChange={e => setMenuIngredients(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Nutritional Information</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Energy, Protein, Carbs, etc." value={menuNutritionalInfo} onChange={e => setMenuNutritionalInfo(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Dietary Guidelines</label>
+            <textarea className="form-input" style={{ minHeight: 72, resize: "vertical" }} placeholder="Allergies, who should eat this, etc." value={menuDietaryGuidelines} onChange={e => setMenuDietaryGuidelines(e.target.value)} />
           </div>
           <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -3047,9 +3234,15 @@ export default function AdminView({ onLogout, dbMode }) {
               <label className="form-label">Manual Rating Override</label>
               <input type="number" step="0.1" max="5" min="1" className="form-input" placeholder="e.g. 4.5" value={menuAdminRating} onChange={e => setMenuAdminRating(e.target.value)} />
             </div>
-            <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <input type="checkbox" id="editBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
-              <label htmlFor="editBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
+            <div style={{ display: "flex", gap: "1.5rem" }}>
+              <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <input type="checkbox" id="editBestSeller" checked={menuIsBestSeller} onChange={e => setMenuIsBestSeller(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+                <label htmlFor="editBestSeller" className="form-label" style={{ margin: 0 }}>Mark as Best Seller</label>
+              </div>
+              <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <input type="checkbox" id="editPopular" checked={menuIsPopular} onChange={e => setMenuIsPopular(e.target.checked)} style={{ width: "1rem", height: "1rem" }} />
+                <label htmlFor="editPopular" className="form-label" style={{ margin: 0 }}>Mark as Popular Item</label>
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: "0.75rem" }}>
@@ -3410,33 +3603,61 @@ export default function AdminView({ onLogout, dbMode }) {
       </Modal>
 
       {/* Banner Management */}
-      <Modal open={showBannerModal} onClose={() => setShowBannerModal(false)} title={editingBannerId ? "Edit Banner" : "Add Banner"}>
-        <form onSubmit={handleSaveBanner} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <Modal open={showBannerModal} onClose={() => setShowBannerModal(false)} title={editingBannerId ? "Edit Banner" : "Add Banner"} width={600}>
+        <form onSubmit={handleSaveBanner} style={{ display: "flex", flexDirection: "column", gap: "1rem", maxHeight: "80vh", overflowY: "auto", paddingRight: "0.25rem" }}>
+          {/* Title */}
           <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">Title</label>
-            <input type="text" required className="form-input" value={bannerTitle} onChange={e => setBannerTitle(e.target.value)} placeholder="e.g. Diwali Special Sale" />
+            <label className="form-label">Title <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(required)</span></label>
+            <input type="text" required className="form-input" value={bannerTitle} onChange={e => setBannerTitle(e.target.value)} placeholder="e.g. Summer Sale â€” 20% Off Everything" />
           </div>
+
+          {/* Eyebrow Text */}
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Eyebrow Text <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(small label above title)</span></label>
+            <input type="text" className="form-input" value={bannerEyebrowText} onChange={e => setBannerEyebrowText(e.target.value)} placeholder="e.g. Limited Time Offer" />
+          </div>
+
+          {/* Description */}
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Description <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(optional tagline)</span></label>
+            <textarea className="form-input" rows={2} style={{ resize: "vertical" }} value={bannerDescription} onChange={e => setBannerDescription(e.target.value)} placeholder="e.g. Freshly made, delivered to your door." />
+          </div>
+
+          {/* Button Text */}
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Button Text <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(optional)</span></label>
+            <input type="text" className="form-input" value={bannerButtonText} onChange={e => setBannerButtonText(e.target.value)} placeholder="e.g. Shop Now" />
+          </div>
+
+          {/* Image URL */}
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Image URL</label>
-            <input type="text" required className="form-input" value={bannerImageUrl} onChange={e => setBannerImageUrl(e.target.value)} placeholder="https://..." />
-            {bannerImageUrl && <img src={bannerImageUrl} alt="Preview" style={{ marginTop: "0.5rem", width: "100%", borderRadius: "8px", maxHeight: "150px", objectFit: "cover" }} />}
+            <input type="text" className="form-input" value={bannerImageUrl} onChange={e => setBannerImageUrl(processImageUrl(e.target.value))} placeholder="https://... or /images/..." />
+            {bannerImageUrl && <img referrerPolicy="no-referrer" src={bannerImageUrl.startsWith('/') ? `http://localhost:5173${bannerImageUrl}` : bannerImageUrl} alt="Preview" style={{ marginTop: "0.5rem", width: "100%", borderRadius: "8px", maxHeight: "150px", objectFit: "cover" }} onError={e => { e.target.style.display = "none"; }} />}
           </div>
+
+          {/* Target URL */}
           <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">Target URL (Optional)</label>
+            <label className="form-label">Target URL <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(where button links)</span></label>
             <input type="text" className="form-input" value={bannerTargetUrl} onChange={e => setBannerTargetUrl(e.target.value)} placeholder="/menu" />
           </div>
+
+          {/* Display Location */}
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Display Location</label>
             <select className="form-input" style={{ width: "100%", background: "var(--bg-primary)", color: "var(--text-primary)", border: "1px solid var(--border-light)", padding: "0.5rem" }} value={bannerDisplayLocation} onChange={e => setBannerDisplayLocation(e.target.value)}>
-              <option value="home">Home Screen (Top/Default)</option>
-              <option value="home_top">Home Screen (Top)</option>
-              <option value="home_middle">Home Screen (Middle)</option>
-              <option value="home_bottom">Home Screen (Bottom)</option>
-              <option value="checkout">Checkout Screen</option>
-              <option value="popup_after_login">Popup After Login</option>
+              <option value="hero">ðŸ  Hero Banner (Top Carousel)</option>
+              <option value="home">ðŸ  Home Screen (Top/Default)</option>
+              <option value="home_top">ðŸ  Home Screen (Top)</option>
+              <option value="home_middle">ðŸ¡ Home Screen (Middle)</option>
+              <option value="home_bottom">ðŸ¡ Home Screen (Bottom)</option>
+              <option value="brand_story">ðŸ“– Brand Story Section</option>
+              <option value="checkout">ðŸ›’ Checkout Screen</option>
+              <option value="popup_after_login">ðŸŽ‰ Popup After Login</option>
             </select>
           </div>
-          
+
+          {/* Placement Zone + Display Style */}
           <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Placement Zone</label>
@@ -3450,24 +3671,30 @@ export default function AdminView({ onLogout, dbMode }) {
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Display Style</label>
               <select className="form-input" value={bannerDisplayStyle} onChange={e => setBannerDisplayStyle(e.target.value)}>
-                <option value="cinematic_21_9">Cinematic 21:9</option>
-                <option value="square_1_1">Square 1:1</option>
-                <option value="pill_text">Pill Text (No Image)</option>
-                <option value="story_circle">Story Circle</option>
-                <option value="popup_modal">Popup Modal</option>
+                <option value="cinematic_21_9">Cinematic (21:9)</option>
+                <option value="wide_16_9">Wide (16:9)</option>
+                <option value="standard_4_3">Standard (4:3)</option>
+                <option value="square_1_1">Square (1:1)</option>
+                <option value="portrait_3_4">Portrait (3:4)</option>
+                <option value="compact_strip">Compact Strip</option>
+                <option value="full_screen">Full Screen</option>
               </select>
             </div>
           </div>
-          
+
+          {/* Target Audience */}
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Target Audience</label>
             <select className="form-input" value={bannerTargetAudience} onChange={e => setBannerTargetAudience(e.target.value)}>
               <option value="all">All Users</option>
-              <option value="new_user">New Users (0 Orders)</option>
-              <option value="inactive_30_days">Inactive Users (No orders in 30 days)</option>
+              <option value="new_users">New Users Only</option>
+              <option value="returning_users">Returning Users Only</option>
+              <option value="loyalty_members">Loyalty Members</option>
+              <option value="high_value">High Value Customers</option>
             </select>
           </div>
-          
+
+          {/* Start / End Dates */}
           <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Start Date (Optional)</label>
@@ -3478,7 +3705,8 @@ export default function AdminView({ onLogout, dbMode }) {
               <input type="datetime-local" className="form-input" value={bannerEndDate} onChange={e => setBannerEndDate(e.target.value)} />
             </div>
           </div>
-          
+
+          {/* Linked Product + Coupon */}
           <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Linked Product ID (Optional)</label>
@@ -3489,7 +3717,8 @@ export default function AdminView({ onLogout, dbMode }) {
               <input type="text" className="form-input" value={bannerLinkedCouponCode} onChange={e => setBannerLinkedCouponCode(e.target.value.toUpperCase())} placeholder="e.g. SAVE20" />
             </div>
           </div>
-          
+
+          {/* Countdown Timer */}
           <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
             <input type="checkbox" id="bannerHasCountdown" checked={bannerHasCountdown} onChange={e => setBannerHasCountdown(e.target.checked)} style={{ cursor: "pointer" }} />
             <label htmlFor="bannerHasCountdown" className="form-label" style={{ margin: 0, cursor: "pointer" }}>Show visual countdown timer?</label>
@@ -3500,31 +3729,82 @@ export default function AdminView({ onLogout, dbMode }) {
               <input type="datetime-local" className="form-input" required={bannerHasCountdown} value={bannerCountdownEndTime} onChange={e => setBannerCountdownEndTime(e.target.value)} />
             </div>
           )}
-          
-          <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
 
-            Save Banner
+          {/* Sort Order + Background Colour */}
+          <div className="grid-responsive-2col" style={{ gap: "1rem" }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Sort Order <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(lower = shown first)</span></label>
+              <input type="number" className="form-input" min="0" value={bannerSortOrder} onChange={e => setBannerSortOrder(e.target.value)} placeholder="0" />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Background Colour <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(brand_story)</span></label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={bannerBgColor || "#1a5c2e"} onChange={e => setBannerBgColor(e.target.value)} style={{ width: 44, height: 36, border: "1px solid var(--border-light)", borderRadius: 6, cursor: "pointer", padding: 2 }} />
+                <input type="text" className="form-input" value={bannerBgColor} onChange={e => setBannerBgColor(e.target.value)} placeholder="leave blank = green gradient" />
+              </div>
+            </div>
+          </div>
+
+          {/* Stats JSON â€” brand_story only */}
+          {bannerDisplayLocation === "brand_story" && (
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Stats JSON <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(numbers shown below the title)</span></label>
+              <input type="text" className="form-input" value={bannerStatsJson} onChange={e => setBannerStatsJson(e.target.value)} placeholder={'[["35+","Products"],["100%","Natural"],["Pan India","Delivery"]]'} />
+              <p style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Format: <code>[["value","label"],...]</code> â€” leave blank for defaults</p>
+            </div>
+          )}
+
+          {/* Live Preview */}
+          {(bannerTitle || bannerImageUrl) && (
+            <div style={{ background: "var(--bg-secondary)", borderRadius: 10, padding: "0.75rem", border: "1px dashed var(--border-light)" }}>
+              <p style={{ fontSize: "0.72rem", fontWeight: 700, color: "var(--text-muted)", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>ðŸ‘ Live Preview</p>
+              {bannerDisplayLocation === "brand_story" ? (
+                <div style={{ background: bannerBgColor || "linear-gradient(135deg,#1a5c2e,#2d9b4e)", borderRadius: 8, padding: "1rem 1.25rem", color: "#fff", position: "relative", overflow: "hidden" }}>
+                  {bannerImageUrl && <div style={{ position: "absolute", inset: 0, background: `url('${bannerImageUrl}') center/cover`, opacity: 0.12, borderRadius: 8 }} />}
+                  <div style={{ position: "relative", zIndex: 1 }}>
+                    <span style={{ fontSize: "0.6rem", fontWeight: 800, letterSpacing: "1px", textTransform: "uppercase", background: "rgba(199,240,0,0.2)", border: "1px solid rgba(199,240,0,0.3)", color: "#c7f000", padding: "0.2rem 0.6rem", borderRadius: 999, marginBottom: "0.5rem", display: "inline-block" }}>{bannerEyebrowText || "Our Story"}</span>
+                    <div style={{ fontSize: "1rem", fontWeight: 900, marginBottom: "0.3rem" }}>{bannerTitle || "THE TASTE OF HOME"}</div>
+                    <div style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.75)", marginBottom: "0.5rem", lineHeight: 1.5 }}>{(bannerDescription || "").slice(0, 80)}{(bannerDescription || "").length > 80 ? "â€¦" : ""}</div>
+                    <div style={{ display: "flex", gap: "1rem" }}>
+                      {(bannerStatsJson ? (() => { try { return JSON.parse(bannerStatsJson); } catch { return null; } })() || [["35+","Products"],["100%","Natural"],["Pan India","Delivery"]] : [["35+","Products"],["100%","Natural"],["Pan India","Delivery"]]).map(([v, l]) => (
+                        <div key={l}><div style={{ fontSize: "0.875rem", fontWeight: 900, color: "#c7f000" }}>{v}</div><div style={{ fontSize: "0.6rem", color: "rgba(255,255,255,0.6)" }}>{l}</div></div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", background: "#1a5c2e", borderRadius: 8, padding: "0.75rem", overflow: "hidden" }}>
+                  <div style={{ flex: 1, color: "#fff" }}>
+                    {bannerEyebrowText && <div style={{ fontSize: "0.6rem", fontWeight: 800, color: "#c7f000", marginBottom: "0.25rem", textTransform: "uppercase", letterSpacing: "1px" }}>ðŸ”¥ {bannerEyebrowText}</div>}
+                    <div style={{ fontSize: "0.875rem", fontWeight: 900, lineHeight: 1.2, marginBottom: "0.3rem" }}>{bannerTitle}</div>
+                    <div style={{ fontSize: "0.65rem", color: "rgba(255,255,255,0.7)", marginBottom: "0.5rem" }}>{(bannerDescription || "").slice(0, 60)}{(bannerDescription || "").length > 60 ? "â€¦" : ""}</div>
+                    {bannerButtonText && <span style={{ fontSize: "0.65rem", fontWeight: 800, background: "#c7f000", color: "#1a5c2e", padding: "0.2rem 0.75rem", borderRadius: 999 }}>{bannerButtonText} â†’</span>}
+                  </div>
+                  {bannerImageUrl && <img src={bannerImageUrl} alt="preview" referrerPolicy="no-referrer" style={{ width: 80, height: 60, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} onError={e => { e.target.style.display = "none"; }} />}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
+            {editingBannerId ? "âœï¸ Update Banner" : "ðŸ–¼ Create Banner"}
           </button>
         </form>
       </Modal>
 
-      {/* ── Confirm Delete Modal ── */}
-      {confirmDeleteModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", zIndex: 99997, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-          <div style={{ background: "var(--bg-card)", padding: "2rem", maxWidth: "440px", width: "100%", borderRadius: "var(--r-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.35)", border: "1px solid var(--border-subtle)" }}>
-            <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", marginBottom: "1.5rem" }}>
-              <span style={{ fontSize: "1.5rem", flexShrink: 0 }}>⚠️</span>
-              <p style={{ margin: 0, color: "var(--text-primary)", fontSize: "0.95rem", lineHeight: 1.6, fontWeight: 500 }}>{confirmDeleteModal.message}</p>
-            </div>
-            <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
-              <button onClick={() => setConfirmDeleteModal(null)} className="btn btn-secondary">Cancel</button>
-              <button onClick={() => { confirmDeleteModal.onConfirm(); setConfirmDeleteModal(null); }} className="btn" style={{ background: "var(--error)", color: "#fff", border: "none" }}>Confirm Delete</button>
-            </div>
-          </div>
+      {/* Confirm Delete Modal */}
+      <Modal open={!!confirmDeleteModal} onClose={() => setConfirmDeleteModal(null)} title="Confirm Action" width={440}>
+        <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", marginBottom: "1.5rem", marginTop: "0.5rem" }}>
+          <span style={{ fontSize: "1.5rem", flexShrink: 0 }}>âš ï¸</span>
+          <p style={{ margin: 0, color: "var(--text-primary)", fontSize: "0.95rem", lineHeight: 1.6, fontWeight: 500 }}>{confirmDeleteModal?.message}</p>
         </div>
-      )}
+        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+          <button onClick={() => setConfirmDeleteModal(null)} className="btn btn-secondary">Cancel</button>
+          <button onClick={() => { confirmDeleteModal?.onConfirm(); setConfirmDeleteModal(null); }} className="btn" style={{ background: "var(--error)", color: "#fff", border: "none" }}>Confirm Delete</button>
+        </div>
+      </Modal>
 
-      {/* ── Reply Ticket Modal ── */}
+      {/* Reply Ticket Modal */}
       <Modal open={!!replyTicketModal} onClose={() => { setReplyTicketModal(null); setReplyText(""); }} title="Reply & Resolve Ticket" width={500}>
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--text-secondary)" }}>Write your reply to the customer. The ticket will be marked as <strong>Resolved</strong> after sending.</p>
@@ -3543,7 +3823,7 @@ export default function AdminView({ onLogout, dbMode }) {
         </div>
       </Modal>
 
-      {/* ── Restock Quantity Modal ── */}
+            {/* ── Restock Quantity Modal ── */}
       <Modal open={!!restockModal} onClose={() => setRestockModal(null)} title="Request Restock" width={420}>
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           {restockModal && (
@@ -3659,7 +3939,7 @@ export default function AdminView({ onLogout, dbMode }) {
         )}
       </Modal>
 
-      {toast && (
+      {toast && createPortal(
         <div style={{
           position: "fixed", bottom: "2rem", right: "2rem",
           background: toast.type === "success" ? "var(--brand)" : "var(--brand-dark)",
@@ -3672,7 +3952,8 @@ export default function AdminView({ onLogout, dbMode }) {
           <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "⚡" : "⚠"}</span>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", marginLeft: "1rem", opacity: 0.8, fontSize: "0.8rem", display: "flex", alignItems: "center" }}><X size={14} /></button>
-        </div>
+        </div>,
+        document.body
       )}
 
       </div>

@@ -59,7 +59,7 @@ export default function QRGenerator({ outlets, menuItems }) {
       ${p.batch_number ? `<p><strong>Batch:</strong> ${p.batch_number}</p>` : ""}
       ${p.expiry_date ? `<p><strong>Expiry:</strong> ${p.expiry_date}</p>` : ""}
       <p><strong>Type:</strong> ${p.type}</p>
-      <img src="${qrResult.qr_image}" alt="QR"/>
+      <img referrerPolicy="no-referrer" src="${qrResult.qr_image}" alt="QR"/>
       <p class="note">Scan on arrival to update stock</p>
     </div></body></html>`);
     w.document.close();
@@ -135,7 +135,7 @@ export default function QRGenerator({ outlets, menuItems }) {
               <span style={{ fontSize: "0.82rem", color: "var(--success-color)", fontWeight: "600", marginLeft: "0.4rem" }}>QR Ready!</span>
             </div>
             {qrResult.qr_image ? (
-              <img src={qrResult.qr_image} alt="Dispatch QR Code" style={{ width: "200px", height: "200px", border: "1px solid var(--border-light)", borderRadius: "8px", marginBottom: "1rem" }} />
+              <img referrerPolicy="no-referrer" src={qrResult.qr_image} alt="Dispatch QR Code" style={{ width: "200px", height: "200px", border: "1px solid var(--border-light)", borderRadius: "8px", marginBottom: "1rem" }} />
             ) : (
               <div style={{ width: "200px", height: "200px", background: "var(--bg-secondary)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>Demo Mode — No image</div>
             )}

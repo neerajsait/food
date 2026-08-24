@@ -1,10 +1,50 @@
 import React from "react";
-import { ShoppingCart, Heart, User, Search, Bell } from "lucide-react";
+import { ShoppingCart, Heart, User, Search, Home, ShoppingBag, Package, ShieldAlert, LogOut, LogIn } from "lucide-react";
 
-export default function Header({ activeTab, setActiveTab, cartCount, searchQuery, setSearchQuery, onOpenCart }) {
+const NAV = [
+  { id: "home",     icon: Home,        label: "Home" },
+  { id: "shop",     icon: ShoppingBag, label: "Shop" },
+  { id: "wishlist", icon: Heart,       label: "Wishlist" },
+  { id: "orders",   icon: Package,     label: "Orders" },
+  { id: "tickets",  icon: ShieldAlert, label: "Support" },
+  { id: "profile",  icon: User,        label: "Profile" },
+];
+
+export default function Header({ activeTab, setActiveTab, cartCount, searchQuery, setSearchQuery, onOpenCart, onLogout, currentUser }) {
+  const isGuest = !currentUser;
+  const filteredNav = NAV.filter(item => {
+    if (isGuest && ["wishlist", "orders", "tickets", "profile"].includes(item.id)) return false;
+    return true;
+  });
+
   return (
     <header className="site-header">
-      {/* Brand removed (now only in sidebar) */}
+      {/* Brand */}
+      <div className="header-brand" style={{ cursor: "pointer" }} onClick={() => setActiveTab("home")}>
+        <div className="header-brand-logo">S</div>
+        <div className="desktop-only">
+          <div className="header-brand-name">Suggula's</div>
+          <div className="header-brand-tagline">Kitchen</div>
+        </div>
+      </div>
+
+      {/* Top Nav (Desktop only) */}
+      <nav className="header-nav desktop-only" aria-label="Main navigation">
+        {filteredNav.map(item => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              className={`header-nav-link${activeTab === item.id ? " active" : ""}`}
+              onClick={() => setActiveTab(item.id)}
+              aria-current={activeTab === item.id ? "page" : undefined}
+            >
+              <Icon size={16} />
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Search */}
       <div className="header-search">
@@ -21,13 +61,19 @@ export default function Header({ activeTab, setActiveTab, cartCount, searchQuery
       {/* Actions */}
       <div className="header-actions">
         <button
-          className={`header-action-btn${activeTab === "checkout" || activeTab === "cart" ? " active" : ""}`}
+          className={`header-nav-link${activeTab === "checkout" || activeTab === "cart" ? " active" : ""}`}
           onClick={onOpenCart}
           title="Cart"
           aria-label={`Cart – ${cartCount} items`}
+          style={{ position: "relative" }}
         >
-          <ShoppingCart size={20} />
-          {cartCount > 0 && <span className="action-badge">{cartCount > 9 ? "9+" : cartCount}</span>}
+          Cart
+          <ShoppingCart size={16} />
+          {cartCount > 0 && <span className="action-badge" style={{ top: "-6px", right: "-12px" }}>{cartCount > 9 ? "9+" : cartCount}</span>}
+        </button>
+        <button className="header-nav-link logout" onClick={onLogout} title={isGuest ? "Login" : "Sign Out"}>
+          {isGuest ? <LogIn size={16} /> : <LogOut size={16} />}
+          {isGuest ? "Login" : "Logout"}
         </button>
       </div>
     </header>

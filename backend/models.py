@@ -31,6 +31,7 @@ class Outlet(db.Model):
     longitude = Column(Float, nullable=True)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL', use_alter=True, name='fk_outlet_owner_id'), nullable=True)
     revenue_share_percentage = Column(Numeric(5, 2), nullable=True, default=0.00)
+    revenue_cutoff_date = Column(DateTime, nullable=True, default=lambda: datetime.now(timezone.utc))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -106,6 +107,7 @@ class User(db.Model):
     admin_department = Column(String(50), nullable=True)
 
     # --- STI Subclass Fields ---
+    rfid_tag = Column(String(100), unique=True, nullable=True)
     loyalty_points = Column(Integer, default=0, nullable=False)
     outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
     pin_hash = Column(String(255), nullable=True)
@@ -259,9 +261,14 @@ class MenuItem(db.Model):
     spice_level = Column(String(20), default='medium')
     tag = Column(String(50), nullable=True)
     admin_rating = Column(Float, nullable=True)
+    is_best_seller = Column(Boolean, default=False)
+    is_popular = Column(Boolean, default=False)
+    ingredients = Column(Text, nullable=True)
+    nutritional_info = Column(Text, nullable=True)
+    dietary_guidelines = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium', tag=None, admin_rating=None):
+    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium', tag=None, admin_rating=None, is_popular=False, ingredients=None, nutritional_info=None, dietary_guidelines=None):
         self.code = code
         self.name = name
         self.price = price
@@ -276,6 +283,10 @@ class MenuItem(db.Model):
         self.spice_level = spice_level
         self.tag = tag
         self.admin_rating = admin_rating
+        self.is_popular = is_popular
+        self.ingredients = ingredients
+        self.nutritional_info = nutritional_info
+        self.dietary_guidelines = dietary_guidelines
 
     @property
     def visible_reviews(self):
@@ -314,8 +325,13 @@ class MenuItem(db.Model):
             "spice_level": self.spice_level,
             "tag": self.tag,
             "admin_rating": self.admin_rating,
+            "is_best_seller": self.is_best_seller,
+            "is_popular": self.is_popular,
             "average_rating": self.average_rating,
-            "reviews_count": self.reviews_count
+            "reviews_count": self.reviews_count,
+            "ingredients": self.ingredients,
+            "nutritional_info": self.nutritional_info,
+            "dietary_guidelines": self.dietary_guidelines
         }
 
 
@@ -559,11 +575,20 @@ class Order(db.Model):
     
     status = Column(String(20), nullable=False, default='pending', index=True)
     total_price = Column(Numeric(10, 2), nullable=False, default=0.00)
+    
+    # Guest Checkout Details
+    guest_name = Column(String(100), nullable=True)
+    guest_email = Column(String(120), nullable=True)
+    guest_phone = Column(String(20), nullable=True)
+
     tracking_code = Column(String(100), nullable=True)
     tracking_label = Column(Text, nullable=True)
     tracking_link = Column(String(500), nullable=True)  # 3rd party tracking URL
     is_received = Column(Boolean, default=False)
     cancel_reason = Column(String(255), nullable=True)
+    refund_status = Column(String(20), nullable=True)
+    refund_amount = Column(Numeric(10, 2), nullable=True, default=0.00)
+    refund_reason = Column(Text, nullable=True)
     delivery_address = Column(String(500), nullable=True)
     delivery_charge = Column(Numeric(10, 2), default=0.00, nullable=False)
     payment_method = Column(String(50), nullable=False, default='COD')
@@ -583,7 +608,8 @@ class Order(db.Model):
 
     def __init__(self, total_price=0.00, status='pending', items=None, payment_method='COD', 
                  order_type='online', customer_id=None, outlet_id=None, staff_id=None, delivery_address=None,
-                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None, review_code=None):
+                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None, 
+                 review_code=None, guest_name=None, guest_email=None, guest_phone=None):
         self.order_type = order_type
         self.customer_id = customer_id
         self.outlet_id = outlet_id
@@ -597,6 +623,9 @@ class Order(db.Model):
         self.loyalty_points_redeemed = loyalty_points_redeemed
         self.applied_coupon_code = applied_coupon_code
         self.review_code = review_code
+        self.guest_name = guest_name
+        self.guest_email = guest_email
+        self.guest_phone = guest_phone
         self.delivery_confirmation_code = None
         if items:
             self.items = items
@@ -606,15 +635,18 @@ class Order(db.Model):
             "id": self.id,
             "order_type": self.order_type,
             "customer_id": self.customer_id,
-            "customer_email": self.customer.email if self.customer else None,
-            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() if self.customer else None,
-            "customer_phone": self.customer.phone if self.customer else None,
+            "customer_email": self.customer.email if self.customer else self.guest_email,
+            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() if self.customer else self.guest_name,
+            "customer_phone": self.customer.phone if self.customer else self.guest_phone,
             "outlet_id": self.outlet_id,
             "outlet_name": self.outlet.name if self.outlet else None,
             "staff_id": self.staff_id,
             "staff_email": self.staff.email if self.staff else None,
             "status": self.status,
             "total_price": float(self.total_price),
+            "refund_status": self.refund_status,
+            "refund_amount": float(self.refund_amount) if self.refund_amount is not None else 0.0,
+            "refund_reason": self.refund_reason,
             "payment_method": self.payment_method,
             "loyalty_points_earned": self.loyalty_points_earned,
             "loyalty_points_redeemed": self.loyalty_points_redeemed,
@@ -1041,6 +1073,9 @@ class Banner(db.Model):
     __tablename__ = 'banners'
     id = Column(Integer, primary_key=True)
     title = Column(String(100), nullable=False)
+    description = Column(String(500), nullable=True)
+    eyebrow_text = Column(String(100), nullable=True)
+    button_text = Column(String(50), nullable=True)
     image_url = Column(Text, nullable=False)  # Stores path/URL or raw base64
     target_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
@@ -1062,11 +1097,14 @@ class Banner(db.Model):
     
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0, display_location='home',
+    def __init__(self, title, image_url, description=None, eyebrow_text=None, button_text=None, target_url=None, is_active=True, display_order=0, display_location='home',
                  start_date=None, end_date=None, target_audience='all', placement_zone='hero_carousel', 
                  display_style='cinematic_21_9', has_countdown=False, countdown_end_time=None, 
                  linked_product_id=None, linked_coupon_code=None):
         self.title = title
+        self.description = description
+        self.eyebrow_text = eyebrow_text
+        self.button_text = button_text
         self.image_url = image_url
         self.target_url = target_url
         self.is_active = is_active
@@ -1088,6 +1126,9 @@ class Banner(db.Model):
         return {
             "id": self.id,
             "title": self.title,
+            "description": self.description,
+            "eyebrow_text": self.eyebrow_text,
+            "button_text": self.button_text,
             "image_url": self.image_url,
             "target_url": self.target_url,
             "is_active": self.is_active,
@@ -1262,4 +1303,67 @@ class MarketPurchase(db.Model):
             "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
             "admin_id": self.admin_id,
             "admin_email": getattr(self.admin, 'email', None) if getattr(self, 'admin', None) else None
+        }
+
+# ---------------------------------------------------------------------------
+# AuditLog — tracks critical system actions
+# ---------------------------------------------------------------------------
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    actor_role = Column(String(50), nullable=True)
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(Integer, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    actor = relationship('User', foreign_keys=[actor_id])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "actor_id": self.actor_id,
+            "actor_email": self.actor.email if self.actor else None,
+            "actor_role": self.actor_role,
+            "action": self.action,
+            "resource_type": self.resource_type,
+            "resource_id": self.resource_id,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+        }
+
+# ---------------------------------------------------------------------------
+# MonthlyRevenueHistory — preserves historical monthly revenues
+# ---------------------------------------------------------------------------
+class MonthlyRevenueHistory(db.Model):
+    __tablename__ = 'monthly_revenue_history'
+
+    id = Column(Integer, primary_key=True)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=True)
+    month_year = Column(String(20), nullable=False) # e.g., '2026-08'
+    total_revenue = Column(Numeric(15, 2), nullable=False, default=0.00)
+    reset_by_admin_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    admin = relationship('User', foreign_keys=[reset_by_admin_id])
+    outlet = relationship('Outlet', foreign_keys=[outlet_id])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "outlet_id": self.outlet_id,
+            "month_year": self.month_year,
+            "total_revenue": float(self.total_revenue),
+            "reset_by_admin_id": self.reset_by_admin_id,
+            "reset_by_admin_email": self.admin.email if self.admin else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None
         }

@@ -515,7 +515,7 @@ export default function KitchenView({ onLogout, dbMode }) {
               ) : (
                 <div style={{ textAlign: "center" }}>
                   <div style={{ background: "#f8fafc", padding: "1.5rem", borderRadius: "20px", display: "inline-block", marginBottom: "1.5rem", border: "2px dashed #cbd5e1" }}>
-                    <img src={producedQR.qr_code_base64} alt="Batch QR Code" style={{ width: "200px", height: "200px" }} />
+                    <img referrerPolicy="no-referrer" src={producedQR.qr_code_base64} alt="Batch QR Code" style={{ width: "200px", height: "200px" }} />
                   </div>
                   <h3 style={{ fontSize: "1.5rem", fontWeight: 800, color: "#ea580c", marginBottom: "0.5rem" }}>{producedQR.batch_number}</h3>
                   <div style={{ display: "inline-block", background: "#f1f5f9", padding: "1rem 2rem", borderRadius: "12px", marginBottom: "2rem" }}>
@@ -538,7 +538,7 @@ export default function KitchenView({ onLogout, dbMode }) {
                 <h3 style={{ fontSize: "1.5rem", fontWeight: 800, color: "#0f172a", marginBottom: "0.5rem" }}>Order #{viewOrderQR.id}</h3>
                 <p style={{ margin: "0 0 1.5rem", color: "#64748b", fontWeight: 600 }}>Scan QR to track or fulfill</p>
                 <div style={{ background: "#f8fafc", padding: "1.5rem", borderRadius: "20px", display: "inline-block", marginBottom: "1.5rem", border: "2px dashed #cbd5e1" }}>
-                  <img src={viewOrderQR.qr_code_base64} alt="Order QR Code" style={{ width: "200px", height: "200px" }} />
+                  <img referrerPolicy="no-referrer" src={viewOrderQR.qr_code_base64} alt="Order QR Code" style={{ width: "200px", height: "200px" }} />
                 </div>
                 <div style={{ display: "flex", justifyContent: "center" }}>
                   <button type="button" className="kv-btn" style={{ background: "#e2e8f0", color: "#475569" }} onClick={() => setViewOrderQR(null)}>

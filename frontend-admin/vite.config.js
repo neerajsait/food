@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     headers: {
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:5173; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://images.unsplash.com http://localhost:5000; connect-src 'self' ws://localhost:5173 http://localhost:5000; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';",
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff'
     }
