@@ -525,6 +525,7 @@ def create_app(config_override=None):
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Referer': 'https://www.google.com/'
             }
+            import requests
             resp = requests.get(image_url, headers=headers, stream=True, timeout=10)
             
             if resp.status_code != 200:
@@ -2144,10 +2145,7 @@ The FlavorFlow Team"""
     def admin_reset_menu():
         try:
             db.session.query(Review).delete()
-            db.session.query(MenuItemModifier).delete()
-            db.session.query(MenuModifier).delete()
             db.session.query(MenuItem).delete()
-            db.session.query(Category).delete()
             db.session.commit()
             return jsonify({"message": "Factory Reset successful: All Menu items and categories have been deleted."}), 200
         except Exception as e:
@@ -4312,7 +4310,7 @@ The FlavorFlow Team"""
                                         elif order_items and not_found:
                                             reply_text = f"We found some items, but couldn't find: {', '.join(not_found)}. Please try again with our exact menu names."
                                         else:
-                                            reply_text = f"Sorry, we couldn't find any of those items on our menu. Please try again."
+                                            reply_text = "Sorry, we couldn't find any of those items on our menu. Please try again."
                                             
                                     outbound_msg = WhatsAppMessage(phone_number=phone_number, message_body=reply_text, direction='outbound')
                                     db.session.add(outbound_msg)
@@ -5353,7 +5351,7 @@ def _send_admin_created_email(app, admin):
         </div>
         
         <div style="text-align: center;">
-            <a href="{get_frontend_url(user.role)}" class="btn">Launch Admin Dashboard</a>
+            <a href="{get_frontend_url(admin.role)}" class="btn">Launch Admin Dashboard</a>
         </div>
         """
         msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
@@ -5401,7 +5399,7 @@ def _send_staff_created_email(app, staff, outlet):
         <p style="font-size: 13px; color: #64748b; font-style: italic;">* Note: You will be prompted to set a secure password of your own upon your very first login.</p>
         
         <div style="text-align: center;">
-            <a href="{get_frontend_url(user.role)}" class="btn">Launch Cashier POS Terminal</a>
+            <a href="{get_frontend_url(staff.role)}" class="btn">Launch Cashier POS Terminal</a>
         </div>
         """
         msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
