@@ -297,16 +297,8 @@ export default function AdminView({ onLogout, dbMode }) {
       try { const reqs = await api.getStockRequests(); setStockRequests(reqs); } catch (err) { }
       try { const wa = await api.adminGetWhatsAppMessages(); setWhatsappMessages(wa); } catch (err) { }
       try {
-        const live = (await api.getMode()) === "Live Backend";
-        if (live) {
-          const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` } });
-          if (res.ok) setBatches(await res.json());
-        } else {
-          setBatches([
-            { id: 101, outlet_name: "Connaught Place Corner", menu_item_name: "Crispy Samosa", qty: 50, batch_number: "SAM-09A", expiry_date: new Date(Date.now() + 86400000 * 2).toISOString().slice(0, 10), received_by: "Alex" },
-            { id: 102, outlet_name: "Vashi Express Supply", menu_item_name: "Paneer Spring Rolls", qty: 22, batch_number: "PSR-12B", expiry_date: new Date(Date.now() + 86400000 * 10).toISOString().slice(0, 10), received_by: "John" }
-          ]);
-        }
+        const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` } });
+        if (res.ok) setBatches(await res.json());
       } catch (err) { }
     } catch (err) { setError(err.message || "Failed to load admin data"); }
     finally { setLoading(false); }
@@ -608,15 +600,8 @@ export default function AdminView({ onLogout, dbMode }) {
         await api.adminUpdateOutlet(editingOutletId, data);
         showToast("Outlet updated successfully!", "success");
       } else {
-        const live = (await api.getMode()) === "Live Backend";
-        if (live) {
-          const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` }, body: JSON.stringify(data) });
-          const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
-        } else {
-          const list = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
-          list.push({ id: Date.now(), name: outletName, address: outletAddress, latitude: latVal, longitude: lonVal, items: [], revenue_share_percentage: parseFloat(outletRevenueShare) || 0 });
-          localStorage.setItem("mock_outlets", JSON.stringify(list));
-        }
+        const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` }, body: JSON.stringify(data) });
+        const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
         showToast("Outlet registered!", "success");
       }
       setShowAddOutlet(false); setEditingOutletId(null);
@@ -713,8 +698,6 @@ export default function AdminView({ onLogout, dbMode }) {
   const handleAddStaff = async (e) => {
     e.preventDefault();
     try {
-      const live = (await api.getMode()) === "Live Backend";
-
       const payload = {
         email: staffEmail,
         first_name: staffFirstName,
@@ -733,39 +716,17 @@ export default function AdminView({ onLogout, dbMode }) {
         showToast("Account updated successfully!", "success");
       } else {
         if (!staffPassword) throw new Error("Password is required for new accounts");
-        if (live) {
-          const res = await fetch(`${API_BASE_URL}/admin/staff`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` },
-            body: JSON.stringify(payload)
-          });
-          const d = await res.json();
-          if (!res.ok) throw new Error(d.message || "Failed to create account");
-          if (d.user && d.user.staff_code) {
-            showToast(`Account created! Staff Login Code: ${d.user.staff_code}`, "success");
-          } else {
-            showToast(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`, "success");
-          }
+        const res = await fetch(`${API_BASE_URL}/admin/staff`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` },
+          body: JSON.stringify(payload)
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.message || "Failed to create account");
+        if (d.user && d.user.staff_code) {
+          showToast(`Account created! Staff Login Code: ${d.user.staff_code}`, "success");
         } else {
-          const list = JSON.parse(localStorage.getItem("mock_users") || "[]");
-          if (list.find(u => u.email === staffEmail)) throw new Error("Email already registered");
-          if (staffRole === "admin" && list.filter(u => u.role === "admin").length >= 3) {
-            throw new Error("Maximum of 3 admin accounts allowed.");
-          }
-          let newUser = { ...payload, id: Date.now() };
-          if (staffRole === "staff" || staffRole === "kitchen") {
-            const existingCodes = new Set(list.map(u => u.staff_code).filter(Boolean));
-            let code;
-            do { code = String(Math.floor(1000 + Math.random() * 9000)); } while (existingCodes.has(code));
-            newUser.staff_code = code;
-          }
-          list.push(newUser);
-          localStorage.setItem("mock_users", JSON.stringify(list));
-          if (newUser.staff_code) {
-            showToast(`Account created! Staff code: ${newUser.staff_code}`, "success");
-          } else {
-            showToast("Account created!", "success");
-          }
+          showToast(`${staffRole === "admin" ? "Admin" : "Staff"} account created!`, "success");
         }
       }
       setShowAddStaff(false); setEditingUserId(null);
@@ -1144,7 +1105,7 @@ export default function AdminView({ onLogout, dbMode }) {
               border: "1px solid", borderColor: dbMode.includes("Live") ? "rgba(22,163,74,0.2)" : "rgba(217,119,6,0.2)",
               marginRight: "0.25rem"
             }}>
-              {dbMode.includes("Live") ? "Live Backend" : "Demo Mode"}
+              {dbMode.includes("Live") ? "Live Backend" : "Server Offline"}
             </div>
           )}
           <button className="btn btn-secondary" onClick={loadData} disabled={loading}>

@@ -271,7 +271,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               border: "1px solid rgba(255,255,255,0.25)",
               textTransform: "uppercase", letterSpacing: "0.05em"
             }}>
-              {dbMode.includes("Live") ? "● Live Database" : "● Demo Mode"}
+              {dbMode.includes("Live") ? "● Live Database" : "● Server Offline"}
             </div>
           )}
           <button className="btn" onClick={loadData} disabled={loading} style={{

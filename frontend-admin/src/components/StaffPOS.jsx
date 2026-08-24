@@ -295,20 +295,12 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       }
 
       // Load sales history
-      const live = (await api.getMode()) === "Live Backend";
-      if (live) {
-        const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
-          headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` }
-        });
-        if (res.ok) {
-          const history = await res.json();
-          setSalesHistory(history);
-        }
-      } else {
-        // Fallback demo sales history
-        setSalesHistory([
-          { id: 1, created_at: new Date().toISOString(), total_amount: 140.00, payment_method: "cash", items: [{ menu_item_name: "Challa Chakralu 250g", quantity: 1, price: 120 }, { menu_item_name: "Snack Supply Samosa 250g", quantity: 1, price: 20 }] }
-        ]);
+      const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
+        headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` }
+      });
+      if (res.ok) {
+        const history = await res.json();
+        setSalesHistory(history);
       }
 
     } catch (err) {

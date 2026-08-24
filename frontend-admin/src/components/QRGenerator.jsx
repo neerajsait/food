@@ -137,7 +137,7 @@ export default function QRGenerator({ outlets, menuItems }) {
             {qrResult.qr_image ? (
               <img referrerPolicy="no-referrer" src={qrResult.qr_image} alt="Dispatch QR Code" style={{ width: "200px", height: "200px", border: "1px solid var(--border-light)", borderRadius: "8px", marginBottom: "1rem" }} />
             ) : (
-              <div style={{ width: "200px", height: "200px", background: "var(--bg-secondary)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>Demo Mode — No image</div>
+              <div style={{ width: "200px", height: "200px", background: "var(--bg-secondary)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>No image returned</div>
             )}
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "1rem", textAlign: "left", width: "100%", lineHeight: "1.6" }}>
               <div><strong>Item:</strong> {qrResult.payload.item}</div>
