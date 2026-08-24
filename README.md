@@ -1,3 +1,38 @@
+# food
+
+> A hands-on project by Neeraj exploring practical software development.
+
+Built with JavaScript.
+
+## About this project
+
+This repository is part of **Neeraj Sai's** growing collection of software projects, experiments, and learning builds. It reflects a practical, curious approach to creating useful products and understanding how they work under the hood.
+
+## Getting started
+
+Clone the repository and follow the setup instructions for the project's framework or language:
+
+```bash
+git clone https://github.com/neerajsait/food.git
+cd food
+```
+
+Check the project files for the available run commands and configuration requirements.
+
+## Links
+
+[Repository](https://github.com/neerajsait/food)
+
+## Author
+
+**Tiruveedhi Neeraj Venkata Sai**
+
+- GitHub: [@neerajsait](https://github.com/neerajsait)
+- Portfolio: [neeraj's portfolio](https://github.com/neerajsait/portfoliomain)
+
+
+## Existing project documentation
+
 # 🍛 FlavorFlow ERP Platform
 
 [![React](https://img.shields.io/badge/Frontend-React%2018%20%2B%20Vite-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
