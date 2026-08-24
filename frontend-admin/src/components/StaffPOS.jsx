@@ -296,7 +296,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
       // Load sales history
       const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
-        headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` }
+        headers: { "Authorization": `Bearer ${api.getAccessToken()}` }
       });
       if (res.ok) {
         const history = await res.json();

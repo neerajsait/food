@@ -294,7 +294,7 @@ export default function AdminView({ onLogout, dbMode }) {
       try { const reqs = await api.getStockRequests(); setStockRequests(reqs); } catch (err) { }
       try { const wa = await api.adminGetWhatsAppMessages(); setWhatsappMessages(wa); } catch (err) { }
       try {
-        const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${sessionStorage.getItem("token")}` } });
+        const res = await fetch(`${API_BASE_URL}/admin/batches`, { headers: { "Authorization": `Bearer ${api.getAccessToken()}` } });
         if (res.ok) setBatches(await res.json());
       } catch (err) { }
     } catch (err) { setError(err.message || "Failed to load admin data"); }
@@ -597,7 +597,7 @@ export default function AdminView({ onLogout, dbMode }) {
         await api.adminUpdateOutlet(editingOutletId, data);
         showToast("Outlet updated successfully!", "success");
       } else {
-        const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` }, body: JSON.stringify(data) });
+        const res = await fetch(`${API_BASE_URL}/admin/outlets`, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${api.getAccessToken()}` }, body: JSON.stringify(data) });
         const d = await res.json(); if (!res.ok) throw new Error(d.message || "Failed");
         showToast("Outlet registered!", "success");
       }
@@ -715,7 +715,7 @@ export default function AdminView({ onLogout, dbMode }) {
         if (!staffPassword) throw new Error("Password is required for new accounts");
         const res = await fetch(`${API_BASE_URL}/admin/staff`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionStorage.getItem("token")}` },
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${api.getAccessToken()}` },
           body: JSON.stringify(payload)
         });
         const d = await res.json();
@@ -956,7 +956,7 @@ export default function AdminView({ onLogout, dbMode }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${sessionStorage.getItem("token")}`
+          "Authorization": `Bearer ${api.getAccessToken()}`
         },
         body: JSON.stringify({
           min_loyalty_points: bulkCouponMinPts,

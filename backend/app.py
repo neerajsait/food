@@ -146,6 +146,141 @@ def allowed_file(file_obj):
         logger.error(f"Magic mime check failed: {e}")
         return False
 
+# --- Ticket attachment hardening ------------------------------------------
+TICKET_MAX_FILE_SIZE = 5 * 1024 * 1024       # 5 MB per file (mirrors MAX_CONTENT_LENGTH)
+TICKET_USER_TOTAL_QUOTA = 20 * 1024 * 1024   # 20 MB lifetime attachment storage per user
+_clamav_warned = False
+
+def _clamav_scan(file_path):
+    """Scan a saved file via clamd INSTREAM protocol.
+
+    Returns:
+        True  -> clean
+        False -> malware detected / scan says infected
+        None  -> no scanner configured (or dev-mode skip)
+
+    Raises on connection errors when FLASK_ENV=production (fail closed).
+    Configure with CLAMD_HOST (+CLAMD_TCP_PORT, default 3310) or a unix
+    CLAMD_SOCKET path.
+    """
+    global _clamav_warned
+    host = os.getenv("CLAMD_HOST")
+    socket_path = os.getenv("CLAMD_SOCKET")
+    is_production = os.getenv("FLASK_ENV") == "production"
+    if not host and not socket_path:
+        if not _clamav_warned:
+            logger.warning(
+                "No malware scanner configured (set CLAMD_HOST or "
+                "CLAMD_SOCKET). Ticket attachments are NOT AV-scanned."
+            )
+            _clamav_warned = True
+        return None
+    try:
+        import socket
+        if socket_path:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(socket_path)
+        else:
+            sock = socket.create_connection((host, int(os.getenv("CLAMD_TCP_PORT", "3310"))), timeout=10)
+        try:
+            sock.sendall(b"zINSTREAM\0")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(4096)
+                    if not chunk:
+                        break
+                    sock.sendall(len(chunk).to_bytes(4, "big") + chunk)
+            sock.sendall((0).to_bytes(4, "big"))
+            response = b""
+            while True:
+                part = sock.recv(4096)
+                if not part:
+                    break
+                response += part
+        finally:
+            sock.close()
+        decoded = response.decode("utf-8", errors="replace").strip("\0 \r\n")
+        if decoded.endswith("OK"):
+            return True
+        logger.warning(f"ClamAV flagged uploaded file: {decoded}")
+        return False
+    except Exception as e:
+        logger.error(f"ClamAV scan unavailable: {e}")
+        if is_production:
+            raise  # fail closed: never accept unscanned files in production
+        return None
+
+def _user_attachment_usage(user_id):
+    """Total bytes currently stored on disk for this user's ticket attachments."""
+    total = 0
+    tickets = db.session.scalars(
+        select(SupportTicket).where(SupportTicket.customer_id == user_id)
+    ).all()
+    for t in tickets:
+        if t.attachment_filename:
+            p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
+            if os.path.exists(p):
+                try:
+                    total += os.path.getsize(p)
+                except OSError:
+                    pass
+    return total
+
+def _check_attachment_quota(user_id, incoming_size, replaced_filename=None):
+    """Return an error response if this upload would exceed the user's quota."""
+    usage = _user_attachment_usage(user_id)
+    if replaced_filename:
+        old = os.path.join(TICKETS_UPLOAD_FOLDER, replaced_filename)
+        if os.path.exists(old):
+            try:
+                usage -= os.path.getsize(old)
+            except OSError:
+                pass
+    if usage + incoming_size > TICKET_USER_TOTAL_QUOTA:
+        return jsonify({
+            "error": "Bad Request",
+            "message": f"Attachment storage limit exceeded ({TICKET_USER_TOTAL_QUOTA // (1024*1024)} MB per user). Please delete old attachments first."
+        }), 400
+    return None
+
+def _save_scanned_attachment(file_obj, customer_id, replaced_filename=None):
+    """Validate size/quota, save, then AV-scan. On any failure the saved file
+    is removed. Returns (unique_name, error_response, status_code) where
+    error_response and status_code are None on success."""
+    file_obj.seek(0, os.SEEK_END)
+    size = file_obj.tell()
+    file_obj.seek(0)
+    if size <= 0:
+        return None, jsonify({"error": "Bad Request", "message": "Empty attachment"}), 400
+    if size > TICKET_MAX_FILE_SIZE:
+        return None, jsonify({"error": "Bad Request", "message": "Attachment exceeds 5 MB limit"}), 400
+    quota_err = _check_attachment_quota(customer_id, size, replaced_filename=replaced_filename)
+    if quota_err:
+        return None, quota_err[0], quota_err[1]
+
+    filename = secure_filename(file_obj.filename)
+    unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+    file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+    file_obj.save(file_path)
+
+    try:
+        clean = _clamav_scan(file_path)
+    except Exception as e:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Attachment rejected - scanner unavailable: {e}")
+        return None, jsonify({"error": "Service Unavailable", "message": "Malware scanner unavailable; upload rejected"}), 503
+    if clean is False:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        return None, jsonify({"error": "Bad Request", "message": "Attachment failed malware scanning"}), 400
+    return unique_name, None, None
+
+
 TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
 os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 
@@ -500,16 +635,26 @@ def create_app(config_override=None):
     @app.errorhandler(Exception)
     def handle_exception(e):
         import traceback
-        tb = traceback.format_exc()
+        import uuid
         from werkzeug.exceptions import HTTPException
         if isinstance(e, HTTPException):
             return jsonify({"error": e.name, "message": e.description}), e.code
-        logger.exception(f"Unhandled exception: {e}")
-        
-        response_data = {"error": "Internal Server Error", "message": "An unexpected server error occurred."}
+        error_id = uuid.uuid4().hex[:12]
+        logger.exception(f"[{error_id}] Unhandled exception: {e}")
+
+        response_data = {
+            "error": "Internal Server Error",
+            "message": "An unexpected server error occurred.",
+            "error_id": error_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
         if os.getenv("FLASK_ENV") != "production":
-            response_data["traceback"] = tb
-            
+            # Development only - structured debug payload. Production NEVER
+            # receives stack traces; correlate via error_id in server logs.
+            response_data["debug"] = {
+                "exception": repr(e),
+                "traceback": traceback.format_exc().splitlines(),
+            }
         return jsonify(response_data), 500
 
     @app.after_request
@@ -1693,12 +1838,9 @@ The FlavorFlow Team"""
             if file and file.filename:
                 if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
-                filename = secure_filename(file.filename)
-                if not filename:
-                    return jsonify({"error": "Bad Request", "message": "Invalid filename"}), 400
-                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
-                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
-                file.save(file_path)
+                unique_name, err_resp, err_code = _save_scanned_attachment(file, customer_id)
+                if err_resp is not None:
+                    return err_resp, err_code
 
         ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_filename=unique_name)
         db.session.add(ticket)
@@ -1710,6 +1852,7 @@ The FlavorFlow Team"""
         return jsonify({"message": "Support ticket created successfully", "ticket": ticket.to_dict()}), 201
 
     @app.route("/api/customer/tickets/<int:ticket_id>", methods=["PUT"])
+    @limiter.limit("10 per hour")
     @role_required("customer", "outlet_owner")
     def update_ticket(ticket_id):
         customer_id = int(get_jwt_identity())
@@ -1735,12 +1878,19 @@ The FlavorFlow Team"""
             if file and file.filename:
                 if not allowed_file(file):
                     return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
-                filename = secure_filename(file.filename)
-                if not filename:
-                    return jsonify({"error": "Bad Request", "message": "Invalid filename"}), 400
-                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
-                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
-                file.save(file_path)
+                unique_name, err_resp, err_code = _save_scanned_attachment(
+                    file, customer_id, replaced_filename=ticket.attachment_filename
+                )
+                if err_resp is not None:
+                    return err_resp, err_code
+                # New file saved & scanned - remove the replaced one.
+                if ticket.attachment_filename:
+                    old_path = os.path.join(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename)
+                    if os.path.exists(old_path):
+                        try:
+                            os.remove(old_path)
+                        except Exception as e:
+                            logger.error(f"Failed to remove replaced attachment {old_path}: {e}")
                 ticket.attachment_filename = unique_name
                 ticket.attachment_url = f"/api/tickets/{ticket.id}/attachment"
 
@@ -5644,9 +5794,45 @@ def _start_scheduler(app):
         with app.app_context():
             _generate_daily_report()
 
+    def cleanup_ticket_attachments():
+        """Purge attachment FILES from closed/resolved tickets older than
+        TICKET_RETENTION_DAYS (default 90) and null out their references."""
+        retention_days = int(os.getenv("TICKET_RETENTION_DAYS", "90"))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        try:
+            with app.app_context():
+                old_tickets = db.session.scalars(
+                    select(SupportTicket).where(
+                        SupportTicket.attachment_filename.is_not(None),
+                        SupportTicket.status.in_(["Resolved", "Closed"]),
+                        SupportTicket.updated_at < cutoff,
+                    )
+                ).all()
+                if not old_tickets:
+                    return
+                removed = 0
+                for t in old_tickets:
+                    p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                            removed += 1
+                        except Exception as e:
+                            logger.error(f"Ticket cleanup: failed to remove {p}: {e}")
+                    t.attachment_filename = None
+                    t.attachment_url = None
+                db.session.commit()
+                logger.info(
+                    f"Ticket cleanup: purged attachments from {len(old_tickets)} "
+                    f"closed tickets ({removed} files removed, retention={retention_days}d)"
+                )
+        except Exception as e:
+            logger.error(f"Ticket attachment cleanup failed: {e}")
+
     scheduler.add_job(run_report, "cron", hour=22, minute=0, id="daily_report")
+    scheduler.add_job(cleanup_ticket_attachments, "cron", hour=3, minute=15, id="ticket_attachment_cleanup")
     scheduler.start()
-    logger.info("Scheduler started — daily report at 22:00 IST")
+    logger.info("Scheduler started — daily report at 22:00 IST, ticket cleanup at 03:15 IST")
 
 if __name__ == "__main__":
     app = create_app()

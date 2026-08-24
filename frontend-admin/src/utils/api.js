@@ -12,6 +12,27 @@ const originalFetch = window.fetch;
 let isRefreshing = false;
 let refreshPromise = null;
 
+// ------------------------------------------------------------------
+// Access token lives ONLY in module memory - it is never written to
+// localStorage/sessionStorage, so an XSS payload cannot persist a
+// stolen token beyond the current page. On reload the session is
+// silently restored via ensureSession() using the HttpOnly refresh
+// cookie.
+// ------------------------------------------------------------------
+let accessToken = null;
+
+export function getAccessToken() {
+  return accessToken;
+}
+
+function setAccessToken(token) {
+  accessToken = token || null;
+}
+
+function clearAccessToken() {
+  accessToken = null;
+}
+
 window.fetch = async (url, options) => {
   const isApiCall = typeof url === 'string' && url.includes(API_BASE_URL);
   if (isApiCall) {
@@ -37,16 +58,18 @@ window.fetch = async (url, options) => {
         isRefreshing = false;
         if (refreshRes.ok) {
           const data = await refreshRes.json();
-          sessionStorage.setItem("token", data.access_token);
+          setAccessToken(data.access_token);
           return data.access_token;
         } else {
-          sessionStorage.removeItem("token");
+          clearAccessToken();
+          sessionStorage.removeItem("token"); // legacy cleanup
           window.location.href = "/login";
           throw new Error("Session expired");
         }
       }).catch(err => {
         isRefreshing = false;
-        sessionStorage.removeItem("token");
+        clearAccessToken();
+        sessionStorage.removeItem("token"); // legacy cleanup
         window.location.href = "/login";
         throw err;
       });
@@ -65,8 +88,7 @@ window.fetch = async (url, options) => {
 };
 // Helper to retrieve auth tokens
 function getAuthHeader() {
-  const token = sessionStorage.getItem("token");
-  return token ? { "Authorization": `Bearer ${token}` } : {};
+  return accessToken ? { "Authorization": `Bearer ${accessToken}` } : {};
 }
 
 // Safe JSON parser — never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
@@ -119,7 +141,8 @@ export const api = {
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
-    sessionStorage.setItem("token", data.access_token);
+    setAccessToken(data.access_token);   // memory only - never persisted
+    sessionStorage.removeItem("token");  // legacy cleanup
     // Refresh token arrives as an HttpOnly cookie - never stored client-side.
     sessionStorage.setItem("user", JSON.stringify(data.user));
     return data;
@@ -136,7 +159,7 @@ export const api = {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${sessionStorage.getItem("token")}`
+              ...getAuthHeader()
             },
             body: JSON.stringify({}) // Backend defaults actual_cash to expected_cash
           }).catch(() => {});
@@ -159,8 +182,9 @@ export const api = {
       alert("Warning: Could not reach the server to securely log out. Local session cleared, but remote session may remain active.");
     }
 
-    sessionStorage.removeItem("token");
-    sessionStorage.removeItem("refresh_token"); // legacy cleanup
+    clearAccessToken();
+    sessionStorage.removeItem("token"); // legacy cleanup
+    sessionStorage.removeItem("refresh_token");
     sessionStorage.removeItem("user");
     window.location.href = "/login";
   },
@@ -181,15 +205,31 @@ export const api = {
     return data;
   },
 
+  // Silently restore an access token into memory after a page reload using
+  // the HttpOnly refresh cookie. Returns true when a usable session exists.
+  async ensureSession() {
+    if (accessToken) return true;
+    if (!sessionStorage.getItem("user")) return false; // no known identity
+    try {
+      const res = await originalFetch(`${API_BASE_URL}/auth/refresh`, {
+        method: "POST",
+        credentials: "include"
+      });
+      if (!res.ok) return false;
+      const data = await safeJson(res);
+      setAccessToken(data.access_token);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  },
+
   async getMe() {
-    const token = sessionStorage.getItem("token");
-    if (!token) throw new Error("No token");
+    if (!accessToken) throw new Error("No token");
 
     const res = await fetch(`${API_BASE_URL}/auth/me`, {
       method: "GET",
-      headers: {
-        "Authorization": `Bearer ${token}`
-      }
+      headers: getAuthHeader()
     });
     const data = await safeJson(res);
     if (data.user) {

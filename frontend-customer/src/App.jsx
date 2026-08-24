@@ -31,8 +31,10 @@ export default function App() {
       const mode = await api.getMode();
       setDbMode(mode);
       
-      const token = sessionStorage.getItem("token");
-      if (token) {
+      // Silent refresh: restore the access token into memory via the
+      // HttpOnly refresh cookie (token is never persisted client-side).
+      const restored = await api.ensureSession();
+      if (restored) {
         const user = await api.getMe();
         if (user) {
           setCurrentUser(user);
