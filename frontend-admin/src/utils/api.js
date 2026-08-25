@@ -1,4 +1,4 @@
-// API client for communicating with the Flask backend.
+﻿// API client for communicating with the Flask backend.
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || (
   window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
@@ -91,12 +91,12 @@ function getAuthHeader() {
   return accessToken ? { "Authorization": `Bearer ${accessToken}` } : {};
 }
 
-// Safe JSON parser — never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
+// Safe JSON parser â€” never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
 async function safeJson(res) {
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("application/json")) {
     // const text = await res.text();
-    // Backend returned HTML — means server is down or misconfigured
+    // Backend returned HTML â€” means server is down or misconfigured
     throw new Error(
       res.status === 404
         ? "API endpoint not found (404). Please restart the backend."
@@ -484,7 +484,7 @@ export const api = {
     try {
       payload = JSON.parse(qrData);
     } catch (err) {
-      throw new Error("Invalid QR code â€” not a dispatch label.");
+      throw new Error("Invalid QR code Ã¢â‚¬â€ not a dispatch label.");
     }
 
     const res = await fetch(`${API_BASE_URL}/pos/scan-arrival`, {
@@ -1304,6 +1304,23 @@ export const api = {
     return data;
   },
 
+
+  async adminGetPaymentSettings() {
+    const res = await fetch(`${API_BASE_URL}/admin/settings/payment`, { headers: getAuthHeader() });
+    if (!res.ok) throw new Error("Failed to load payment settings");
+    return safeJson(res);
+  },
+
+  async adminUpdatePaymentSettings(payload) {
+    const res = await fetch(`${API_BASE_URL}/admin/settings/payment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || data.error || "Failed to save payment settings");
+    return data;
+  },
   // --- Ticketing ---
   async getCustomerTickets() {
     const res = await fetch(`${API_BASE_URL}/customer/tickets`, { headers: getAuthHeader() });

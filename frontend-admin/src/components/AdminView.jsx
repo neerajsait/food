@@ -7,7 +7,7 @@ import {
   Truck, Clock, Trash2, Calendar, RefreshCw, BarChart3,
   X, LogOut, MessageSquare, Star, Tag, ArrowRight, User,
   Megaphone, Image, Settings, Gift, MessageCircle, Edit2,
-  BookOpen, ShoppingCart, Receipt
+  BookOpen, ShoppingCart, Receipt, CreditCard
 } from "lucide-react";
 import QRGenerator from "./QRGenerator";
 import EmptyState from "./EmptyState";
@@ -391,6 +391,12 @@ export default function AdminView({ onLogout, dbMode }) {
   // --- Banners State ---
   const [banners, setBanners] = useState([]);
   const [storeSettings, setStoreSettings] = useState({});
+
+  // --- Payment Gateway (Razorpay) State ---
+  const [payCfg, setPayCfg] = useState({});
+  const [payForm, setPayForm] = useState({ razorpay_key_id: "", razorpay_key_secret: "", razorpay_webhook_secret: "", razorpay_mode: "test", razorpay_enabled: false });
+  const [paySaving, setPaySaving] = useState(false);
+
   const [stockRequests, setStockRequests] = useState([]);
   const [showBannerModal, setShowBannerModal] = useState(false);
   const [editingBannerId, setEditingBannerId] = useState(null);
@@ -438,8 +444,44 @@ export default function AdminView({ onLogout, dbMode }) {
       api.adminGetBanners().then(res => setBanners(Array.isArray(res) ? res : [])).catch(() => setBanners([]));
     } else if (activeTab === "settings") {
       api.adminGetStoreSettings().then(setStoreSettings).catch(() => { });
+      loadPaymentCfg();
     }
   }, [activeTab]);
+
+  const loadPaymentCfg = () => {
+    api.adminGetPaymentSettings().then(cfg => {
+      setPayCfg(cfg);
+      setPayForm(prev => ({
+        ...prev,
+        razorpay_key_id: cfg.razorpay_key_id || "",
+        razorpay_mode: cfg.razorpay_mode || "test",
+        razorpay_enabled: !!cfg.razorpay_enabled,
+        razorpay_key_secret: "",
+        razorpay_webhook_secret: ""
+      }));
+    }).catch(() => { });
+  };
+
+  const handleSavePayment = async () => {
+    setPaySaving(true);
+    try {
+      const payload = {
+        razorpay_key_id: payForm.razorpay_key_id.trim(),
+        razorpay_mode: payForm.razorpay_mode,
+        razorpay_enabled: payForm.razorpay_enabled
+      };
+      if (payForm.razorpay_key_secret) payload.razorpay_key_secret = payForm.razorpay_key_secret;
+      if (payForm.razorpay_webhook_secret) payload.razorpay_webhook_secret = payForm.razorpay_webhook_secret;
+      const res = await api.adminUpdatePaymentSettings(payload);
+      showToast(res.message || "Payment settings saved", "success");
+      setPayForm(prev => ({ ...prev, razorpay_key_secret: "", razorpay_webhook_secret: "" }));
+      loadPaymentCfg();
+    } catch (err) {
+      showToast(err.message || "Failed to save payment settings", "error");
+    } finally {
+      setPaySaving(false);
+    }
+  };
 
   const handleDeleteReview = (reviewId) => {
     setReviewToDelete(reviewId);
@@ -2795,8 +2837,74 @@ export default function AdminView({ onLogout, dbMode }) {
                   <textarea className="form-input" value={storeSettings.store_notice || ""} onChange={e => setStoreSettings(prev => ({ ...prev, store_notice: e.target.value }))} placeholder="e.g. Expect delays due to heavy rain" rows={2} />
                 </div>
               </div>
-              
+
             </div>
+            </div>
+
+            {/* ══════════ PAYMENT GATEWAY — RAZORPAY ══════════ */}
+            <div style={{ marginTop: "3rem", borderTop: "1px solid var(--border-light)", paddingTop: "2rem" }}>
+              <h3 style={{ fontSize: "1.2rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <CreditCard size={20} /> Payment Gateway — Razorpay
+              </h3>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+                Status: <b style={{ color: payCfg.razorpay_key_secret_set ? "var(--success)" : "var(--warning)" }}>
+                  {payCfg.razorpay_key_secret_set ? "Configured" : "Not configured"}
+                </b>
+                {payCfg.razorpay_key_masked ? <> · Current key: <b>{payCfg.razorpay_key_masked}</b></> : null}
+                {" "}· Source: {payCfg.source || "none"}
+                {!payCfg.encryption_configured && (
+                  <span style={{ color: "var(--danger)", fontWeight: 700 }}> · PAYMENT_ENCRYPTION_KEY missing on server!</span>
+                )}
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "1rem" }}>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Razorpay Key ID</label>
+                  <input type="text" className="form-input" placeholder="rzp_test_XXXX or rzp_live_XXXX"
+                    value={payForm.razorpay_key_id}
+                    onChange={e => setPayForm(p => ({ ...p, razorpay_key_id: e.target.value }))} />
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">
+                    Key Secret {payCfg.razorpay_key_secret_set ? `(current: ${payCfg.razorpay_key_masked || "set"})` : "(not set)"}
+                  </label>
+                  <input type="password" autoComplete="new-password" className="form-input"
+                    placeholder={payCfg.razorpay_key_secret_set ? "Leave blank to keep current secret" : "Enter your Key Secret"}
+                    value={payForm.razorpay_key_secret}
+                    onChange={e => setPayForm(p => ({ ...p, razorpay_key_secret: e.target.value }))} />
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Webhook Secret (optional)</label>
+                  <input type="password" autoComplete="new-password" className="form-input"
+                    placeholder={payCfg.razorpay_webhook_secret_set ? "Leave blank to keep current" : "whsec_..."}
+                    value={payForm.razorpay_webhook_secret}
+                    onChange={e => setPayForm(p => ({ ...p, razorpay_webhook_secret: e.target.value }))} />
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Mode</label>
+                  <select className="form-input" value={payForm.razorpay_mode}
+                    onChange={e => setPayForm(p => ({ ...p, razorpay_mode: e.target.value }))}>
+                    <option value="test">Test</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                  <input type="checkbox" id="rp_enabled" checked={payForm.razorpay_enabled}
+                    onChange={e => setPayForm(p => ({ ...p, razorpay_enabled: e.target.checked }))}
+                    style={{ width: "18px", height: "18px", accentColor: "var(--brand)" }} />
+                  <label htmlFor="rp_enabled" className="form-label" style={{ margin: 0 }}>Enable Razorpay payments</label>
+                </div>
+              </div>
+
+              <button type="button" className="btn btn-primary" disabled={paySaving}
+                onClick={handleSavePayment}
+                style={{ marginTop: "1.25rem", padding: "0.75rem 1.5rem" }}>
+                {paySaving ? "Saving…" : "Save Payment Settings"}
+              </button>
             </div>
 
             {/* System Data Reset */}

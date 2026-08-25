@@ -1,0 +1,260 @@
+INFO:werkzeug:[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.215.145.126:5000
+INFO:werkzeug:[33mPress CTRL+C to quit[0m
+INFO:werkzeug: * Restarting with stat
+WARNING:werkzeug: * Debugger is active!
+INFO:werkzeug: * Debugger PIN: 140-502-714
+INFO:app:Incoming Request: GET http://localhost:5000/api/health
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:44:11] "GET /api/health HTTP/1.1" 200 -
+INFO:app:Incoming Request: POST http://localhost:5000/api/auth/login
+INFO:app:Outgoing Response: 200 OK for POST http://localhost:5000/api/auth/login
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:44:39] "POST /api/auth/login HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/admin/settings/payment
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/admin/settings/payment
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:44:40] "GET /api/admin/settings/payment HTTP/1.1" 200 -
+INFO:app:Incoming Request: POST http://localhost:5000/api/payments/razorpay/order
+INFO:app:Outgoing Response: 401 UNAUTHORIZED for POST http://localhost:5000/api/payments/razorpay/order
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:44:40] "[31m[1mPOST /api/payments/razorpay/order HTTP/1.1[0m" 401 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/health
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:49:27] "GET /api/health HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/health?_t=1787588846748
+INFO:app:Incoming Request: GET http://localhost:5000/api/health?_t=1787588846750
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health?_t=1787588846748
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:27] "GET /api/health?_t=1787588846748 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health?_t=1787588846750
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:29] "GET /api/health?_t=1787588846750 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/health?_t=1787588849240
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health?_t=1787588849240
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:29] "GET /api/health?_t=1787588849240 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/health?_t=1787588849242
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health?_t=1787588849242
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:29] "GET /api/health?_t=1787588849242 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588849792
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588849794
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588849792
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588849794
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/foods/menu?_t=1787588849792 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/foods/menu?_t=1787588849794 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588850154&_t=1787588850154
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588850154&_t=1787588850154
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/coupons/active?t=1787588850154&_t=1787588850154 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588850155&_t=1787588850155
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588850396
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588850155&_t=1787588850155
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588850396
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/coupons/active?t=1787588850155&_t=1787588850155 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/public/banners?_t=1787588850396 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588850496
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588850496
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/public/banners?_t=1787588850496 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588850519
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588850519
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/public/store-settings?_t=1787588850519 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588850720
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588850720
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:30] "GET /api/public/store-settings?_t=1787588850720 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/login
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/login
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:46] "OPTIONS /api/auth/login HTTP/1.1" 200 -
+INFO:app:Incoming Request: POST http://localhost:5000/api/auth/login
+INFO:app:Outgoing Response: 200 OK for POST http://localhost:5000/api/auth/login
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:46] "POST /api/auth/login HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/orders?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/orders?_t=1787588867001
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/foods/orders?_t=1787588867001 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/health?_t=1787588866961
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/health?_t=1787588866961
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/health?_t=1787588866961 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588867000
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588867001
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/orders?_t=1787588867002
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588867003
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588867003
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588867001
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588867002
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/orders?_t=1787588867002
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588867003
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/orders?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588867003
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588867000
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/auth/addresses?_t=1787588867001 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/foods/orders?_t=1787588867002 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/foods/favorites?_t=1787588867003 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/auth/addresses?_t=1787588867003 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "OPTIONS /api/foods/favorites?_t=1787588867001 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/foods/menu?_t=1787588867000 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588867002
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/orders?_t=1787588867001
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/foods/menu?_t=1787588867002 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/foods/orders?_t=1787588867001 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/addresses?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/addresses?_t=1787588867001
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/auth/addresses?_t=1787588867001 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/orders?_t=1787588867002
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/favorites?_t=1787588867003
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/orders?_t=1787588867002
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/addresses?_t=1787588867003
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/foods/orders?_t=1787588867002 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/favorites?_t=1787588867001
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/addresses?_t=1787588867003
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/auth/addresses?_t=1787588867003 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/favorites?_t=1787588867001
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:47] "GET /api/foods/favorites?_t=1787588867001 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588867766&_t=1787588867766
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588867766&_t=1787588867766
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:48] "GET /api/coupons/active?t=1787588867766&_t=1787588867766 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588868100
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588868100
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:48] "GET /api/public/banners?_t=1787588868100 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588868420
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588868420
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:48] "GET /api/public/store-settings?_t=1787588868420 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/me?_t=1787588868753
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588868753
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/me?_t=1787588868753
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588868754
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588868753
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:49] "OPTIONS /api/auth/me?_t=1787588868753 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588868754
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:49] "OPTIONS /api/customer/tickets?_t=1787588868753 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:49] "OPTIONS /api/customer/reviews?_t=1787588868754 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/me?_t=1787588868753
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/tickets?_t=1787588868753
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/reviews?_t=1787588868754
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/me?_t=1787588868753
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:49] "GET /api/auth/me?_t=1787588868753 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/favorites?_t=1787588867003
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:49] "GET /api/foods/favorites?_t=1787588867003 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588869764&_t=1787588869764
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588869764&_t=1787588869764
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:50] "GET /api/coupons/active?t=1787588869764&_t=1787588869764 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588870096
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588870096
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:50] "GET /api/public/banners?_t=1787588870096 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588870422
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588870422
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:50] "GET /api/public/store-settings?_t=1787588870422 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/me?_t=1787588870754
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/me?_t=1787588870754
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:50] "OPTIONS /api/auth/me?_t=1787588870754 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588870755
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588870755
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588870755
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/me?_t=1787588870754
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588870755
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "OPTIONS /api/customer/tickets?_t=1787588870755 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "OPTIONS /api/customer/reviews?_t=1787588870755 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/me?_t=1787588870754
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "GET /api/auth/me?_t=1787588870754 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/tickets?_t=1787588870755
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/reviews?_t=1787588870755
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/tickets?_t=1787588870755
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/reviews?_t=1787588870755
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "GET /api/customer/tickets?_t=1787588870755 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "GET /api/customer/reviews?_t=1787588870755 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/tickets?_t=1787588868753
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/reviews?_t=1787588868754
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "GET /api/customer/tickets?_t=1787588868753 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:57:51] "GET /api/customer/reviews?_t=1787588868754 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/orders?_t=1787588882008
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588882007
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/orders?_t=1787588882008
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588882008
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588882008
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "OPTIONS /api/foods/orders?_t=1787588882008 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588882008
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588882008
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "OPTIONS /api/foods/favorites?_t=1787588882008 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588882007
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "OPTIONS /api/auth/addresses?_t=1787588882008 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "GET /api/foods/menu?_t=1787588882007 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/orders?_t=1787588882008
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/orders?_t=1787588882008
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "GET /api/foods/orders?_t=1787588882008 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/favorites?_t=1787588882008
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/favorites?_t=1787588882008
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "GET /api/foods/favorites?_t=1787588882008 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/addresses?_t=1787588882008
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/addresses?_t=1787588882008
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "GET /api/auth/addresses?_t=1787588882008 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588882682&_t=1787588882682
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588882682&_t=1787588882682
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:02] "GET /api/coupons/active?t=1787588882682&_t=1787588882682 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588882698
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588882698
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "GET /api/public/banners?_t=1787588882698 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588883034
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588883034
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "GET /api/public/store-settings?_t=1787588883034 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/me?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/me?_t=1787588883273
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "OPTIONS /api/auth/me?_t=1787588883273 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/me?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/me?_t=1787588883273
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "GET /api/auth/me?_t=1787588883273 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588883273
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588883273
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "OPTIONS /api/customer/tickets?_t=1787588883273 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "OPTIONS /api/customer/reviews?_t=1787588883273 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/tickets?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/tickets?_t=1787588883273
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "GET /api/customer/tickets?_t=1787588883273 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/reviews?_t=1787588883273
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/reviews?_t=1787588883273
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:03] "GET /api/customer/reviews?_t=1787588883273 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/menu?_t=1787588897017
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/orders?_t=1787588897018
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588897018
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588897019
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/orders?_t=1787588897018
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/foods/favorites?_t=1787588897018
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/addresses?_t=1787588897019
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "OPTIONS /api/foods/orders?_t=1787588897018 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "OPTIONS /api/foods/favorites?_t=1787588897018 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "OPTIONS /api/auth/addresses?_t=1787588897019 HTTP/1.1" 200 -
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/menu?_t=1787588897017
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "GET /api/foods/menu?_t=1787588897017 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/orders?_t=1787588897018
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/orders?_t=1787588897018
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "GET /api/foods/orders?_t=1787588897018 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/foods/favorites?_t=1787588897018
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/addresses?_t=1787588897019
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/addresses?_t=1787588897019
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/foods/favorites?_t=1787588897018
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "GET /api/auth/addresses?_t=1787588897019 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "GET /api/foods/favorites?_t=1787588897018 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/coupons/active?t=1787588897700&_t=1787588897700
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/coupons/active?t=1787588897700&_t=1787588897700
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:17] "GET /api/coupons/active?t=1787588897700&_t=1787588897700 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/banners?_t=1787588897718
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/banners?_t=1787588897718
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "GET /api/public/banners?_t=1787588897718 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/public/store-settings?_t=1787588898049
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/public/store-settings?_t=1787588898049
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "GET /api/public/store-settings?_t=1787588898049 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/auth/me?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/auth/me?_t=1787588898312
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "OPTIONS /api/auth/me?_t=1787588898312 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/auth/me?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/auth/me?_t=1787588898312
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "GET /api/auth/me?_t=1787588898312 HTTP/1.1" 200 -
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588898312
+INFO:app:Incoming Request: OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/tickets?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for OPTIONS http://localhost:5000/api/customer/reviews?_t=1787588898312
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "OPTIONS /api/customer/tickets?_t=1787588898312 HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "OPTIONS /api/customer/reviews?_t=1787588898312 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/tickets?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/tickets?_t=1787588898312
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "GET /api/customer/tickets?_t=1787588898312 HTTP/1.1" 200 -
+INFO:app:Incoming Request: GET http://localhost:5000/api/customer/reviews?_t=1787588898312
+INFO:app:Outgoing Response: 200 OK for GET http://localhost:5000/api/customer/reviews?_t=1787588898312
+INFO:werkzeug:127.0.0.1 - - [24/Aug/2026 21:58:18] "GET /api/customer/reviews?_t=1787588898312 HTTP/1.1" 200 -

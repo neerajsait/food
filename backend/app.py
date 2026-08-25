@@ -1,7 +1,10 @@
 import os
 import io
 import json
+import time
 import base64
+import hashlib
+import hmac
 import random
 import logging
 from datetime import datetime, timezone, timedelta
@@ -28,6 +31,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from cryptography.fernet import Fernet, InvalidToken
 
 from models import (
     db, User, Admin, Customer, Staff, OutletOwner, Outlet, MenuItem, OutletStock,
@@ -303,6 +307,103 @@ def _save_scanned_attachment(file_obj, customer_id, replaced_filename=None):
             pass
         return None, jsonify({"error": "Bad Request", "message": "Attachment failed malware scanning"}), 400
     return unique_name, None, None
+
+
+# ============================================================
+# PAYMENT GATEWAY (Razorpay) — DB-backed credential vault
+# Credentials live in StoreSetting; secrets are Fernet-encrypted with a
+# master key from PAYMENT_ENCRYPTION_KEY (never stored in the database).
+# Resolution order when creating payments: DB first, env vars as fallback
+# for first-time setups. A short TTL cache is cleared on every save.
+# ============================================================
+_razorpay_cache = {"creds": None, "loaded_at": 0.0}
+_RAZORPAY_CACHE_TTL = 60  # seconds
+
+def _fernet():
+    master = os.getenv("PAYMENT_ENCRYPTION_KEY")
+    if not master:
+        return None
+    key = base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest())
+    return Fernet(key)
+
+def _encrypt_secret(plaintext):
+    f = _fernet()
+    if f is None:
+        raise RuntimeError("PAYMENT_ENCRYPTION_KEY is not configured")
+    return f.encrypt(plaintext.encode()).decode()
+
+def _decrypt_secret(ciphertext):
+    f = _fernet()
+    if f is None:
+        raise RuntimeError("PAYMENT_ENCRYPTION_KEY is not configured")
+    try:
+        return f.decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
+        raise RuntimeError(
+            "Stored Razorpay secret cannot be decrypted - PAYMENT_ENCRYPTION_KEY "
+            "was likely rotated. Re-enter the secret in the Admin UI."
+        )
+
+def _setting_value(key, default=None):
+    row = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == key)).first()
+    return row.setting_value if row else default
+
+def _set_setting(key, value):
+    row = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == key)).first()
+    if not row:
+        db.session.add(StoreSetting(setting_key=key, setting_value=value))
+    else:
+        row.setting_value = value
+
+def get_razorpay_credentials(force_refresh=False):
+    """Resolve Razorpay config: encrypted DB values first, env-var fallback.
+    Returns {key_id, key_secret, mode, enabled, webhook_secret, source} or None."""
+    now = time.monotonic()
+    if (not force_refresh and _razorpay_cache["creds"]
+            and now - _razorpay_cache["loaded_at"] < _RAZORPAY_CACHE_TTL):
+        return _razorpay_cache["creds"]
+
+    creds = None
+    key_id = _setting_value("razorpay_key_id")
+    enc_secret = _setting_value("razorpay_key_secret")
+    if key_id and enc_secret:
+        secret = _decrypt_secret(enc_secret)
+        creds = {
+            "key_id": key_id,
+            "key_secret": secret,
+            "mode": _setting_value("razorpay_mode", "test") or "test",
+            "enabled": (_setting_value("razorpay_enabled", "false") == "true"),
+            "webhook_secret": None,
+            "source": "database",
+        }
+        enc_wh = _setting_value("razorpay_webhook_secret")
+        if enc_wh:
+            creds["webhook_secret"] = _decrypt_secret(enc_wh)
+    else:
+        env_id = os.getenv("RAZORPAY_KEY_ID")
+        env_secret = os.getenv("RAZORPAY_KEY_SECRET")
+        if env_id and env_secret:
+            creds = {
+                "key_id": env_id,
+                "key_secret": env_secret,
+                "mode": os.getenv("RAZORPAY_MODE", "test"),
+                "enabled": os.getenv("RAZORPAY_ENABLED", "true").lower() == "true",
+                "webhook_secret": os.getenv("RAZORPAY_WEBHOOK_SECRET"),
+                "source": "environment",
+            }
+
+    _razorpay_cache["creds"] = creds
+    _razorpay_cache["loaded_at"] = time.monotonic()
+    return creds
+
+def clear_razorpay_cache():
+    _razorpay_cache["creds"] = None
+    _razorpay_cache["loaded_at"] = 0.0
+
+def verify_razorpay_webhook_signature(payload_bytes, signature, webhook_secret):
+    """Constant-time verification of Razorpay's X-Razorpay-Signature header."""
+    expected = hmac.new(webhook_secret.encode(), payload_bytes or b"", hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature or "")
 
 
 TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
@@ -5163,6 +5264,147 @@ The FlavorFlow Team"""
         log_admin_action(db.session, get_jwt_identity(), "update_store_settings", "StoreSetting", None, "Updated store settings")
         db.session.commit()
         return jsonify({"message": "Settings updated successfully"}), 200
+
+    # ---------------------------------------------------------------------------
+    # Payment gateway settings (Razorpay) — Finance/Owner departments only.
+    # Secrets stored Fernet-encrypted; responses never include them.
+    # ---------------------------------------------------------------------------
+    @app.route("/api/admin/settings/payment", methods=["GET"])
+    @role_required("admin")
+    @department_required("Finance", "Owner")
+    def admin_get_payment_settings():
+        has_secret = _setting_value("razorpay_key_secret") is not None
+        last4 = _setting_value("razorpay_key_last4")
+        env_configured = bool(os.getenv("RAZORPAY_KEY_ID") and os.getenv("RAZORPAY_KEY_SECRET"))
+        source = "database" if has_secret else ("environment" if env_configured else "none")
+        return jsonify({
+            "razorpay_key_id": _setting_value("razorpay_key_id", ""),
+            "razorpay_key_masked": ("••••••••" + last4) if (has_secret and last4) else "",
+            "razorpay_key_secret_set": has_secret,
+            "razorpay_webhook_secret_set": _setting_value("razorpay_webhook_secret") is not None,
+            "razorpay_mode": _setting_value("razorpay_mode", "test"),
+            "razorpay_enabled": (_setting_value("razorpay_enabled", "false") == "true"),
+            "encryption_configured": bool(os.getenv("PAYMENT_ENCRYPTION_KEY")),
+            "source": source,
+        }), 200
+
+    @app.route("/api/admin/settings/payment", methods=["POST"])
+    @role_required("admin")
+    @department_required("Finance", "Owner")
+    def admin_update_payment_settings():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+
+        mode = str(data.get("razorpay_mode") or _setting_value("razorpay_mode", "test")).lower()
+        if mode not in ("test", "live"):
+            return jsonify({"error": "Bad Request", "message": "razorpay_mode must be 'test' or 'live'"}), 400
+
+        enabled_raw = data.get("razorpay_enabled")
+        if enabled_raw is None:
+            enabled_str = _setting_value("razorpay_enabled", "false") or "false"
+        else:
+            enabled_str = "true" if (enabled_raw is True or str(enabled_raw).lower() in ("true", "1", "yes")) else "false"
+
+        key_id = str(data.get("razorpay_key_id") or _setting_value("razorpay_key_id") or "").strip()
+
+        new_secret = (data.get("razorpay_key_secret") or "").strip()
+        new_webhook = (data.get("razorpay_webhook_secret") or "").strip()
+
+        if key_id and not key_id.startswith(("rzp_test_", "rzp_live_")):
+            return jsonify({"error": "Bad Request", "message": "Razorpay Key ID must start with rzp_test_ or rzp_live_"}), 400
+        if key_id and key_id.startswith("rzp_live_") != (mode == "live"):
+            return jsonify({"error": "Bad Request",
+                            "message": f"Key ID prefix does not match {mode} mode (expected {'rzp_live_' if mode == 'live' else 'rzp_test_'}...)"}), 400
+
+        if (new_secret or new_webhook) and _fernet() is None:
+            return jsonify({"error": "Bad Request",
+                            "message": "Server is missing PAYMENT_ENCRYPTION_KEY - cannot store secrets securely."}), 400
+
+        if key_id:
+            _set_setting("razorpay_key_id", key_id)
+        _set_setting("razorpay_mode", mode)
+        _set_setting("razorpay_enabled", enabled_str)
+        secret_changed = False
+        if new_secret:
+            _set_setting("razorpay_key_secret", _encrypt_secret(new_secret))
+            _set_setting("razorpay_key_last4", new_secret[-4:])
+            secret_changed = True
+        if new_webhook:
+            _set_setting("razorpay_webhook_secret", _encrypt_secret(new_webhook))
+
+        log_admin_action(db.session, get_jwt_identity(), "update_payment_settings",
+                         "StoreSetting", None,
+                         f"Razorpay settings saved (mode={mode}, enabled={enabled_str}, secret_changed={secret_changed})")
+        db.session.commit()
+        clear_razorpay_cache()
+
+        last4 = _setting_value("razorpay_key_last4")
+        return jsonify({
+            "message": "Payment settings saved successfully",
+            "razorpay_key_id": _setting_value("razorpay_key_id", ""),
+            "razorpay_key_masked": ("••••••••" + last4) if (_setting_value("razorpay_key_secret") and last4) else "",
+            "razorpay_mode": mode,
+            "razorpay_enabled": enabled_str == "true",
+            "secret_changed": secret_changed,
+        }), 200
+
+    @app.route("/api/payments/razorpay/order", methods=["POST"])
+    @jwt_required()
+    def create_razorpay_order():
+        """Create a Razorpay order for one of this customer's pending orders."""
+        uid = int(get_jwt_identity())
+        data = request.get_json(silent=True) or {}
+        order_id = data.get("order_id")
+        if not order_id:
+            return jsonify({"error": "Bad Request", "message": "order_id is required"}), 400
+
+        order = db.session.get(Order, int(order_id))
+        if not order or order.customer_id != uid:
+            return jsonify({"error": "Not Found", "message": "Order not found"}), 404
+        if order.status != "pending":
+            return jsonify({"error": "Bad Request", "message": "Order is not awaiting payment"}), 400
+
+        try:
+            creds = get_razorpay_credentials(force_refresh=True)
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured yet. Please contact support."}), 503
+        if not creds.get("enabled"):
+            return jsonify({"error": "Bad Request",
+                            "message": "Online payments are currently disabled."}), 400
+
+        import requests as _requests
+        try:
+            rp_resp = _requests.post(
+                "https://api.razorpay.com/v1/orders",
+                auth=(creds["key_id"], creds["key_secret"]),
+                json={
+                    "amount": int((order.total_price or 0) * 100),  # paise
+                    "currency": "INR",
+                    "receipt": f"order_{order.id}",
+                    "notes": {"order_id": str(order.id)},
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error(f"Razorpay order creation failed: {e}")
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway unreachable"}), 502
+
+        if rp_resp.status_code not in (200, 201):
+            logger.error(f"Razorpay API error {rp_resp.status_code}: {rp_resp.text[:300]}")
+            return jsonify({"error": "Bad Gateway",
+                            "message": "Payment gateway rejected the request"}), 502
+
+        rp_order = rp_resp.json()
+        return jsonify({
+            "razorpay_order_id": rp_order.get("id"),
+            "amount": rp_order.get("amount"),
+            "currency": rp_order.get("currency"),
+            "key_id": creds["key_id"],   # public key - safe for checkout.js
+            "mode": creds["mode"],
+        }), 201
 
     # ---------------------------------------------------------------------------
     # Market Purchases API
