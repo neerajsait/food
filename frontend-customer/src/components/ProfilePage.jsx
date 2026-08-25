@@ -1,5 +1,5 @@
 import React from "react";
-import { User, Lock, MapPin, Star, Trash2, Edit2, LogOut } from "lucide-react";
+import { User, Lock, MapPin, Star, Trash2, Edit2, LogOut } from "../ui/Icon";
 
 export default function ProfilePage({
   user, isEditingProfile, setIsEditingProfile, profileForm, setProfileForm,

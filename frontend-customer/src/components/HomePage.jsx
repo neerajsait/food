@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { ChevronRight, Leaf, Award, Truck, RotateCcw } from "lucide-react";
+import { ChevronRight, Leaf, Award, Truck, RotateCcw } from "../ui/Icon";
 import ProductCard from "./ProductCard";
 import ProductCarousel from "./ProductCarousel";
 import { HeroBannerSkeleton, ProductGridSkeleton } from "./SkeletonLoader";
@@ -51,7 +51,7 @@ function HeroBanner({ banners, loading, onShopNow }) {
     <div className="hero-banner mb-2xl">
       <div className="hero-banner-inner">
         <div className="hero-banner-content animate-slide-up">
-          <span className="hero-banner-eyebrow">✦ Fresh from the Kitchen</span>
+          <span className="hero-banner-eyebrow">Fresh from the Kitchen</span>
           <h1 className="hero-banner-title">
             {current?.title || <>TRADITIONAL TASTE.<br />MADE FOR TODAY.</>}
           </h1>
@@ -170,7 +170,7 @@ function BestSellerHighlight({ item, cartQty, isFav, onAdd, onRemove, onToggleFa
     <div className="mb-2xl">
       <div className="section-header">
         <div>
-          <h2 className="section-title">⭐ Best Seller</h2>
+          <h2 className="section-title">Best Seller</h2>
           <p className="section-subtitle">Our most loved product this week</p>
         </div>
       </div>
@@ -311,7 +311,7 @@ function TrustBadges() {
 function ReviewsSection({ items }) {
   // Use the first few items' reviews if available
   const reviews = [
-    { id: 1, name: "Priya R.", text: "The Kobbari Karam is absolutely authentic! Reminds me of home. 😍", rating: 5 },
+    { id: 1, name: "Priya R.", text: "The Kobbari Karam is absolutely authentic! Reminds me of home. ", rating: 5 },
     { id: 2, name: "Ravi K.", text: "Classic Avakaya is the best pickle I've ordered online. Fresh and perfectly spiced.", rating: 5 },
     { id: 3, name: "Ananya S.", text: "Bellam Gavvalu are so crunchy and not too sweet. My kids love them!", rating: 4 },
     { id: 4, name: "Suresh M.", text: "Quick delivery and the packaging was excellent. Will definitely order again.", rating: 5 },
@@ -389,7 +389,7 @@ function Footer({ setActiveTab }) {
       </div>
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", marginTop: "2rem", paddingTop: "1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
         <span style={{ fontSize: "0.75rem" }}>© 2024 Suggula's Kitchen. All rights reserved.</span>
-        <span style={{ fontSize: "0.75rem" }}>Made with ❤️ in India</span>
+        <span style={{ fontSize: "0.75rem" }}>Made with  in India</span>
       </div>
     </footer>
   );

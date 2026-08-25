@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Plus, MessageSquare, Paperclip, X, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, MessageSquare, Paperclip, X, ChevronDown, ChevronUp } from "../ui/Icon";
 
 const ISSUE_TYPES = [
   "Wrong item received",

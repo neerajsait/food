@@ -1,5 +1,5 @@
 import React from "react";
-import { Star, StarHalf } from "lucide-react";
+import { Star, StarHalf } from "../ui/Icon";
 
 export default function Rating({ value = 0, count = null, size = 14, showValue = true, interactive = false, onRate = null }) {
   const full  = Math.floor(value);

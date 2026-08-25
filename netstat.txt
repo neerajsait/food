@@ -1,0 +1,8 @@
+
+LocalAddress LocalPort  State OwningProcess
+------------ ---------  ----- -------------
+::1               5174 Listen          2356
+::1               5173 Listen         38340
+
+
+

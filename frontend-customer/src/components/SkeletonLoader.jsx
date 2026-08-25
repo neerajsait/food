@@ -47,3 +47,28 @@ export function InlineLoader({ text = "Loading…" }) {
     </div>
   );
 }
+
+export function OrderCardSkeleton() {
+  return (
+    <div className="order-card" style={{ cursor: "default" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div className="skeleton skeleton-title" style={{ width: 120 }} />
+        <div className="skeleton skeleton-text" style={{ width: 70 }} />
+      </div>
+      <div className="skeleton skeleton-text" style={{ width: "55%", marginTop: "0.9rem" }} />
+      <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="skeleton skeleton-btn" style={{ width: 92, height: 34 }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function OrderListSkeleton({ count = 3 }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {Array.from({ length: count }).map((_, i) => <OrderCardSkeleton key={i} />)}
+    </div>
+  );
+}

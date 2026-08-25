@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ArrowLeft, Heart, Share2, Plus, Minus, ShoppingCart, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Heart, Share2, Plus, Minus, ShoppingCart, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from "../ui/Icon";
 import Rating from "./Rating";
 import PriceDisplay from "./PriceDisplay";
 import ProductCard from "./ProductCard";

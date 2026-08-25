@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle, XCircle, AlertCircle, X } from "lucide-react";
+import { CheckCircle, XCircle, AlertCircle, X } from "../ui/Icon";
 
 const icons = {
   success: <CheckCircle size={18} />,

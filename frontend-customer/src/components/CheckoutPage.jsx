@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { MapPin, CreditCard, Banknote, Smartphone, Plus, Check } from "lucide-react";
+import { MapPin, Banknote, Plus, Check, Wallet } from "../ui/Icon";
 
 export default function CheckoutPage({
   currentUser,
@@ -9,7 +9,6 @@ export default function CheckoutPage({
   showAddressManager, setShowAddressManager,
   onAddAddress, onDeleteAddress,
   paymentMethod, setPaymentMethod,
-  cardNumber, setCardNumber, cardExpiry, setCardExpiry, cardCvv, setCardCvv, cardName, setCardName,
   appliedCoupon, onRemoveCoupon, couponCodeInput, setCouponCodeInput, onApplyCoupon, couponError, activeCoupons,
   useLoyaltyPoints, setUseLoyaltyPoints, loyaltyPoints, maxLoyaltyDiscount,
   finalSubtotal, deliveryCharge, finalTotal, discountAmount, actualLoyaltyDiscount,
@@ -28,9 +27,8 @@ export default function CheckoutPage({
   const cartTotal = cartItems.reduce((s, i) => s + i.price * i.qty, 0);
 
   const PAYMENT_OPTIONS = [
-    { id: "COD",  icon: <Banknote size={22} />, label: "Cash on Delivery", desc: "Pay when your order arrives" },
-    { id: "UPI",  icon: <Smartphone size={22} />, label: "UPI Payment",    desc: "GPay, PhonePe, Paytm & more" },
-    { id: "CARD", icon: <CreditCard size={22} />, label: "Credit / Debit Card", desc: "Visa, Mastercard, RuPay" },
+    { id: "COD",    icon: <Banknote size={22} />, label: "Cash on Delivery", desc: "Pay when your order arrives" },
+    { id: "ONLINE", icon: <Wallet size={22} />,   label: "Pay Online",       desc: "UPI / Cards / NetBanking — secured by Razorpay" },
   ];
 
   return (
@@ -108,7 +106,7 @@ export default function CheckoutPage({
                           onClick={e => { e.stopPropagation(); onDeleteAddress(addr.id, e); }}
                           style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: "0.75rem", padding: "0.25rem", flexShrink: 0 }}
                           aria-label="Delete address"
-                        >✕</button>
+                        ></button>
                       </div>
                     ))}
                   </div>
@@ -163,35 +161,12 @@ export default function CheckoutPage({
                 ))}
               </div>
 
-              {/* Card details */}
-              {paymentMethod === "CARD" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", background: "var(--bg)", padding: "1.25rem", borderRadius: "var(--radius-lg)", marginBottom: "1.25rem" }}>
-                  <div className="form-group">
-                    <label className="form-label">Cardholder Name</label>
-                    <input className="form-input" placeholder="Name on card" value={cardName} onChange={e => setCardName(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Card Number</label>
-                    <input className="form-input" placeholder="1234 5678 9012 3456" maxLength={19} value={cardNumber}
-                      onChange={e => setCardNumber(e.target.value.replace(/\D/g, "").replace(/(.{4})/g, "$1 ").trim())} />
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                    <div className="form-group">
-                      <label className="form-label">Expiry (MM/YY)</label>
-                      <input className="form-input" placeholder="MM/YY" maxLength={5} value={cardExpiry}
-                        onChange={e => { let v = e.target.value.replace(/\D/g, ""); if (v.length >= 3) v = v.slice(0, 2) + "/" + v.slice(2, 4); setCardExpiry(v); }} />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">CVV</label>
-                      <input className="form-input" placeholder="•••" maxLength={3} type="password" value={cardCvv} onChange={e => setCardCvv(e.target.value.replace(/\D/g, ""))} />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {paymentMethod === "UPI" && (
-                <div style={{ background: "var(--bg)", padding: "1rem", borderRadius: "var(--radius-lg)", marginBottom: "1.25rem", textAlign: "center" }}>
-                  <p style={{ fontSize: "0.875rem", color: "var(--text-2)" }}>You'll be redirected to your UPI app to complete the payment.</p>
+              {/* Online payment note */}
+              {paymentMethod === "ONLINE" && (
+                <div style={{ background: "var(--bg)", padding: "1rem 1.25rem", borderRadius: "var(--radius-lg)", marginBottom: "1.25rem", textAlign: "center" }}>
+                  <p style={{ fontSize: "0.875rem", color: "var(--text-2)", margin: 0 }}>
+                    A secure Razorpay window opens after you place the order. Pay via UPI, card or net banking.
+                  </p>
                 </div>
               )}
 
@@ -230,10 +205,10 @@ export default function CheckoutPage({
               </div>
 
               {storeSettings.is_store_online === "false" && (
-                <div className="alert alert-error" style={{ marginBottom: "1rem" }}>⚠️ Store is currently offline. Orders are paused.</div>
+                <div className="alert alert-error" style={{ marginBottom: "1rem" }}>Store is currently offline. Orders are paused.</div>
               )}
               {storeSettings.is_holiday === "true" && (
-                <div className="alert alert-warning" style={{ marginBottom: "1rem" }}>🎉 We're on a holiday break! Check back soon.</div>
+                <div className="alert alert-warning" style={{ marginBottom: "1rem" }}>We're on a holiday break. Check back soon.</div>
               )}
 
               <div style={{ display: "flex", gap: "0.75rem" }}>
@@ -261,7 +236,7 @@ export default function CheckoutPage({
           {actualLoyaltyDiscount > 0 && <div className="summary-row"><span style={{ color: "var(--green)" }}>Points</span><span style={{ color: "var(--green)" }}>−₹{actualLoyaltyDiscount.toFixed(2)}</span></div>}
           <div className="summary-row"><span style={{ color: "var(--text-2)" }}>Delivery</span><span style={{ color: deliveryCharge === 0 ? "var(--green)" : "inherit" }}>{deliveryCharge === 0 ? "FREE" : `₹${deliveryCharge.toFixed(2)}`}</span></div>
           <div className="summary-row total"><span>Total</span><span>₹{finalTotal.toFixed(2)}</span></div>
-          <p style={{ fontSize: "0.7rem", color: "var(--text-3)", marginTop: "0.75rem", textAlign: "center" }}>🔒 Secure checkout powered by your trust</p>
+          <p style={{ fontSize: "0.7rem", color: "var(--text-3)", marginTop: "0.75rem", textAlign: "center" }}> Secure checkout powered by your trust</p>
         </div>
       </div>
     </div>

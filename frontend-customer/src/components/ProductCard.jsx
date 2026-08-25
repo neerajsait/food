@@ -1,5 +1,5 @@
 import React from "react";
-import { Heart, Plus, Minus } from "lucide-react";
+import { Heart, Plus, Minus } from "../ui/Icon";
 import Rating from "./Rating";
 import PriceDisplay from "./PriceDisplay";
 

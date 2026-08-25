@@ -9,7 +9,7 @@ export default function WishlistPage({ menu, favorites, cart, onAdd, onRemove, o
       <div className="page-content">
         <h1 style={{ fontSize: "1.5rem", fontWeight: 900, marginBottom: "1.5rem" }}>My Wishlist</h1>
         <div className="empty-state" style={{ minHeight: "40vh" }}>
-          <div className="empty-state-icon">❤️</div>
+          <div className="empty-state-icon"></div>
           <h3>Nothing saved yet</h3>
           <p>Tap the heart on any product to add it to your wishlist.</p>
           <button className="btn btn-primary" onClick={() => setActiveTab("shop")} style={{ marginTop: "0.5rem" }}>Browse Products</button>

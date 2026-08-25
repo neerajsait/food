@@ -3,63 +3,65 @@
    Plus Jakarta Sans · Mobile-First · Fresh · Modern · Premium
    ============================================================ */
 
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600;700&display=swap');
 /* ────────────────────────────────────────────────────────────
    DESIGN TOKENS
 ──────────────────────────────────────────────────────────── */
 :root {
   /* Brand Palette */
-  --green:        #159447;
-  --green-dark:   #155C46;
-  --green-light:  #E8F5EC;
-  --green-dim:    rgba(21, 148, 71, 0.12);
-  --green-glow:   rgba(21, 148, 71, 0.25);
-  --accent:       #C7F000;
-  --accent-dark:  #a8cc00;
+  --green:        #A6512B;
+  --green-dark:   #7E3B1D;
+  --green-light:  #F3E4DA;
+  --green-dim:    rgba(166, 81, 43, 0.08);
+  --green-glow:   rgba(166, 81, 43, 0.16);
+  --accent:       #8C6A3F;
+  --accent-dark:  #6E5127;
 
   /* Backgrounds */
-  --bg:           #F5F6F1;
-  --bg-card:      #FFFFFF;
-  --bg-input:     #FFFFFF;
-  --bg-hover:     #F0F1EC;
-  --bg-overlay:   rgba(24, 32, 28, 0.55);
+  --bg:           #F6F2EA;
+  --bg-card:      #FDFBF7;
+  --bg-input:     #FDFBF7;
+  --bg-hover:     #EFE9DE;
+  --bg-overlay:   rgba(30, 26, 22, 0.55);
 
   /* Text */
-  --text:         #18201C;
-  --text-2:       #6E756F;
-  --text-3:       #9EA59F;
-  --text-inv:     #FFFFFF;
+  --text:         #231F1A;
+  --text-2:       #5C554B;
+  --text-3:       #8B8378;
+  --text-inv:     #FDFBF7;
 
   /* Borders */
-  --border:       #E4E8E3;
+  --border:       #E3DCCE;
   --border-focus: var(--green);
 
   /* Status */
-  --success:      #159447;
-  --success-bg:   #E8F5EC;
-  --error:        #D93025;
-  --error-bg:     #FEE9E7;
-  --warning:      #F59E0B;
-  --warning-bg:   #FEF3C7;
-  --info:         #1976D2;
-  --info-bg:      #E3F0FD;
+  --success:      #4A6B4F;
+  --success-bg:   #E7EEE5;
+  --error:        #A93B2A;
+  --error-bg:     #F6E3DF;
+  --warning:      #9A6B1F;
+  --warning-bg:   #F4EAD3;
+  --info:         #46628A;
+  --info-bg:      #E4EAF3;
 
   /* Typography */
   --font:         'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 
   /* Sizing */
-  --radius-sm:    8px;
-  --radius-md:    12px;
-  --radius-lg:    16px;
-  --radius-xl:    20px;
-  --radius-2xl:   24px;
+  --radius-sm:    3px;
+  --radius-md:    5px;
+  --radius-lg:    7px;
+  --radius-xl:    10px;
+  --radius-2xl:   12px;
   --radius-pill:  999px;
 
   /* Shadows */
-  --shadow-xs:    0 1px 3px rgba(0,0,0,0.06);
-  --shadow-sm:    0 2px 8px rgba(0,0,0,0.07);
-  --shadow-md:    0 4px 16px rgba(0,0,0,0.09);
-  --shadow-lg:    0 8px 32px rgba(0,0,0,0.10);
-  --shadow-xl:    0 16px 48px rgba(0,0,0,0.12);
+  --shadow-xs:    none;
+  --shadow-sm:    none;
+  --shadow-md:    none;
+  --shadow-lg:    none;
+  --shadow-xl:    none;
 
   /* Transitions */
   --ease:         cubic-bezier(0.25, 1, 0.5, 1);
@@ -99,7 +101,7 @@
   --shadow-modal:   var(--shadow-xl);
   --shadow-glow:    0 0 0 3px var(--green-glow);
   --focus-ring:     0 0 0 1px var(--bg), 0 0 0 3px var(--green);
-  --font-heading:   var(--font);
+  --font-heading:   'Fraunces', Georgia, serif;
   --font-body:      var(--font);
   --alert-color:    var(--error);
   --alert-bg:       var(--error-bg);
@@ -700,8 +702,6 @@ button { font-family: inherit; }
 }
 
 .product-card:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-md);
   border-color: var(--green-dim);
 }
 
@@ -1612,7 +1612,6 @@ textarea.form-input { resize: vertical; min-height: 100px; line-height: 1.6; }
   transition: transform 0.1s;
 }
 .price-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
 }
 
 .toggle-switch {
@@ -2150,8 +2149,6 @@ textarea.form-input { resize: vertical; min-height: 100px; line-height: 1.6; }
 }
 
 .glass-btn:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 12px 28px rgba(34, 197, 94, 0.4);
   background: var(--green-hover, #16a34a);
 }
 
@@ -2190,4 +2187,21 @@ textarea.form-input { resize: vertical; min-height: 100px; line-height: 1.6; }
 /* ── Coupon panel scrollable area */
 .coupon-panel-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .coupon-panel-scroll::-webkit-scrollbar { width: 4px; }
-.coupon-panel-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.coupon-panel-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ── Loader + skeleton primitives ─────────────────────────── */
+@keyframes iconspin { to { transform: rotate(360deg); } }
+.icon-spin { animation: iconspin 900ms linear infinite; }
+.skel {
+  position: relative; overflow: hidden;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: var(--r-sm, 4px);
+}
+.skel::after {
+  content: ""; position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  animation: skelwave 1.4s infinite;
+}
+@keyframes skelwave { 100% { transform: translateX(100%); } }
+.animate-spin { animation: iconspin 900ms linear infinite; }

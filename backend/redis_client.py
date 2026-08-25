@@ -23,6 +23,14 @@ class MemoryRedis:
             else:
                 del self.store[key]
         return None
+    def delete(self, *keys):
+        """Match redis-py semantics: remove keys, return how many were deleted."""
+        removed = 0
+        for key in keys:
+            if key in self.store:
+                del self.store[key]
+                removed += 1
+        return removed
 
 _warned_memory = False
 

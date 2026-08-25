@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from "react";
 import { Scanner } from "@yudiel/react-qr-scanner";
 import { api } from "../utils/api";
-import { ScanLine, CheckCircle, XCircle, Package, X } from "lucide-react";
+import { ScanLine, CheckCircle, XCircle, Package, X } from "../ui/Icon";
 
 export default function QRScanner({ onStockUpdated }) {
   const [scanning, setScanning] = useState(false);
@@ -118,8 +118,8 @@ export default function QRScanner({ onStockUpdated }) {
                 <Package size={13} />
                 <strong>{result.data.item}</strong>
               </div>
-              <div>✅ <strong>+{result.data.qty_added}</strong> units added</div>
-              <div>📦 New total stock: <strong>{result.data.new_stock}</strong> units</div>
+              <div><strong>+{result.data.qty_added}</strong> units added</div>
+              <div> New total stock: <strong>{result.data.new_stock}</strong> units</div>
             </div>
           )}
 

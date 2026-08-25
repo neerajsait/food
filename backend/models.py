@@ -592,6 +592,13 @@ class Order(db.Model):
     delivery_address = Column(String(500), nullable=True)
     delivery_charge = Column(Numeric(10, 2), default=0.00, nullable=False)
     payment_method = Column(String(50), nullable=False, default='COD')
+
+    # Online payment tracking (Razorpay)
+    razorpay_order_id = Column(String(64), nullable=True, index=True)
+    razorpay_payment_id = Column(String(64), nullable=True)
+    payment_status = Column(String(20), nullable=False, default='unpaid', index=True)  # unpaid | paid | failed | refunded
+    paid_at = Column(DateTime, nullable=True)
+
     loyalty_points_earned = Column(Integer, default=0, nullable=False)
     loyalty_points_redeemed = Column(Integer, default=0, nullable=False)
     applied_coupon_code = Column(String(50), nullable=True)
@@ -648,6 +655,8 @@ class Order(db.Model):
             "refund_amount": float(self.refund_amount) if self.refund_amount is not None else 0.0,
             "refund_reason": self.refund_reason,
             "payment_method": self.payment_method,
+            "payment_status": self.payment_status or "unpaid",
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
             "loyalty_points_earned": self.loyalty_points_earned,
             "loyalty_points_redeemed": self.loyalty_points_redeemed,
             "qr_code_base64": self.qr_code_base64,
@@ -669,6 +678,45 @@ class Order(db.Model):
                 "feedback_submitted": self.review is not None
             })
         return d
+
+
+# ---------------------------------------------------------------------------
+# PaymentTransaction — immutable audit trail of every payment event
+# ---------------------------------------------------------------------------
+class PaymentTransaction(db.Model):
+    __tablename__ = 'payment_transactions'
+
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey('orders.id', ondelete='CASCADE'), nullable=True, index=True)
+    provider = Column(String(30), nullable=False, default='razorpay')
+    provider_order_id = Column(String(64), nullable=True)
+    provider_payment_id = Column(String(64), nullable=True)
+    amount = Column(Numeric(10, 2), nullable=False, default=0.00)  # in major units (INR)
+    currency = Column(String(10), nullable=False, default='INR')
+    status = Column(String(30), nullable=False)          # created | captured | failed | refunded
+    event = Column(String(50), nullable=False)           # checkout_verify | payment.captured | ...
+    signature_valid = Column(Boolean, nullable=True)
+    source = Column(String(20), nullable=False, default='checkout')  # checkout | webhook
+    raw_payload = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    order = relationship('Order', backref='payment_transactions')
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "order_id": self.order_id,
+            "provider": self.provider,
+            "provider_order_id": self.provider_order_id,
+            "provider_payment_id": self.provider_payment_id,
+            "amount": float(self.amount) if self.amount is not None else 0.0,
+            "currency": self.currency,
+            "status": self.status,
+            "event": self.event,
+            "signature_valid": self.signature_valid,
+            "source": self.source,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   ChefHat, Package, Clock, CheckCircle, Flame, ArrowRight,
   LogOut, RefreshCw, AlertTriangle, Plus, Grid, QrCode
-} from "lucide-react";
+} from "../ui/Icon";
 
 const premiumStyles = `
   .kv-wrapper {

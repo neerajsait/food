@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag,
   Store, BarChart3, Package, Shield, Zap, Star
-} from "lucide-react";
+} from "../ui/Icon";
 
 const FEATURES = [
   { icon: ShoppingBag, label: "B2C Online Shop", desc: "Full e-commerce ordering for home foods" },
@@ -102,14 +102,14 @@ export default function Login({ onLoginSuccess }) {
       >
         <div className="split-bg" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=1600&q=80')" }}></div>
         <div className="split-overlay-text" style={{ writingMode: "horizontal-tb", transform: "none", textAlign: "center" }}>
-          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}>🍱 SUGGULA'S KITCHEN</div>
+          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}> SUGGULA'S KITCHEN</div>
           <div style={{ fontSize: "1.5rem" }}>SIGN IN</div>
         </div>
         
         <div className="split-content">
           <div className="glass-form">
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "2rem" }}>
-              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}>🍱</div>
+              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}></div>
               <div>
                 <div style={{ fontWeight: 800, fontSize: "1.1rem", lineHeight: 1 }}>FlavorFlow</div>
                 <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "1px" }}>Suggula's Kitchen</div>
@@ -198,14 +198,14 @@ export default function Login({ onLoginSuccess }) {
       >
         <div className="split-bg" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=1600&q=80')" }}></div>
         <div className="split-overlay-text" style={{ writingMode: "horizontal-tb", transform: "none", textAlign: "center" }}>
-          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}>🍱 SUGGULA'S KITCHEN</div>
+          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}> SUGGULA'S KITCHEN</div>
           <div style={{ fontSize: "1.5rem" }}>REGISTER</div>
         </div>
 
         <div className="split-content">
           <div className="glass-form" style={{ padding: "2rem 2.5rem" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "2rem" }}>
-              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}>🍱</div>
+              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}></div>
               <div>
                 <div style={{ fontWeight: 800, fontSize: "1.1rem", lineHeight: 1 }}>FlavorFlow</div>
                 <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "1px" }}>Suggula's Kitchen</div>

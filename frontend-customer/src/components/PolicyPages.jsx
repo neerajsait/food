@@ -1,5 +1,5 @@
 import React from "react";
-import { Shield, FileText, RefreshCcw } from "lucide-react";
+import { Shield, FileText, RefreshCcw } from "../ui/Icon";
 
 const policyContainerStyle = {
   maxWidth: "800px",

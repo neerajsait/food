@@ -1,0 +1,14 @@
+INFO:werkzeug:[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.215.145.126:5000
+INFO:werkzeug:[33mPress CTRL+C to quit[0m
+INFO:werkzeug: * Restarting with stat
+WARNING:werkzeug: * Debugger is active!
+INFO:werkzeug: * Debugger PIN: 140-502-714
+INFO:app:Incoming Request: GET http://127.0.0.1:5000/api/health
+INFO:app:Outgoing Response: 200 OK for GET http://127.0.0.1:5000/api/health
+INFO:werkzeug:127.0.0.1 - - [25/Aug/2026 14:55:48] "GET /api/health HTTP/1.1" 200 -
+INFO:app:Incoming Request: POST http://127.0.0.1:5000/api/auth/login
+INFO:app:Outgoing Response: 200 OK for POST http://127.0.0.1:5000/api/auth/login
+INFO:werkzeug:127.0.0.1 - - [25/Aug/2026 14:57:58] "POST /api/auth/login HTTP/1.1" 200 -

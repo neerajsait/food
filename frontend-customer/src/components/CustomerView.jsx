@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { api, API_BASE_URL } from "../utils/api";
 import { jsPDF } from "jspdf";
-import { X, CheckCircle, AlertCircle, XCircle } from "lucide-react";
+import { TermsPage, PrivacyPage } from "./LegalPages";
+import { X, CheckCircle, AlertCircle, XCircle } from "../ui/Icon";
 import { createPortal } from "react-dom";
 import QRScanner from "./QRScanner";
 import BannerZone from "./BannerZone";
@@ -62,7 +63,7 @@ function ConfirmModal({ modal, onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
         <div className="modal-body" style={{ textAlign: "center", padding: "2rem 1.5rem" }}>
-          <div style={{ fontSize: "2rem", marginBottom: "0.875rem" }}>⚠️</div>
+          <div style={{ fontSize: "2rem", marginBottom: "0.875rem" }}></div>
           <p style={{ fontWeight: 700, fontSize: "1rem", color: "var(--text)", marginBottom: "0.5rem" }}>Are you sure?</p>
           <p style={{ fontSize: "0.875rem", color: "var(--text-2)", lineHeight: 1.6 }}>{modal.message}</p>
         </div>
@@ -84,7 +85,7 @@ function StoreBanner({ storeSettings }) {
     return <div className="store-banner store-banner-offline">We are currently offline. Orders are temporarily paused.</div>;
   }
   if (storeSettings.is_holiday === "true") {
-    return <div className="store-banner store-banner-holiday">🎉 We're on a holiday break. Please check back soon!</div>;
+    return <div className="store-banner store-banner-holiday">We're on a holiday break. Please check back soon.</div>;
   }
   return null;
 }
@@ -157,10 +158,6 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
 
   // ── Payment state ────────────────────────────────────────
   const [paymentMethod, setPaymentMethod] = useState("COD");
-  const [cardNumber, setCardNumber] = useState("");
-  const [cardExpiry, setCardExpiry] = useState("");
-  const [cardCvv, setCardCvv] = useState("");
-  const [cardName, setCardName] = useState("");
   const [paymentProcessing, setPaymentProcessing] = useState(false);
 
   // ── Cart state ───────────────────────────────────────────
@@ -391,17 +388,13 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
       }
     }
 
-    if (paymentMethod === "CARD") {
-      if (!cardName.trim()) { alert("Please enter cardholder name."); return; }
-      const raw = cardNumber.replace(/\s+/g, "");
-      if (!/^\d{16}$/.test(raw)) { alert("Please enter a valid 16-digit card number."); return; }
-      if (!/^\d{2}\/\d{2}$/.test(cardExpiry)) { alert("Please enter expiry in MM/YY format."); return; }
-      if (!/^\d{3}$/.test(cardCvv)) { alert("Please enter a valid 3-digit CVV."); return; }
+    if (paymentMethod === "ONLINE" && !currentUser) {
+      alert("Online payment requires an account. Please login, or choose Cash on Delivery.");
+      return;
     }
 
     setPaymentProcessing(true);
     try {
-      if (paymentMethod !== "COD") await new Promise(r => setTimeout(r, 1500));
       const pointsToRedeem = useLoyaltyPoints && user?.loyalty_points ? user.loyalty_points : 0;
       
       const guestDetails = !currentUser ? {
@@ -410,11 +403,25 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
         guest_phone: guestPhone.trim()
       } : null;
 
-      await api.placeOrder(items, checkoutAddress.trim(), paymentMethod, appliedCoupon?.code || null, pointsToRedeem, deliveryCharge, guestDetails);
+      const res = await api.placeOrder(items, checkoutAddress.trim(), paymentMethod, appliedCoupon?.code || null, pointsToRedeem, deliveryCharge, guestDetails);
+      const orderId = res?.order?.id;
+
+      // Online payments: open the Razorpay checkout window for the just-created order.
+      let paid = false;
+      if (paymentMethod === "ONLINE" && orderId) {
+        try {
+          await openRazorpayCheckout(orderId);
+          paid = true;
+        } catch (payErr) {
+          const dismissed = /closed|cancel/i.test(payErr?.message || "");
+          alert(dismissed
+            ? `Order #${orderId} saved! Payment wasn't completed — you can pay anytime from My Orders.`
+            : "Payment failed: " + (payErr?.message || "Unknown error"));
+        }
+      }
 
       setCart({});
       setAppliedCoupon(null); setCouponCodeInput(""); setUseLoyaltyPoints(false);
-      setCardNumber(""); setCardExpiry(""); setCardCvv(""); setCardName("");
       setPaymentMethod("COD"); setCheckoutAddress("");
       setGuestName(""); setGuestEmail(""); setGuestPhone("");
       if (currentUser) {
@@ -424,9 +431,66 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
       } else {
         setActiveTab("home");
       }
-      alert("Order placed successfully! Your order is being prepared. 🎉");
+      alert(paid
+        ? "Order placed and payment received. It is being prepared now."
+        : "Order placed successfully. Your order is being prepared.");
     } catch (err) {
       alert("Order failed: " + err.message);
+    } finally {
+      setPaymentProcessing(false);
+    }
+  };
+
+  // Opens the Razorpay checkout window for an existing pending order and
+  // resolves once the backend has verified the payment signature.
+  const openRazorpayCheckout = async (orderId) => {
+    const rpOrder = await api.createRazorpayOrder(orderId); // throws if gateway disabled/unreachable
+    await api.loadRazorpayScript();
+    return new Promise((resolve, reject) => {
+      const rzp = new window.Razorpay({
+        key: rpOrder.key_id,
+        amount: rpOrder.amount,
+        currency: rpOrder.currency || "INR",
+        name: storeSettings.store_name || "Food Ordering",
+        description: `Payment for Order #${orderId}`,
+        order_id: rpOrder.razorpay_order_id,
+        prefill: {
+          name: currentUser?.first_name || guestName || "",
+          email: currentUser?.email || guestEmail || "",
+          contact: currentUser?.phone || guestPhone || ""
+        },
+        notes: { order_id: String(orderId) },
+        theme: { color: "#e11d48" },
+        handler: async (resp) => {
+          try {
+            await api.verifyRazorpayPayment({ orderId, ...resp });
+            resolve(true);
+          } catch (err) {
+            reject(err);
+          }
+        },
+        modal: { ondismiss: () => reject(new Error("Payment window closed before completion")) }
+      });
+      // Failures are also recorded server-side via the Razorpay webhook.
+      rzp.on?.("payment.failed", () => {});
+      rzp.open();
+    });
+  };
+
+  // "Pay Now" from My Orders for orders left pending/unpaid.
+  const handlePayNow = async (orderId) => {
+    if (!currentUser) { alert("Please login to pay online."); return; }
+    setPaymentProcessing(true);
+    try {
+      await openRazorpayCheckout(orderId);
+      loadData();
+      alert(`Payment received. Order #${orderId} is confirmed.`);
+    } catch (err) {
+      if (/closed|cancel/i.test(err?.message || "")) {
+        alert("Payment wasn't completed — you can pay anytime from My Orders.");
+      } else {
+        alert("Payment failed: " + (err?.message || "Unknown error"));
+      }
     } finally {
       setPaymentProcessing(false);
     }
@@ -587,7 +651,7 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
     const comment = feedbackComments[orderId] || "";
     try {
       await api.submitFeedback(orderId, rating, comment);
-      loadData(); alert("Thank you for your feedback! 🙏");
+      loadData(); alert("Thank you for your feedback.");
     } catch (err) { alert("Feedback failed: " + err.message); }
   };
 
@@ -748,10 +812,6 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
             showAddressManager={showAddressManager} setShowAddressManager={setShowAddressManager}
             onAddAddress={handleAddAddress} onDeleteAddress={handleDeleteAddress}
             paymentMethod={paymentMethod} setPaymentMethod={setPaymentMethod}
-            cardNumber={cardNumber} setCardNumber={setCardNumber}
-            cardExpiry={cardExpiry} setCardExpiry={setCardExpiry}
-            cardCvv={cardCvv} setCardCvv={setCardCvv}
-            cardName={cardName} setCardName={setCardName}
             appliedCoupon={appliedCoupon} onRemoveCoupon={() => setAppliedCoupon(null)}
             couponCodeInput={couponCodeInput} setCouponCodeInput={setCouponCodeInput}
             onApplyCoupon={handleApplyCoupon} couponError={couponError} activeCoupons={activeCoupons}
@@ -771,6 +831,7 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
         return (
           <OrdersPage
             orders={orders}
+            loading={loading}
             trackingCodes={trackingCodes} setTrackingCodes={setTrackingCodes}
             onConfirmReceipt={handleConfirmReceipt}
             onCancel={handleCancelOrder}
@@ -779,9 +840,16 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
             setFeedbackRatings={setFeedbackRatings} setFeedbackComments={setFeedbackComments}
             onReport={handleReportIssue}
             onDownload={handleDownloadReceipt}
+            onPayNow={handlePayNow}
             setActiveTab={setActiveTab}
           />
         );
+
+      case "terms":
+        return <TermsPage setActiveTab={setActiveTab} />;
+
+      case "privacy":
+        return <PrivacyPage setActiveTab={setActiveTab} />;
 
       case "wishlist":
         return (
@@ -894,7 +962,7 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
         {/* Error */}
         {error && (
           <div className="alert alert-error" style={{ margin: "1rem 1.5rem", borderRadius: "var(--radius-md)" }}>
-            ⚠️ {error}
+            {error}
             <button onClick={loadData} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "inherit", fontWeight: 700, fontFamily: "inherit" }}>Retry</button>
           </div>
         )}
@@ -902,6 +970,26 @@ export default function CustomerView({ onLogout, onLoginRequest, dbMode, current
         {/* Page content */}
         <div style={{ flex: 1, overflowY: "auto" }}>
           {renderPage()}
+
+          {/* Site footer */}
+          <footer style={{
+            marginTop: "2.5rem", padding: "1.25rem 1.5rem",
+            borderTop: "1px solid var(--border)",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            flexWrap: "wrap", gap: "0.5rem", fontSize: "0.78rem", color: "var(--text-3)"
+          }}>
+            <span>© {new Date().getFullYear()} Suggula's Kitchen</span>
+            <span style={{ display: "flex", gap: "1rem" }}>
+              <button onClick={() => { setSelectedItem(null); setActiveTab("terms"); }}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-3)", textDecoration: "underline", fontFamily: "inherit", fontSize: "inherit" }}>
+                Terms of Service
+              </button>
+              <button onClick={() => { setSelectedItem(null); setActiveTab("privacy"); }}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-3)", textDecoration: "underline", fontFamily: "inherit", fontSize: "inherit" }}>
+                Privacy Policy
+              </button>
+            </span>
+          </footer>
         </div>
       </div>
 

@@ -62,6 +62,31 @@ flask db upgrade
     *   `POST /api/auth/refresh`: Accepts `Authorization: Bearer <refresh_token>` and returns a new `access_token` and `refresh_token`.
     *   `POST /api/auth/logout`: Accepts `Authorization: Bearer <access_token>` and body `{"refresh_token": "<token>"}` to revoke tokens using the Redis blocklist.
 
+## 💳 Online Payments (Razorpay)
+
+The backend ships a complete, self-hosting Razorpay integration. Credentials live in
+`StoreSetting` (Fernet-encrypted with `PAYMENT_ENCRYPTION_KEY`) and are managed from
+**Admin → Payment Gateway**. A documented env-var fallback also exists:
+`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_MODE`, `RAZORPAY_ENABLED`.
+
+### Endpoints
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/payments/razorpay/order` | JWT | Creates a Razorpay order for a customer's pending order, stores `razorpay_order_id`, returns `{razorpay_order_id, amount, currency, key_id, mode}` for checkout.js |
+| `POST /api/payments/razorpay/verify` | JWT | Verifies the checkout.js HMAC signature (`order_id\|payment_id`), marks the order `payment_status='paid'`, records an audit row. Idempotent |
+| `POST /api/payments/razorpay/webhook` | X-Razorpay-Signature | Server-to-server events (`payment.captured`, `payment.failed`, `refund.processed`, `order.paid`). Marks orders paid even if the browser closes mid-payment |
+
+### Customer flow
+
+1. Customer places an order choosing **Pay Online** (or taps **Pay Now** on a pending order in *My Orders*).
+2. Frontend calls `/payments/razorpay/order`, then opens the Razorpay checkout window.
+3. On success the frontend posts the signature to `/payments/razorpay/verify`.
+4. The webhook acts as a safety net — both paths are idempotent, so an order is never double-charged or double-marked.
+
+Every payment event is written to the `payment_transactions` table (source: `checkout` or `webhook`,
+including invalid-signature attempts) for reconciliation.
+
 ## 🛡️ Security & Privacy Notes
 
 *   **Ticket Attachments**: Ticket attachment URLs are located under `/static/uploads/tickets/`. Currently, these URLs are unguessable due to timestamp prefixing.

@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag,
   Store, BarChart3, Package, Shield, Zap, Star
-} from "lucide-react";
+} from "../ui/Icon";
 
 const FEATURES = [
   { icon: ShoppingBag, label: "B2C Online Shop", desc: "Full e-commerce ordering for home foods" },
@@ -117,13 +117,13 @@ export default function Login({ onLoginSuccess }) {
       <div className="login-hero">
         <div className="login-hero-content animate-fade-in">
           {/* Logo */}
-          <div className="login-hero-logo">🍱</div>
+          <div className="login-hero-logo"></div>
 
           <h1>
             Flavor<span>Flow</span>
           </h1>
           <p>
-            The all-in-one food business platform — from home cooking to snack supply chain.
+            One platform for home cooking and the full snack supply chain.
           </p>
 
           {/* Stats row */}

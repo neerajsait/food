@@ -1,5 +1,5 @@
 import React from "react";
-import { ShoppingCart, Heart, User, Search, Home, ShoppingBag, Package, ShieldAlert, LogOut, LogIn } from "lucide-react";
+import { ShoppingCart, Heart, User, Search, Home, ShoppingBag, Package, ShieldAlert, LogOut, LogIn } from "../ui/Icon";
 
 const NAV = [
   { id: "home",     icon: Home,        label: "Home" },

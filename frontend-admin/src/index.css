@@ -5,55 +5,55 @@
 
 :root {
   /* ── Core Brand Colors ── */
-  --brand:          #43A047; /* Fresh Leaf Green */
-  --brand-light:    #66BB6A;
-  --brand-dim:      rgba(67, 160, 71, 0.05);
-  --brand-glow:     rgba(67, 160, 71, 0.1);
-  --brand-dark:     #2E7D32; /* Darker Green */
-  --brand-pink:     #43A047; /* Replaced with Green */
-  --accent-terracotta: #2E7D32; /* Replaced with Green */
+  --brand:          #A6512B; /* Fresh Leaf Green */
+  --brand-light:    #BE6B42;
+  --brand-dim:      rgba(166, 81, 43, 0.06);
+  --brand-glow:     rgba(166, 81, 43, 0.12);
+  --brand-dark:     #7E3B1D; /* Darker Green */
+  --brand-pink:     #A6512B; /* Replaced with Green */
+  --accent-terracotta: #7E3B1D; /* Replaced with Green */
 
   /* ── Background Layers ── */
-  --bg-canvas:      #FCFBF7; /* Warm Cream */
-  --bg-base:        #FCFBF7;
-  --bg-elevated:    #FFFFFF; /* Card White */
-  --bg-card:        #FFFFFF;
-  --bg-hover:       #F5F5F5;
-  --bg-input:       #FFFFFF;
+  --bg-canvas:      #F4F0E8; /* Warm Cream */
+  --bg-base:        #F4F0E8;
+  --bg-elevated:    #FDFBF7; /* Card White */
+  --bg-card:        #FDFBF7;
+  --bg-hover:       #EBE5D8;
+  --bg-input:       #FDFBF7;
 
   /* ── Borders ── */
-  --border-subtle:  #EEEEEE;
-  --border-default: #DDDDDD;
-  --border-brand:   #43A047;
+  --border-subtle:  #E3DCCE;
+  --border-default: #D6CEBE;
+  --border-brand:   #A6512B;
 
   /* ── Text ── */
-  --text-primary:   #333333; /* Charcoal Text */
-  --text-secondary: #666666; /* Muted Text */
-  --text-muted:     #999999;
+  --text-primary:   #26221C; /* Charcoal Text */
+  --text-secondary: #5C554B; /* Muted Text */
+  --text-muted:     #8B8378;
 
   /* ── Semantic Colors (All forced to green per request) ── */
-  --success:        #43A047;
-  --success-bg:     rgba(67, 160, 71, 0.08);
-  --error:          #43A047;
-  --error-bg:       rgba(67, 160, 71, 0.08);
-  --warning:        #66BB6A;
-  --warning-bg:     rgba(102, 187, 106, 0.08);
-  --info:           #2E7D32;
-  --info-bg:        rgba(46, 125, 50, 0.08);
+  --success:        #4A6B4F;
+  --success-bg:     #E7EEE5;
+  --error:          #A93B2A;
+  --error-bg:       #F6E3DF;
+  --warning:        #9A6B1F;
+  --warning-bg:     #F4EAD3;
+  --info:           #46628A;
+  --info-bg:        #E4EAF3;
 
   /* ── Typography ── */
-  --font-heading: 'Outfit', sans-serif;
-  --font-body:    'Inter', sans-serif;
+  --font-heading: 'Fraunces', Georgia, serif;
+  --font-body:    'Instrument Sans', -apple-system, sans-serif;
 
   /* ── Spacing ── */
   --sidebar-w:     240px;
   --sidebar-w-sm:  64px;
 
   /* ── Radius (Official, clean, slight rounding) ── */
-  --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 8px;
-  --r-xl: 12px;
+  --r-sm: 3px;
+  --r-md: 5px;
+  --r-lg: 7px;
+  --r-xl: 10px;
   --r-full: 9999px;
 
   /* ── Shadows (Removed for flat design) ── */
@@ -389,8 +389,6 @@ body {
 
 .card:hover {
   border-color: var(--border-default);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card), 0 8px 40px rgba(0,0,0,0.2);
 }
 
 /* Stat Cards */
@@ -421,8 +419,6 @@ body {
 
 .stat-card:hover {
   border-color: var(--border-brand);
-  box-shadow: var(--shadow-glow);
-  transform: translateY(-4px) scale(1.02);
 }
 
 .stat-card-label {
@@ -485,8 +481,6 @@ body {
 }
 .btn-primary:not(:disabled):hover {
   background: var(--brand-light);
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1), var(--shadow-glow);
 }
 .btn-primary:not(:disabled):active {
   transform: translateY(0) scale(0.98);
@@ -501,7 +495,6 @@ body {
 .btn-secondary:not(:disabled):hover {
   background: var(--bg-hover);
   border-color: var(--border-default);
-  transform: translateY(-1px) scale(1.01);
 }
 .btn-secondary:not(:disabled):active {
   transform: translateY(0) scale(0.98);
@@ -543,7 +536,6 @@ body {
   background: var(--bg-hover); 
   color: var(--text-primary); 
   border-color: var(--border-default); 
-  transform: scale(1.05);
 }
 .btn-icon:active {
   transform: scale(0.95);
@@ -986,8 +978,6 @@ body {
 
 .product-card:hover {
   border-color: var(--border-brand);
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-glow);
 }
 
 .product-card-img {
@@ -1585,7 +1575,6 @@ body {
 .pos-item-card:hover {
   border-color: var(--brand);
   background: var(--brand-dim);
-  transform: scale(1.02);
 }
 
 .pos-item-card.selected {
@@ -2152,3 +2141,20 @@ body {
   text-overflow: ellipsis;
   max-width: 100%;
 }
+
+/* ── Loader + skeleton primitives ─────────────────────────── */
+@keyframes iconspin { to { transform: rotate(360deg); } }
+.icon-spin { animation: iconspin 900ms linear infinite; }
+.skel {
+  position: relative; overflow: hidden;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: var(--r-sm, 4px);
+}
+.skel::after {
+  content: ""; position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  animation: skelwave 1.4s infinite;
+}
+@keyframes skelwave { 100% { transform: translateX(100%); } }
+.animate-spin { animation: iconspin 900ms linear infinite; }

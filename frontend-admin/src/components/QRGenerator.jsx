@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { api } from "../utils/api";
-import { QrCode, Printer, RefreshCw, CheckCircle } from "lucide-react";
+import { QrCode, Printer, RefreshCw, CheckCircle } from "../ui/Icon";
 
 export default function QRGenerator({ outlets, menuItems }) {
   const [form, setForm] = useState({ order_id: "", type: "B2B2C", item: "", qty: "", outlet_id: "", destination: "", batch_number: "", expiry_date: "" });
@@ -51,7 +51,7 @@ export default function QRGenerator({ outlets, menuItems }) {
       img{display:block;margin:16px auto;width:220px;height:220px}
       .note{font-size:11px;color:#999;margin-top:12px}
     </style></head><body onload="window.print()"><div class="box">
-      <h2>📦 Dispatch Label</h2>
+      <h2> Dispatch Label</h2>
       <p><strong>Item:</strong> ${p.item}</p>
       <p><strong>Qty:</strong> ${p.qty} units</p>
       <p><strong>Destination:</strong> ${p.destination || "—"}</p>

@@ -1,17 +1,17 @@
 import React, { useState, useMemo } from "react";
-import { SlidersHorizontal, X, Star } from "lucide-react";
+import { SlidersHorizontal, X, Star } from "../ui/Icon";
 import ProductCard from "./ProductCard";
 import { ProductGridSkeleton } from "./SkeletonLoader";
 
 const CATEGORIES = [
   { id: "all",               label: "All" },
-  { id: "favs",              label: "My Faves ❤️" },
-  { id: "Pickles",           label: "Pickles 🫙" },
-  { id: "Spice Powders",     label: "Spice Powders 🌶" },
-  { id: "Snacks & Savories", label: "Snacks 🍿" },
-  { id: "Sweets & Treats",   label: "Sweets 🍯" },
-  { id: "Mixes & Instant",   label: "Mixes 🥣" },
-  { id: "Special Products",  label: "Specials ⭐" },
+  { id: "favs",              label: "My Faves " },
+  { id: "Pickles",           label: "Pickles " },
+  { id: "Spice Powders",     label: "Spice Powders " },
+  { id: "Snacks & Savories", label: "Snacks " },
+  { id: "Sweets & Treats",   label: "Sweets " },
+  { id: "Mixes & Instant",   label: "Mixes " },
+  { id: "Special Products",  label: "Specials " },
 ];
 
 const SORT_OPTIONS = [
@@ -236,7 +236,7 @@ export default function ShopPage({ menu, cart, favorites, loading, activeCategor
 
           {!loading && filtered.length === 0 && (
             <div className="empty-state">
-              <div className="empty-state-icon">🔍</div>
+              <div className="empty-state-icon"></div>
               <h3>No products found</h3>
               <p>Try adjusting your filters or search query</p>
               <button className="btn btn-outline" onClick={handleReset} style={{ marginTop: "0.5rem" }}>Reset Filters</button>

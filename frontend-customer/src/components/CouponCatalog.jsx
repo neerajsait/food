@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { X, Tag, Lock, CheckCircle, AlertCircle, Sparkles, Zap, Clock, ShoppingBag } from "lucide-react";
+import { X, Tag, Lock, CheckCircle, AlertCircle, Sparkles, Zap, Clock, ShoppingBag } from "../ui/Icon";
 import { createPortal } from "react-dom";
 
 // ─────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ function CouponCard({ coupon, eligibility, appliedCoupon, onApply, onRemove }) {
             ? <AlertCircle size={13} color="#f59e0b" />
             : <Lock size={13} color="var(--text-3)" />}
           <span style={{ fontSize: "0.75rem", color: nearlyEligible ? "#f59e0b" : eligible || isApplied ? "var(--green)" : "var(--text-3)", lineHeight: 1.4 }}>
-            {isApplied ? "Applied ✓" : reason}
+            {isApplied ? "Applied" : reason}
           </span>
         </div>
 

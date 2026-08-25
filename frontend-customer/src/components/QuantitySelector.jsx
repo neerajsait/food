@@ -1,5 +1,5 @@
 import React from "react";
-import { Minus, Plus } from "lucide-react";
+import { Minus, Plus } from "../ui/Icon";
 
 export default function QuantitySelector({ value = 1, min = 0, max = 99, onChange, size = "md" }) {
   const btnSize = size === "sm" ? 32 : 40;

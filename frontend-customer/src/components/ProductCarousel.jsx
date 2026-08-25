@@ -1,5 +1,5 @@
 import React from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight } from "../ui/Icon";
 import ProductCard from "./ProductCard";
 
 export default function ProductCarousel({ title, subtitle, items, cart, favorites, onAdd, onRemove, onToggleFav, onItemClick, onSeeAll }) {

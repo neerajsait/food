@@ -38,7 +38,7 @@ from models import (
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
     Order, OrderItem, Review, Coupon, StaffShift, Address, Favorite, AdminAuditLog,
     KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest, MarketPurchase,
-    AuditLog, MonthlyRevenueHistory
+    AuditLog, MonthlyRevenueHistory, PaymentTransaction
 )
 import bleach
 from audit_utils import log_audit, manual_log_audit
@@ -5398,6 +5398,19 @@ The FlavorFlow Team"""
                             "message": "Payment gateway rejected the request"}), 502
 
         rp_order = rp_resp.json()
+        rp_order_id = rp_order.get("id")
+        order.razorpay_order_id = rp_order_id
+        db.session.add(PaymentTransaction(
+            order_id=order.id,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            amount=order.total_price,
+            currency=rp_order.get("currency", "INR"),
+            status="created",
+            event="order_created",
+            source="checkout",
+        ))
+        db.session.commit()
         return jsonify({
             "razorpay_order_id": rp_order.get("id"),
             "amount": rp_order.get("amount"),
@@ -5405,6 +5418,176 @@ The FlavorFlow Team"""
             "key_id": creds["key_id"],   # public key - safe for checkout.js
             "mode": creds["mode"],
         }), 201
+
+    @app.route("/api/payments/razorpay/verify", methods=["POST"])
+    @jwt_required()
+    @limiter.limit("20 per minute")
+    def verify_razorpay_payment():
+        """Verify the checkout.js signature (HMAC of order_id|payment_id with the key secret)
+        and mark the order as paid. Idempotent."""
+        uid = int(get_jwt_identity())
+        data = request.get_json(silent=True) or {}
+        try:
+            order_id = int(data.get("order_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Bad Request", "message": "order_id is required"}), 400
+
+        rp_order_id = (data.get("razorpay_order_id") or "").strip()
+        rp_payment_id = (data.get("razorpay_payment_id") or "").strip()
+        rp_signature = (data.get("razorpay_signature") or "").strip()
+        if not rp_order_id or not rp_payment_id or not rp_signature:
+            return jsonify({"error": "Bad Request",
+                            "message": "razorpay_order_id, razorpay_payment_id and razorpay_signature are required"}), 400
+
+        order = db.session.get(Order, order_id)
+        if not order or order.customer_id != uid:
+            return jsonify({"error": "Not Found", "message": "Order not found"}), 404
+
+        # Idempotency: a webhook may have beaten the client to it.
+        if order.payment_status == "paid":
+            return jsonify({"message": "Order already marked as paid", "already_paid": True,
+                            "order": order.to_dict()}), 200
+
+        if order.razorpay_order_id and order.razorpay_order_id != rp_order_id:
+            logger.warning(f"[PAYMENT] Order #{order.id}: razorpay_order_id mismatch "
+                           f"(expected {order.razorpay_order_id}, got {rp_order_id})")
+            return jsonify({"error": "Bad Request", "message": "Payment order mismatch"}), 400
+
+        try:
+            creds = get_razorpay_credentials(force_refresh=True)
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured yet. Please contact support."}), 503
+
+        expected_sig = hmac.new(
+            creds["key_secret"].encode(),
+            f"{rp_order_id}|{rp_payment_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        signature_valid = hmac.compare_digest(expected_sig, rp_signature)
+
+        db.session.add(PaymentTransaction(
+            order_id=order.id,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            provider_payment_id=rp_payment_id,
+            amount=order.total_price,
+            currency="INR",
+            status="captured" if signature_valid else "failed",
+            event="checkout_verify",
+            signature_valid=signature_valid,
+            source="checkout",
+        ))
+
+        if not signature_valid:
+            db.session.commit()
+            logger.warning(f"[PAYMENT] Order #{order.id}: INVALID checkout signature for payment {rp_payment_id}")
+            return jsonify({"error": "Bad Request", "message": "Payment signature verification failed"}), 400
+
+        order.payment_status = "paid"
+        order.paid_at = datetime.now(timezone.utc)
+        order.razorpay_payment_id = rp_payment_id
+        order.razorpay_order_id = order.razorpay_order_id or rp_order_id
+        db.session.commit()
+        logger.info(f"[PAYMENT] Order #{order.id} marked PAID via checkout verify ({rp_payment_id})")
+        return jsonify({"message": "Payment verified", "already_paid": False, "order": order.to_dict()}), 200
+
+    @app.route("/api/payments/razorpay/webhook", methods=["POST"])
+    @limiter.limit("120 per minute")
+    def razorpay_webhook():
+        """Razorpay server-to-server events. Public route — authenticated by the
+        X-Razorpay-Signature HMAC header instead of a JWT."""
+        raw_body = request.get_data(cache=False)
+        signature = request.headers.get("X-Razorpay-Signature", "")
+        try:
+            creds = get_razorpay_credentials()
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured"}), 503
+        webhook_secret = creds.get("webhook_secret")
+        if not webhook_secret:
+            logger.error("[PAYMENT] Webhook received but no webhook secret is configured")
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Webhook secret is not configured"}), 503
+
+        if not verify_razorpay_webhook_signature(raw_body, signature, webhook_secret):
+            logger.warning("[PAYMENT] Webhook rejected: invalid X-Razorpay-Signature")
+            return jsonify({"error": "Bad Request", "message": "Invalid signature"}), 400
+
+        # Parse from the raw bytes we already read (get_data with cache=False
+        # consumes the stream, so request.get_json() would return None).
+        try:
+            payload = json.loads(raw_body) if raw_body else {}
+        except (ValueError, TypeError):
+            logger.warning("[PAYMENT] Webhook rejected: body is not valid JSON")
+            return jsonify({"error": "Bad Request", "message": "Invalid JSON body"}), 400
+        event = payload.get("event", "")
+        entities = payload.get("payload") or {}
+        payment_entity = (entities.get("payment") or {}).get("entity") or {}
+        order_entity = (entities.get("order") or {}).get("entity") or {}
+
+        rp_payment_id = payment_entity.get("id")
+        rp_order_id = payment_entity.get("order_id") or order_entity.get("id")
+        notes = payment_entity.get("notes") or {}
+        local_order_id = notes.get("order_id")
+
+        order = None
+        if local_order_id:
+            try:
+                order = db.session.get(Order, int(local_order_id))
+            except (TypeError, ValueError):
+                order = None
+        if not order and rp_order_id:
+            order = db.session.scalars(
+                select(Order).where(Order.razorpay_order_id == rp_order_id)
+            ).first()
+
+        amount_paise = payment_entity.get("amount")
+        amount = (Decimal(str(amount_paise)) / 100) if amount_paise is not None else None
+
+        txn_status_map = {
+            "payment.captured": "captured",
+            "payment.failed": "failed",
+            "refund.processed": "refunded",
+            "order.paid": "captured",
+        }
+        db.session.add(PaymentTransaction(
+            order_id=order.id if order else None,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            provider_payment_id=rp_payment_id,
+            amount=amount if amount is not None else Decimal("0.00"),
+            currency=payment_entity.get("currency", "INR"),
+            status=txn_status_map.get(event, "unknown"),
+            event=event or "unknown",
+            signature_valid=True,
+            source="webhook",
+            raw_payload=json.dumps(payload)[:4000],
+        ))
+
+        if order:
+            if event in ("payment.captured", "order.paid"):
+                # Idempotent: safe even if checkout verify already ran.
+                if order.payment_status != "paid":
+                    order.payment_status = "paid"
+                    order.paid_at = datetime.now(timezone.utc)
+                    order.razorpay_order_id = order.razorpay_order_id or rp_order_id
+                    order.razorpay_payment_id = rp_payment_id
+                    logger.info(f"[PAYMENT] Order #{order.id} marked PAID via webhook ({rp_payment_id})")
+            elif event == "payment.failed":
+                if order.payment_status != "paid":
+                    order.payment_status = "failed"
+                    logger.info(f"[PAYMENT] Order #{order.id} payment FAILED via webhook")
+            elif event in ("refund.processed", "refund.created"):
+                order.payment_status = "refunded"
+                order.refund_status = "processed"
+
+        db.session.commit()
+        return jsonify({"status": "ok"}), 200
 
     # ---------------------------------------------------------------------------
     # Market Purchases API

@@ -3,7 +3,7 @@ import {
   Trash2, ShoppingBag, Tag, Truck, ChevronDown, ChevronUp,
   CheckCircle, Lock, AlertCircle, Plus, Clock, ShieldCheck,
   ArrowRight, Zap, Minus, Star
-} from "lucide-react";
+} from "../ui/Icon";
 import { checkCouponEligibility } from "./CouponCatalog";
 
 const FALLBACK = "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=200&q=70";
@@ -23,7 +23,7 @@ function DeliveryBar({ cartTotal }) {
         <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
           <Truck size={14} color={done ? "var(--green)" : "var(--text-2)"} />
           <span style={{ fontSize: "0.8rem", color: done ? "var(--green)" : "var(--text-2)", fontWeight: done ? 700 : 500 }}>
-            {done ? "🎉 Free delivery unlocked!" : <>Add <strong style={{ color: "var(--text)" }}>₹{left.toFixed(0)}</strong> for free delivery</>}
+            {done ? "Free delivery unlocked!" : <>Add <strong style={{ color: "var(--text)" }}>₹{left.toFixed(0)}</strong> for free delivery</>}
           </span>
         </div>
         <span style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>₹{FREE_AT}</span>
@@ -83,7 +83,7 @@ function InlineCouponRow({ coupon, eligibility, appliedCoupon, onApply, onRemove
             ? <AlertCircle size={11} color="#f59e0b" />
             : <Lock size={11} color="var(--text-3)" />}
           <span style={{ fontSize: "0.7rem", color: isApplied || eligible ? "var(--green)" : nearlyEligible ? "#f59e0b" : "var(--text-3)" }}>
-            {isApplied ? "Applied ✓" : reason}
+            {isApplied ? "Applied" : reason}
           </span>
           {eligible && savings > 0 && !isApplied && (
             <span style={{ marginLeft: "auto", fontSize: "0.72rem", fontWeight: 800, color: "var(--green)" }}>Save ₹{savings.toFixed(0)}</span>
@@ -232,7 +232,7 @@ export default function CartPage({
     return (
       <div className="page-content" style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: "4rem", marginBottom: "1rem" }}>🛒</div>
+          <div style={{ fontSize: "4rem", marginBottom: "1rem" }}></div>
           <h2 style={{ fontSize: "1.25rem", fontWeight: 800, color: "var(--text)", marginBottom: "0.5rem" }}>Your cart is empty</h2>
           <p style={{ color: "var(--text-2)", fontSize: "0.9rem" }}>Add some delicious items to get started!</p>
         </div>
@@ -403,7 +403,7 @@ export default function CartPage({
                       {appliedCoupon.code} — {appliedCoupon.discount_pct ? `${appliedCoupon.discount_pct}% off` : `₹${appliedCoupon.discount_amount} off`}
                     </div>
                     <button onClick={onRemoveCoupon} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: "0.72rem", fontFamily: "inherit" }}>
-                      ✕ Remove
+                       Remove
                     </button>
                   </div>
                 ) : (
@@ -514,7 +514,7 @@ export default function CartPage({
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem" }}>
                   <span style={{ color: "var(--text-2)" }}>Delivery</span>
                   <span style={{ fontWeight: 600, color: deliveryCharge === 0 ? "var(--green)" : "var(--text)" }}>
-                    {deliveryCharge === 0 ? "FREE 🎉" : `₹${deliveryCharge.toFixed(2)}`}
+                    {deliveryCharge === 0 ? "Free" : `₹${deliveryCharge.toFixed(2)}`}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "1.0625rem", fontWeight: 900, color: "var(--text)", paddingTop: "0.5rem", borderTop: "1.5px solid var(--border)", marginTop: "0.25rem" }}>
@@ -523,7 +523,7 @@ export default function CartPage({
                 </div>
                 {(discountAmount > 0 || actualLoyaltyDiscount > 0 || deliveryCharge === 0) && (
                   <div style={{ textAlign: "center", fontSize: "0.775rem", color: "var(--green)", fontWeight: 700, background: "var(--green-dim)", padding: "0.4rem 0.75rem", borderRadius: "var(--radius-md)" }}>
-                    🎉 You're saving ₹{(discountAmount + actualLoyaltyDiscount + (deliveryCharge === 0 ? 49 : 0)).toFixed(0)} on this order!
+                    "You are saving ₹{(discountAmount + actualLoyaltyDiscount + (deliveryCharge === 0 ? 49 : 0)).toFixed(0)} on this order!
                   </div>
                 )}
               </div>

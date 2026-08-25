@@ -8,7 +8,7 @@ import {
   AlertCircle, CheckCircle, Store, Trash2, FileText,
   Volume2, VolumeX, X, LogOut, User, Clock, ShieldAlert,
   KeyRound, Gift, Search, Package
-} from "lucide-react";
+} from "../ui/Icon";
 import QRScanner from "./QRScanner";
 
 export default function StaffPOS({ onLogout, _dbMode }) {
@@ -749,7 +749,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
             borderRadius: "1.25rem", padding: "2.5rem", maxWidth: 480, width: "100%", textAlign: "center"
           }}>
-            <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🕐</div>
+            <div style={{ fontSize: "3rem", marginBottom: "1rem" }}></div>
             <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 800, marginBottom: "1rem" }}>Shift Closed</h2>
             <div className="grid-responsive-2col" style={{ gap: "0.75rem", marginBottom: "1.5rem" }}>
               {[
@@ -768,7 +768,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             </div>
             {(clockOutResult.cash_discrepancy ?? 0) < 0 && (
               <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
-                ⚠️ Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
+                Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
               </div>
             )}
             
@@ -1060,7 +1060,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                       {inSale > 0 && (
                         <div style={{ position: "absolute", top: 6, left: 6, width: 20, height: 20, borderRadius: "50%", background: "var(--brand)", color: "#fff", fontSize: "0.68rem", fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{inSale}</div>
                       )}
-                      <div style={{ fontSize: "1.75rem", marginBottom: "0.5rem" }}>🍱</div>
+                      <div style={{ fontSize: "1.75rem", marginBottom: "0.5rem" }}></div>
                       <h4 style={{ fontSize: "0.8rem", fontWeight: 700, margin: "0 0 0.4rem", color: "var(--text-primary)", lineHeight: 1.3 }}>{item.name}</h4>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 800, color: "var(--brand)" }}>₹{item.price.toFixed(0)}</span>
@@ -1476,13 +1476,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               )}
               {couponError && (
                 <div style={{ fontSize: "0.8rem", color: "var(--error)", marginTop: "0.4rem", fontWeight: "600" }}>
-                  ❌ {couponError}
+                  {couponError}
                 </div>
               )}
               {appliedCoupon && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "6px", padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
                   <span style={{ fontSize: "0.85rem", color: "var(--success)", fontWeight: "700" }}>
-                    ✓ "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
+                    Applied "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
                   </span>
                   <button
                     type="button"
@@ -1635,7 +1635,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           fontWeight: 600, fontSize: "0.88rem", display: "flex",
           alignItems: "center", gap: "0.6rem"
         }}>
-          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "⚡" : "⚠"}</span>
+          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "" : ""}</span>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", marginLeft: "1rem", opacity: 0.8, fontSize: "0.8rem", display: "flex", alignItems: "center" }}><X size={14} /></button>
         </div>

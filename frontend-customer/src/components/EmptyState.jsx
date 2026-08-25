@@ -1,5 +1,5 @@
 import React from 'react';
-import { Ghost, Search, MapPin, Package, MessageSquare } from 'lucide-react';
+import { Ghost, Search, MapPin, Package, MessageSquare } from '../ui/Icon';
 
 const icons = {
   ghost: Ghost,

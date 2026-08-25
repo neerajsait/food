@@ -1221,5 +1221,55 @@ export const api = {
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || "Failed to update ticket");
     return data;
+  },
+
+  // -----------------------
+  // Payments (Razorpay)
+  // -----------------------
+
+  // Loads the Razorpay checkout.js script exactly once. Returns a promise
+  // that resolves when window.Razorpay is available.
+  loadRazorpayScript() {
+    if (window.Razorpay) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector("script[src='https://checkout.razorpay.com/v1/checkout.js']");
+      if (existing) {
+        existing.addEventListener("load", () => resolve());
+        existing.addEventListener("error", () => reject(new Error("Failed to load payment gateway")));
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load payment gateway"));
+      document.body.appendChild(script);
+    });
+  },
+
+  async createRazorpayOrder(orderId) {
+    const res = await fetch(`${API_BASE_URL}/payments/razorpay/order`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ order_id: orderId })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Failed to create payment order");
+    return data;
+  },
+
+  async verifyRazorpayPayment({ orderId, razorpay_order_id, razorpay_payment_id, razorpay_signature }) {
+    const res = await fetch(`${API_BASE_URL}/payments/razorpay/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({
+        order_id: orderId,
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature
+      })
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error(data.message || "Payment verification failed");
+    return data;
   }
 };

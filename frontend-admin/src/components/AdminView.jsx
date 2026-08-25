@@ -8,7 +8,7 @@ import {
   X, LogOut, MessageSquare, Star, Tag, ArrowRight, User,
   Megaphone, Image, Settings, Gift, MessageCircle, Edit2,
   BookOpen, ShoppingCart, Receipt, CreditCard
-} from "lucide-react";
+} from "../ui/Icon";
 import QRGenerator from "./QRGenerator";
 import EmptyState from "./EmptyState";
 import { formatCurrency } from "../utils/formatters";
@@ -539,7 +539,7 @@ export default function AdminView({ onLogout, dbMode }) {
       if (data?.length > 0) {
         setOutletLatitude(parseFloat(data[0].lat).toFixed(6));
         setOutletLongitude(parseFloat(data[0].lon).toFixed(6));
-        setGeocodingMsg("✓ Coordinates fetched!");
+        setGeocodingMsg("Updated coordinates fetched!");
       } else setGeocodingMsg("Address not found.");
     } catch (err) { setGeocodingMsg("Lookup failed."); }
     finally { setGeocodingLoading(false); }
@@ -1089,7 +1089,7 @@ export default function AdminView({ onLogout, dbMode }) {
               justifyContent: sidebarOpen ? "flex-start" : "center",
               background: activeTab === t.id ? "var(--brand-glow)" : "transparent",
               color: activeTab === t.id ? "var(--brand)" : "var(--text-secondary)",
-              border: "none", borderRight: activeTab === t.id ? "3px solid var(--brand)" : "3px solid transparent",
+              border: "none",
               cursor: "pointer", fontSize: "0.9rem", fontWeight: activeTab === t.id ? 700 : 500,
               transition: "all 0.2s",
               position: "relative"
@@ -1238,6 +1238,11 @@ export default function AdminView({ onLogout, dbMode }) {
                       <div style={{ textAlign: "right" }}>
                         <div style={{ fontWeight: 700, color: "var(--brand)" }}>₹{o.total_price.toFixed(0)}</div>
                         <span className={`badge-status status-${o.status}`}>{o.status}</span>
+                        {o.payment_method !== "COD" && (
+                          <div style={{ fontSize: "0.62rem", marginTop: "0.15rem", fontWeight: 700, color: o.payment_status === "paid" ? "var(--success)" : "var(--error)" }}>
+                            {o.payment_status === "paid" ? "Paid " : o.payment_status === "refunded" ? "Refunded" : "Unpaid "}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1301,7 +1306,7 @@ export default function AdminView({ onLogout, dbMode }) {
 
           {/* Master Catalog */}
           <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1rem", marginTop: "1rem" }}>
-            Master Food Catalog <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— all food items</span>
+            Master Food Catalog <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>· all items</span>
           </h3>
           <div className="table-container" style={{ marginBottom: "2.5rem" }}>
             <table className="custom-table">
@@ -1349,13 +1354,13 @@ export default function AdminView({ onLogout, dbMode }) {
 
           {/* Outlets Grid */}
           <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1rem" }}>
-            Outlet Stations <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— stock management</span>
+            Outlet Stations <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>· inventory and dispatch</span>
           </h3>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: "1.25rem", marginBottom: "2.5rem" }}>
             {outlets.map(outlet => {
               const isAlert = (outlet.items || []).some(i => i.needs_restock);
               return (
-                <div key={outlet.id} className="card" style={{ borderLeft: `3px solid ${isAlert ? "var(--error)" : "var(--brand)"}`, padding: "1.25rem" }}>
+                <div key={outlet.id} className="card" style={{ border: "1px solid var(--border-subtle)", padding: "1.25rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "0.75rem" }}>
                     <div>
                       <h3 style={{ fontSize: "1rem", fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -1374,7 +1379,7 @@ export default function AdminView({ onLogout, dbMode }) {
                         Revenue Share: {outlet.revenue_share_percentage || 0}%
                       </div>
                     </div>
-                    {isAlert && <span className="badge-status status-cancelled">⚠ Low Stock</span>}
+                    {isAlert && <span className="badge-status status-cancelled"> Low Stock</span>}
                   </div>
 
                   {/* Stock items */}
@@ -1433,7 +1438,7 @@ export default function AdminView({ onLogout, dbMode }) {
         <div className="animate-fade-in">
           <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 700, marginBottom: "1rem" }}>
             {activeTab === "customer_orders" ? "B2C Customer Shipments" : "Outlet POS Orders"} 
-            <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>— pending dispatch</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: 400 }}>awaiting dispatch</span>
           </h3>
           <div className="table-container">
             <table className="custom-table">
@@ -1444,12 +1449,22 @@ export default function AdminView({ onLogout, dbMode }) {
                   <th>Customer</th>
                   <th>Amount</th>
                   <th>Status</th>
+                  <th>Payment</th>
                   <th>Dispatch Action</th>
                 </tr>
               </thead>
               <tbody>
+                {loading && orders.length === 0 && (
+                  [...Array(4)].map((_, i) => (
+                    <tr key={`skel-${i}`}>
+                      <td colSpan={7} style={{ padding: "0.7rem 1rem" }}>
+                        <div className="skel" style={{ height: 14, width: `${86 - i * 11}%` }} />
+                      </td>
+                    </tr>
+                  ))
+                )}
                 {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).length === 0 && (
-                  <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No orders yet.</td></tr>
+                  <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No orders yet.</td></tr>
                 )}
                 {orders.filter(o => o.order_type === (activeTab === "customer_orders" ? "online" : "pos")).map(o => (
                   <tr key={o.id}>
@@ -1465,6 +1480,22 @@ export default function AdminView({ onLogout, dbMode }) {
                     </td>
                     <td><strong>₹{o.total_price.toFixed(0)}</strong></td>
                     <td><span className={`badge-status status-${o.status}`}>{o.status}</span></td>
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                        <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{o.payment_method || "COD"}</span>
+                        {o.payment_status === "paid" ? (
+                          <span className="badge-status status-delivered">Paid </span>
+                        ) : o.payment_status === "refunded" ? (
+                          <span className="badge-status status-cancelled">Refunded</span>
+                        ) : o.payment_status === "failed" ? (
+                          <span className="badge-status status-cancelled">Failed</span>
+                        ) : (
+                          <span className={`badge-status ${o.payment_method && o.payment_method !== "COD" ? "status-cancelled" : "status-pending"}`}>
+                            {o.payment_method && o.payment_method !== "COD" ? "Unpaid " : "On delivery"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td>
                       {(o.status === "pending" || o.status === "processing" || o.status === "ready") ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
@@ -1497,7 +1528,7 @@ export default function AdminView({ onLogout, dbMode }) {
                           </div>
                           {trackingLabels[o.id] && (
                             <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.68rem", color: "#22c55e" }}>
-                              <span>✓ Label attached</span>
+                              <span> Label attached</span>
                               <button onClick={() => setTrackingLabels({ ...trackingLabels, [o.id]: null })} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", fontSize: "0.65rem", padding: 0 }}>Remove</button>
                             </div>
                           )}
@@ -1514,7 +1545,7 @@ export default function AdminView({ onLogout, dbMode }) {
                           )}
                           {o.tracking_label && (
                             <span style={{ fontSize: "0.68rem", color: "var(--brand)" }}>
-                              🖼️ Label Uploaded
+                               Label Uploaded
                             </span>
                           )}
                         </div>
@@ -1616,7 +1647,7 @@ export default function AdminView({ onLogout, dbMode }) {
 
                 <div className="panel" style={{ padding: "1.5rem", marginTop: "1.5rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-                    <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">AI Demand Forecast (Next 7 Days) ℹ️</h3>
+                    <h3 style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: "1rem", margin: 0 }} title="AI-driven estimate of future sales based on past data, weather, and holidays">AI Demand Forecast (Next 7 Days) ℹ</h3>
                     <span style={{ fontSize: "0.75rem", background: "rgba(139,92,246,0.12)", color: "#8b5cf6", padding: "4px 8px", borderRadius: "12px", fontWeight: 700 }}>Powered by AI</span>
                   </div>
                   <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "1.5rem" }}>Predicted order volume based on historical data, weather, and upcoming holidays.</p>
@@ -3202,7 +3233,7 @@ export default function AdminView({ onLogout, dbMode }) {
           <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Tag / Label</label>
-              <input type="text" className="form-input" placeholder="e.g. ⭐ New, Best Seller" value={menuTag} onChange={e => setMenuTag(e.target.value)} />
+              <input type="text" className="form-input" placeholder="e.g.  New, Best Seller" value={menuTag} onChange={e => setMenuTag(e.target.value)} />
             </div>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Manual Rating Override</label>
@@ -3294,7 +3325,7 @@ export default function AdminView({ onLogout, dbMode }) {
           <div className="grid-responsive-2col" style={{ gap: "0.75rem" }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Tag / Label</label>
-              <input type="text" className="form-input" placeholder="e.g. ⭐ New, Best Seller" value={menuTag} onChange={e => setMenuTag(e.target.value)} />
+              <input type="text" className="form-input" placeholder="e.g.  New, Best Seller" value={menuTag} onChange={e => setMenuTag(e.target.value)} />
             </div>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Manual Rating Override</label>
@@ -4015,7 +4046,7 @@ export default function AdminView({ onLogout, dbMode }) {
           fontWeight: 600, fontSize: "0.88rem", display: "flex",
           alignItems: "center", gap: "0.6rem"
         }}>
-          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "⚡" : "⚠"}</span>
+          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "" : ""}</span>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", marginLeft: "1rem", opacity: 0.8, fontSize: "0.8rem", display: "flex", alignItems: "center" }}><X size={14} /></button>
         </div>,

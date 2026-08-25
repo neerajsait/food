@@ -9,7 +9,7 @@ const CustomerView = lazy(() => import("./components/CustomerView"));
 import {
   LogOut, Zap, 
   ChevronRight, Lock
-} from "lucide-react";
+} from "./ui/Icon";
 
 
 
@@ -124,7 +124,7 @@ export default function App() {
           borderRadius: "var(--r-xl)", display: "flex", alignItems: "center",
           justifyContent: "center", fontSize: "1.75rem",
           boxShadow: "0 2px 12px rgba(0, 0, 0, 0.08)", animation: "pulse-glow 2s ease-in-out infinite"
-        }}>🍱</div>
+        }}></div>
         <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
           Starting FlavorFlow…
         </p>

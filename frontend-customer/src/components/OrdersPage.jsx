@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Package, Truck, Check, ChevronDown, ChevronUp, RotateCcw, MessageSquare, Download, Star } from "lucide-react";
+import { Package, Truck, Check, ChevronDown, ChevronUp, RotateCcw, MessageSquare, Download, Star } from "../ui/Icon";
+import { OrderListSkeleton } from "./SkeletonLoader";
 
 function StatusPill({ status }) {
   const cls = `status-${status}`;
@@ -42,7 +43,7 @@ function OrderProgress({ status }) {
   );
 }
 
-function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onCancel, onFeedback, feedbackRating, feedbackComment, setFeedbackRating, setFeedbackComment, onReport, onDownload, onSetReview }) {
+function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onCancel, onFeedback, feedbackRating, feedbackComment, setFeedbackRating, setFeedbackComment, onReport, onDownload, onSetReview, onPayNow }) {
   const [expanded, setExpanded] = useState(false);
 
   const subtotal = order.items?.reduce((s, i) => s + i.price * i.quantity, 0) || 0;
@@ -84,7 +85,12 @@ function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onC
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
         <span style={{ fontWeight: 800, fontSize: "1.1rem", color: "var(--text)" }}>₹{parseFloat(order.total_price).toFixed(2)}</span>
-        <span style={{ fontSize: "0.8rem", color: "var(--text-3)" }}>{order.payment_method || "COD"}</span>
+        <span style={{ fontSize: "0.8rem", color: "var(--text-3)" }}>
+          {order.payment_method || "COD"}
+          {order.payment_status === "paid" && (
+            <span style={{ color: "var(--green)", fontWeight: 700 }}> • Paid </span>
+          )}
+        </span>
       </div>
 
       {/* Expand: full details */}
@@ -112,7 +118,7 @@ function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onC
 
           {order.delivery_address && (
             <div style={{ fontSize: "0.8rem", color: "var(--text-2)", marginBottom: "0.875rem" }}>
-              📍 {order.delivery_address}
+               {order.delivery_address}
             </div>
           )}
 
@@ -154,12 +160,17 @@ function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onC
           )}
           {order.feedback_rating && (
             <div style={{ fontSize: "0.8125rem", color: "var(--text-2)", marginBottom: "0.875rem" }}>
-              ⭐ You rated this {order.feedback_rating}/5
+               You rated this {order.feedback_rating}/5
             </div>
           )}
 
           {/* Actions */}
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            {order.status === "pending" && order.payment_status !== "paid" && onPayNow && (
+              <button className="btn btn-primary btn-sm" onClick={() => onPayNow(order.id)}>
+                Pay Now
+              </button>
+            )}
             {(order.status === "pending" || order.status === "processing") && (
               <button className="btn btn-danger btn-sm" onClick={() => onCancel(order.id)}>Cancel Order</button>
             )}
@@ -176,7 +187,7 @@ function OrderCard({ order, trackingCode, setTrackingCode, onConfirmReceipt, onC
   );
 }
 
-export default function OrdersPage({ orders, trackingCodes, setTrackingCodes, onConfirmReceipt, onCancel, onFeedback, feedbackRatings, feedbackComments, setFeedbackRatings, setFeedbackComments, onReport, onDownload, setActiveTab }) {
+export default function OrdersPage({ orders, loading, trackingCodes, setTrackingCodes, onConfirmReceipt, onCancel, onFeedback, feedbackRatings, feedbackComments, setFeedbackRatings, setFeedbackComments, onReport, onDownload, onPayNow, setActiveTab }) {
   const [filter, setFilter] = useState("all");
 
   const filtered = filter === "all" ? orders : orders.filter(o => o.status === filter);
@@ -191,34 +202,41 @@ export default function OrdersPage({ orders, trackingCodes, setTrackingCodes, on
         ))}
       </div>
 
-      {filtered.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-state-icon">📦</div>
-          <h3>{filter === "all" ? "No orders yet" : `No ${filter} orders`}</h3>
-          <p>{filter === "all" ? "Start shopping to place your first order!" : "Nothing here yet."}</p>
-          {filter === "all" && <button className="btn btn-primary" onClick={() => setActiveTab("shop")}>Shop Now</button>}
-        </div>
-      )}
+      {loading && (!orders || orders.length === 0) ? (
+        <OrderListSkeleton />
+      ) : (
+        <>
+          {filtered.length === 0 && (
+            <div className="empty-state">
+              <div className="empty-state-icon"><Package size={34} strokeWidth={1.5} /></div>
+              <h3>{filter === "all" ? "No orders yet" : `No ${filter} orders`}</h3>
+              <p>{filter === "all" ? "Start shopping to place your first order!" : "Nothing here yet."}</p>
+              {filter === "all" && <button className="btn btn-primary" onClick={() => setActiveTab("shop")}>Shop Now</button>}
+            </div>
+          )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-        {filtered.map(order => (
-          <OrderCard
-            key={order.id}
-            order={order}
-            trackingCode={trackingCodes[order.id] || ""}
-            setTrackingCode={val => setTrackingCodes(prev => ({ ...prev, [order.id]: val }))}
-            onConfirmReceipt={onConfirmReceipt}
-            onCancel={onCancel}
-            onFeedback={onFeedback}
-            feedbackRating={feedbackRatings[order.id]}
-            feedbackComment={feedbackComments[order.id]}
-            setFeedbackRating={val => setFeedbackRatings(prev => ({ ...prev, [order.id]: val }))}
-            setFeedbackComment={val => setFeedbackComments(prev => ({ ...prev, [order.id]: val }))}
-            onReport={onReport}
-            onDownload={onDownload}
-          />
-        ))}
-      </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {filtered.map(order => (
+              <OrderCard
+                key={order.id}
+                order={order}
+                trackingCode={trackingCodes[order.id] || ""}
+                setTrackingCode={val => setTrackingCodes(prev => ({ ...prev, [order.id]: val }))}
+                onConfirmReceipt={onConfirmReceipt}
+                onCancel={onCancel}
+                onFeedback={onFeedback}
+                feedbackRating={feedbackRatings[order.id]}
+                feedbackComment={feedbackComments[order.id]}
+                setFeedbackRating={val => setFeedbackRatings(prev => ({ ...prev, [order.id]: val }))}
+                setFeedbackComment={val => setFeedbackComments(prev => ({ ...prev, [order.id]: val }))}
+                onReport={onReport}
+                onDownload={onDownload}
+                onPayNow={onPayNow}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
