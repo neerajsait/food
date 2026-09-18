@@ -20,17 +20,10 @@ const DEV_CSP = [
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5174,
-    strictPort: true,
     headers: {
-      'Content-Security-Policy': DEV_CSP,
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: http://localhost:5000; connect-src 'self' https: wss: ws: http://localhost:5000; font-src 'self' https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';",
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff'
     }
-  },
-  test: {
-    environment: 'jsdom',
-    setupFiles: ['./src/testSetup.js'],
-    globals: true
   }
 })

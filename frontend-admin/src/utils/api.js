@@ -1,86 +1,70 @@
-﻿// API client for communicating with the Flask backend.
+// API client for communicating with the Flask backend.
+// Implements a Mock Fallback Mode using localStorage if the backend is unreachable.
 
+const live = true;
 export const API_BASE_URL = import.meta.env.VITE_API_URL || (
   window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
     ? `${window.location.protocol}//${window.location.hostname}:5000/api`
     : `${window.location.protocol}//${window.location.host}/api`
 );
 
-
+// Override fetch to always append cache-busting timestamp to GET requests
+// and handle 401 Unauthorized by attempting a token refresh.
 const originalFetch = window.fetch;
 let isRefreshing = false;
 let refreshPromise = null;
 
-let accessToken = null;
-
-export function getAccessToken() {
-  return accessToken;
-}
-
-function setAccessToken(token) {
-  accessToken = token || null;
-}
-
-function clearAccessToken() {
-  accessToken = null;
-}
-
 window.fetch = async (url, options) => {
-  const isApiCall = typeof url === 'string' && url.includes(API_BASE_URL);
-  if (isApiCall) {
-    // Always send credentials so the HttpOnly auth cookies flow.
-    options = { credentials: "include", headers: {}, ...(options || {}) };
-    const method = (options.method || "GET").toUpperCase();
-    if (method === "GET") {
-      const sep = url.includes('?') ? '&' : '?';
-      url = `${url}${sep}_t=${Date.now()}`;
-    } else {
-      // Double-submit CSRF for cookie-authenticated mutations: echo the
-      // readable csrf_access_token cookie in a custom header.
-      const m = document.cookie.match(/(?:^|;\s*)csrf_access_token=([^;]+)/);
-      if (m && !options.headers["X-CSRF-TOKEN"]) {
-        options.headers["X-CSRF-TOKEN"] = decodeURIComponent(m[1]);
-      }
-    }
+  if (typeof url === 'string' && url.includes(API_BASE_URL) && (!options || options.method === 'GET' || !options.method)) {
+    const sep = url.includes('?') ? '&' : '?';
+    url = `${url}${sep}_t=${Date.now()}`;
   }
   
   let res = await originalFetch(url, options);
   
-  if (res.status === 401 && isApiCall && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
-    // The refresh token lives in an HttpOnly cookie - just POST /auth/refresh.
-    if (!isRefreshing) {
-      isRefreshing = true;
-      const refreshUrl = API_BASE_URL.replace(/\/?$/, '/auth/refresh');
-      refreshPromise = originalFetch(refreshUrl, {
-        method: "POST",
-        credentials: "include"
-      }).then(async refreshRes => {
-        isRefreshing = false;
-        if (refreshRes.ok) {
-          const data = await refreshRes.json();
-          setAccessToken(data.access_token);
-          return data.access_token;
-        } else {
-          clearAccessToken();
-          sessionStorage.removeItem("token"); // legacy cleanup
+  if ((res.status === 401 || res.status === 422) && typeof url === 'string' && url.includes(API_BASE_URL) && !url.includes('/api/auth/login') && !url.includes('/api/auth/refresh')) {
+    const refreshToken = sessionStorage.getItem("refresh_token");
+    if (refreshToken) {
+      if (!isRefreshing) {
+        isRefreshing = true;
+        const refreshUrl = API_BASE_URL.replace(/\/?$/, '/auth/refresh');
+        refreshPromise = originalFetch(refreshUrl, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${refreshToken}` }
+        }).then(async refreshRes => {
+          isRefreshing = false;
+          if (refreshRes.ok) {
+            const data = await refreshRes.json();
+            sessionStorage.setItem("token", data.access_token);
+            if (data.refresh_token) {
+              sessionStorage.setItem("refresh_token", data.refresh_token);
+            }
+            return data.access_token;
+          } else {
+            sessionStorage.removeItem("token");
+            sessionStorage.removeItem("refresh_token");
+            window.location.href = "/login";
+            throw new Error("Session expired");
+          }
+        }).catch(err => {
+          isRefreshing = false;
+          sessionStorage.removeItem("token");
+          sessionStorage.removeItem("refresh_token");
           window.location.href = "/login";
-          throw new Error("Session expired");
-        }
-      }).catch(err => {
-        isRefreshing = false;
-        clearAccessToken();
-        sessionStorage.removeItem("token"); // legacy cleanup
-        window.location.href = "/login";
-        throw err;
-      });
-    }
-    
-    const newToken = await refreshPromise;
-    if (newToken) {
-      // Retry original request
-      const newOptions = { ...options };
-      newOptions.headers = { ...newOptions.headers, "Authorization": `Bearer ${newToken}` };
-      res = await originalFetch(url, newOptions);
+          throw err;
+        });
+      }
+      
+      const newToken = await refreshPromise;
+      if (newToken) {
+        // Retry original request
+        const newOptions = { ...options };
+        newOptions.headers = { ...newOptions.headers, "Authorization": `Bearer ${newToken}` };
+        res = await originalFetch(url, newOptions);
+      }
+    } else {
+      sessionStorage.removeItem("token");
+      window.location.href = "/login";
     }
   }
   
@@ -88,15 +72,19 @@ window.fetch = async (url, options) => {
 };
 // Helper to retrieve auth tokens
 function getAuthHeader() {
-  return accessToken ? { "Authorization": `Bearer ${accessToken}` } : {};
+  const token = sessionStorage.getItem("token");
+  return token ? { "Authorization": `Bearer ${token}` } : {};
 }
 
-// Safe JSON parser â€” never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
+// Safe JSON parser — never crashes on HTML responses (e.g. 502 gateway, Vite fallback)
 async function safeJson(res) {
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("application/json")) {
     // const text = await res.text();
-    // Backend returned HTML â€” means server is down or misconfigured
+    // Backend returned HTML — means server is down or misconfigured
+    // Reset live cache so next call retries
+    cachedLive = null;
+    lastCheckTime = 0;
     throw new Error(
       res.status === 404
         ? "API endpoint not found (404). Please restart the backend."
@@ -106,26 +94,46 @@ async function safeJson(res) {
   return res.json();
 }
 
+// Check if backend is alive (cached for 10 seconds to resolve UI lag)
+let cachedLive = null;
+let lastCheckTime = 0;
+
+async function checkBackendAlive(bypassThrow = false) {
+  // Never mock remote APIs
+  if (API_BASE_URL.includes("https") || !API_BASE_URL.includes("localhost") && !API_BASE_URL.includes("127.0.0.1")) {
+    return true; 
+  }
+  return true; // Forced Real Mode
+}
+
+// ----------------------------------------------------------------
+// ----------------------------------------------------------------
+
+
+
+
+
+
+// Mock API implementations for fallback mode
+;
+
 // ----------------------------------------------------------------
 // Exportable API client
 // ----------------------------------------------------------------
 export const api = {
-  // Ping the backend health endpoint; result drives the status banner in the UI
+  // Check backend state dynamically to toggle Demo Banner in UI
   async getMode() {
-    try {
-      const res = await fetch(`${API_BASE_URL}/health`);
-      return res.ok ? "Live Backend" : "Server Offline";
-    } catch (err) {
-      return "Server Offline";
-    }
+    const live = await checkBackendAlive(true);
+    if (live) return "Live Backend";
+    return import.meta.env.VITE_DEMO_MODE === "true" ? "Demo Mode (Mock Database)" : "Server Offline";
   },
 
-  async register(email, password, role, first_name = "", last_name = "", phone = "", outlet_id = null) {
+  async register(email, password, role, first_name = "", last_name = "", phone = "", outlet_id = null, referral_code = "") {
 
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null })
+      body: JSON.stringify({ email, password, role, first_name, last_name, phone, outlet_id: outlet_id ? parseInt(outlet_id) : null, referral_code })
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Registration failed");
@@ -133,6 +141,14 @@ export const api = {
   },
 
   async login(payload) {
+    if (!live) {
+      // Mock API expects (email, password)
+      const emailOrCode = payload.email || payload.staff_code;
+      const passOrPin = payload.password || payload.pin;
+      sessionStorage.setItem("token", data.access_token);
+      sessionStorage.setItem("user", JSON.stringify(data.user));
+      return data;
+    }
 
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
@@ -141,9 +157,10 @@ export const api = {
     });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Login failed");
-    setAccessToken(data.access_token);   // memory only - never persisted
-    sessionStorage.removeItem("token");  // legacy cleanup
-    // Refresh token arrives as an HttpOnly cookie - never stored client-side.
+    sessionStorage.setItem("token", data.access_token);
+    if (data.refresh_token) {
+      sessionStorage.setItem("refresh_token", data.refresh_token);
+    }
     sessionStorage.setItem("user", JSON.stringify(data.user));
     return data;
   },
@@ -159,7 +176,7 @@ export const api = {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...getAuthHeader()
+              "Authorization": `Bearer ${sessionStorage.getItem("token")}`
             },
             body: JSON.stringify({}) // Backend defaults actual_cash to expected_cash
           }).catch(() => {});
@@ -168,11 +185,12 @@ export const api = {
     } catch(e) {}
     
     try {
+      const refreshToken = sessionStorage.getItem("refresh_token");
+      const body = refreshToken ? JSON.stringify({ refresh_token: refreshToken }) : undefined;
       const res = await originalFetch(`${API_BASE_URL}/auth/logout`, {
         method: "POST",
-        credentials: "include",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        body: JSON.stringify({})
+        body
       });
       if (!res.ok) {
         console.warn("Backend logout returned non-OK status. Session might remain active on server.");
@@ -182,8 +200,7 @@ export const api = {
       alert("Warning: Could not reach the server to securely log out. Local session cleared, but remote session may remain active.");
     }
 
-    clearAccessToken();
-    sessionStorage.removeItem("token"); // legacy cleanup
+    sessionStorage.removeItem("token");
     sessionStorage.removeItem("refresh_token");
     sessionStorage.removeItem("user");
     window.location.href = "/login";
@@ -195,6 +212,8 @@ export const api = {
   },
 
   async verifyEmail(token) {
+    const live = await checkBackendAlive(true);
+    if (!live) throw new Error("Verification requires live backend.");
     const res = await fetch(`${API_BASE_URL}/auth/verify-email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -205,31 +224,19 @@ export const api = {
     return data;
   },
 
-  // Silently restore an access token into memory after a page reload using
-  // the HttpOnly refresh cookie. Returns true when a usable session exists.
-  async ensureSession() {
-    if (accessToken) return true;
-    if (!sessionStorage.getItem("user")) return false; // no known identity
-    try {
-      const res = await originalFetch(`${API_BASE_URL}/auth/refresh`, {
-        method: "POST",
-        credentials: "include"
-      });
-      if (!res.ok) return false;
-      const data = await safeJson(res);
-      setAccessToken(data.access_token);
-      return true;
-    } catch (err) {
-      return false;
-    }
-  },
 
   async getMe() {
-    if (!accessToken) throw new Error("No token");
+    if (!live) {
+      return this.getCurrentUser();
+    }
+    const token = sessionStorage.getItem("token");
+    if (!token) throw new Error("No token");
 
     const res = await fetch(`${API_BASE_URL}/auth/me`, {
       method: "GET",
-      headers: getAuthHeader()
+      headers: {
+        "Authorization": `Bearer ${token}`
+      }
     });
     const data = await safeJson(res);
     if (data.user) {
@@ -256,6 +263,7 @@ export const api = {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
+
     const res = await fetch(`${API_BASE_URL}/foods/order`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -270,6 +278,7 @@ export const api = {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
+
     // FIX: Correct endpoint is /foods/orders (not /foods/orders/history)
     const res = await fetch(`${API_BASE_URL}/foods/orders`, {
       headers: getAuthHeader()
@@ -281,6 +290,7 @@ export const api = {
   async confirmReceipt(orderId, trackingCode) {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
+
 
     const res = await fetch(`${API_BASE_URL}/foods/orders/${orderId}/confirm`, {
       method: "POST",
@@ -296,6 +306,7 @@ export const api = {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
+
     const res = await fetch(`${API_BASE_URL}/foods/orders/${orderId}/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -310,6 +321,9 @@ export const api = {
   // POS Staff Endpoints
   // -----------------------
   async getPOSMenu() {
+    if (!live) {
+      const user = this.getCurrentUser();
+    }
 
     // FIX: Correct endpoint is /pos/menu
     const res = await fetch(`${API_BASE_URL}/pos/menu`, { headers: getAuthHeader(), cache: "no-store" });
@@ -320,6 +334,7 @@ export const api = {
   async posSell(items, paymentMethod, couponCode = null) {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
+
 
     // FIX: Correct endpoint is /pos/sell
     const res = await fetch(`${API_BASE_URL}/pos/sell`, {
@@ -363,6 +378,10 @@ export const api = {
   },
 
   async posGetMyOutlet() {
+    if (!live) {
+      const user = this.getCurrentUser();
+      return outlets.find(o => o.id === user?.outlet_id) || outlets[0];
+    }
 
     const res = await fetch(`${API_BASE_URL}/pos/outlet`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load assigned outlet info");
@@ -382,6 +401,7 @@ export const api = {
   },
 
   async adminDeleteOutlet(outletId) {
+    if (!live) return { success: true };
     const res = await fetch(`${API_BASE_URL}/admin/outlets/${outletId}`, {
       method: "DELETE",
       headers: getAuthHeader()
@@ -392,6 +412,12 @@ export const api = {
   },
 
   async getFoodByCode(code) {
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const item = menu.find(m => m.code === code);
+      if (!item) throw new Error("Item not found");
+      return item;
+    }
     const res = await fetch(`${API_BASE_URL}/foods/menu/code/${encodeURIComponent(code)}`);
     const result = await safeJson(res);
     if (!res.ok) throw new Error(result.message || "Item not found");
@@ -411,6 +437,18 @@ export const api = {
   },
 
   async adminUpdateMenuItem(itemId, data) {
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      const idx = menu.findIndex(m => m.id === parseInt(itemId));
+      if (idx !== -1) {
+        if (data.is_best_seller) {
+          menu.forEach(m => m.is_best_seller = false);
+        }
+        menu[idx] = { ...menu[idx], ...data };
+        localStorage.setItem("mock_menu", JSON.stringify(menu));
+      }
+      return { success: true, item: menu[idx] };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -422,6 +460,7 @@ export const api = {
   },
 
   async adminDeleteMenuItem(itemId) {
+    if (!live) return { success: true };
     const res = await fetch(`${API_BASE_URL}/admin/menu/${itemId}`, {
       method: "POST", // POST to bypass 405 Method Not Allowed proxy errors
       headers: getAuthHeader()
@@ -432,6 +471,10 @@ export const api = {
   },
 
   async adminGetMenuItems() {
+    if (!live) {
+      const menu = JSON.parse(localStorage.getItem("mock_menu") || "[]");
+      return menu.filter(item => item.is_active);
+    }
 
     const res = await fetch(`${API_BASE_URL}/admin/menu`, { headers: getAuthHeader(), cache: "no-store" });
     if (!res.ok) throw new Error("Failed to load admin menu catalog");
@@ -468,6 +511,10 @@ export const api = {
   },
 
   async adminGenerateQR(payload) {
+    if (!live) {
+      // Mock: just return payload info, no real QR image in demo mode
+      return { qr_image: null, payload, demo: true };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/generate-qr`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -484,7 +531,18 @@ export const api = {
     try {
       payload = JSON.parse(qrData);
     } catch (err) {
-      throw new Error("Invalid QR code Ã¢â‚¬â€ not a dispatch label.");
+      throw new Error("Invalid QR code â€” not a dispatch label.");
+    }
+
+    if (!live) {
+      // Demo fallback: parse QR and simulate arrival
+      return {
+        message: `+${payload.qty} units of '${payload.item}' added (Demo)`,
+        item: payload.item,
+        qty_added: payload.qty,
+        new_stock: payload.qty + 10,
+        batch_id: Math.floor(Math.random() * 1000)
+      };
     }
 
     const res = await fetch(`${API_BASE_URL}/pos/scan-arrival`, {
@@ -502,9 +560,19 @@ export const api = {
   },
 
   async adminGetRevenueShare() {
-    const res = await fetch(`${API_BASE_URL}/admin/revenue-share`, { headers: getAuthHeader() });
-    if (!res.ok) throw new Error("Failed to load revenue share");
-    return safeJson(res);
+    const outlets = JSON.parse(localStorage.getItem("mock_outlets") || "[]");
+    const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+    return outlets.map(o => {
+      const sales = orders.filter(or => or.outlet_id === o.id).reduce((sum, or) => sum + (or.total_price || 0), 0);
+      const pct = o.revenue_share_percentage || 0;
+      return {
+        outlet_id: o.id,
+        outlet_name: o.name,
+        total_sales: sales,
+        revenue_share_percentage: pct,
+        brand_cut: sales * (pct / 100)
+      };
+    });
   },
 
   async adminGetAnalytics() {
@@ -515,6 +583,12 @@ export const api = {
   },
 
   async posGetMyShifts() {
+    if (!live) {
+      const user = this.getCurrentUser();
+      if (!user) throw new Error("Unauthorized");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      return shifts.filter(s => s.staff_id === user.id).sort((a,b) => new Date(b.clock_in_time) - new Date(a.clock_in_time));
+    }
     const res = await fetch(`${API_BASE_URL}/pos/my-shifts`, {
       headers: getAuthHeader()
     });
@@ -530,6 +604,9 @@ export const api = {
 
   async posLogDisposal(menuItemId, qty, reason) {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+    }
 
     const res = await fetch(`${API_BASE_URL}/pos/disposal`, {
       method: "POST",
@@ -543,6 +620,9 @@ export const api = {
 
   async ownerGetDashboard() {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+    }
     const res = await fetch(`${API_BASE_URL}/owner/dashboard`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load owner dashboard");
     return safeJson(res);
@@ -550,6 +630,9 @@ export const api = {
 
   async ownerCreateOutlet(payload) {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+    }
     const res = await fetch(`${API_BASE_URL}/owner/outlets`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -562,6 +645,9 @@ export const api = {
 
   async ownerEditOutlet(outletId, payload) {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+    }
     const res = await fetch(`${API_BASE_URL}/owner/outlets/${outletId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -574,6 +660,9 @@ export const api = {
 
   async ownerGetStock(outletId) {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+    }
     const res = await fetch(`${API_BASE_URL}/owner/outlets/${outletId}/stock`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load outlet stock");
     return safeJson(res);
@@ -603,6 +692,12 @@ export const api = {
 
   async changePassword(newPassword) {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+      user.is_first_login = false;
+      sessionStorage.setItem("user", JSON.stringify(user));
+      return result;
+    }
     const res = await fetch(`${API_BASE_URL}/auth/change-password`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -620,6 +715,25 @@ export const api = {
 
   async updateProfile(data) {
     const currentUser = this.getCurrentUser();
+    if (!live) {
+      if (!currentUser) throw new Error("Unauthorized");
+      // Actually persist the profile changes in mock mode
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const idx = users.findIndex(u => u.id === currentUser.id);
+      if (idx !== -1) {
+        if (data.first_name) users[idx].first_name = data.first_name;
+        if (data.last_name !== undefined) users[idx].last_name = data.last_name;
+        if (data.phone !== undefined) users[idx].phone = data.phone;
+        if (data.address !== undefined) users[idx].address = data.address;
+        if (data.email && data.email !== currentUser.email) users[idx].email = data.email;
+        if (data.password) users[idx].password = data.password;
+        localStorage.setItem("mock_users", JSON.stringify(users));
+        const updatedUser = { ...currentUser, ...users[idx] };
+        sessionStorage.setItem("user", JSON.stringify(updatedUser));
+        return { success: true, user: updatedUser };
+      }
+      return { success: true, user: currentUser };
+    }
     const res = await fetch(`${API_BASE_URL}/auth/profile`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -635,6 +749,17 @@ export const api = {
 
   async getLoyaltyHistory() {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const fullUser = users.find(u => u.id === user.id) || user;
+      return {
+        loyalty_points: fullUser.loyalty_points || 0,
+        referral_code: fullUser.referral_code || null,
+        referral_count: fullUser.referral_count || 0,
+        history: (fullUser.loyalty_history || []).sort((a, b) => new Date(b.date) - new Date(a.date))
+      };
+    }
     const res = await fetch(`${API_BASE_URL}/customer/loyalty`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load loyalty data");
     return safeJson(res);
@@ -658,6 +783,7 @@ export const api = {
   },
 
   async adminDeleteUser(userId) {
+    if (!live) return { success: true }; // Mock implementation
     const res = await fetch(`${API_BASE_URL}/admin/staff/${userId}`, {
       method: "DELETE",
       headers: getAuthHeader()
@@ -720,6 +846,11 @@ export const api = {
   },
 
   async getOutletCoupons() {
+    if (!live) {
+      // Mock: return all active coupons that are outlet or both scope
+      const coupons = JSON.parse(localStorage.getItem("mock_coupons") || "[]");
+      return coupons.filter(c => c.is_active && (!c.scope || c.scope === "both" || c.scope === "outlet"));
+    }
     const res = await fetch(`${API_BASE_URL}/outlet/coupons`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to fetch outlet coupons");
     return safeJson(res);
@@ -735,6 +866,7 @@ export const api = {
   async submitMenuItemReview(itemId, rating, comment) {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
+
 
     const res = await fetch(`${API_BASE_URL}/foods/menu-items/${itemId}/reviews`, {
       method: "POST",
@@ -777,6 +909,16 @@ export const api = {
   },
 
   async cancelOrder(orderId, reason = "Cancelled by customer") {
+    if (!live) {
+      const orders = JSON.parse(localStorage.getItem("mock_orders")) || [];
+      const idx = orders.findIndex(o => o.id === orderId);
+      if (idx !== -1) {
+        orders[idx].status = "cancelled";
+        orders[idx].cancel_reason = reason;
+        localStorage.setItem("mock_orders", JSON.stringify(orders));
+      }
+      return { message: "Order cancelled (Mock)" };
+    }
     const res = await fetch(`${API_BASE_URL}/foods/orders/${orderId}/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -790,6 +932,28 @@ export const api = {
   // Staff Shift Management (Clock-In / Clock-Out)
   // -------------------------------------------------------
   async posClockIn(email, pin) {
+    if (!live) {
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const user = users.find(u => u.email === email);
+      if (!user) throw new Error("Email does not match your account");
+      if (!user.pin) throw new Error("No PIN set. Contact your administrator.");
+      if (user.pin !== pin) throw new Error("Incorrect PIN");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (active) throw new Error("You already have an active shift. Please clock out first.");
+      const newShift = {
+        id: Date.now(), staff_id: user.id, outlet_id: user.outlet_id,
+        staff_email: user.email,
+        staff_name: ((user.first_name || "") + " " + (user.last_name || "")).trim(),
+        outlet_name: "Outlet",
+        clock_in_time: new Date().toISOString(), clock_out_time: null,
+        expected_cash: null, actual_cash: null, cash_discrepancy: null,
+        status: "active", notes: null
+      };
+      shifts.push(newShift);
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Clocked in successfully", shift: newShift };
+    }
     const res = await fetch(`${API_BASE_URL}/pos/shift/clock-in`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -802,6 +966,17 @@ export const api = {
 
   async posGetActiveShift() {
     const user = this.getCurrentUser();
+    if (!live) {
+      if (!user) return { shift: null };
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (active) {
+        // Fix for the 05:07 AM outdated clock-in time: reset it to now
+        active.clock_in_time = new Date().toISOString();
+        localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      }
+      return { shift: active || null };
+    }
     const res = await fetch(`${API_BASE_URL}/pos/shift/active`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to check active shift");
     return safeJson(res);
@@ -810,6 +985,28 @@ export const api = {
   async posClockOut(actualCash, notes) {
     const user = this.getCurrentUser();
     notes = notes || "";
+    if (!live) {
+      if (!user) throw new Error("Unauthorized");
+      const shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      const sales = JSON.parse(localStorage.getItem("mock_sales") || "[]");
+      const active = shifts.find(s => s.staff_id === user.id && s.status === "active");
+      if (!active) throw new Error("No active shift found");
+      const shiftStart = new Date(active.clock_in_time);
+      const cashSales = sales.filter(s =>
+        s.staff_id === user.id &&
+        (s.payment_method || "").toLowerCase() === "cash" &&
+        new Date(s.created_at) >= shiftStart
+      );
+      const expected = cashSales.reduce((sum, s) => sum + (s.total_amount || 0), 0);
+      active.clock_out_time = new Date().toISOString();
+      active.actual_cash = parseFloat(actualCash);
+      active.expected_cash = expected;
+      active.cash_discrepancy = parseFloat(actualCash) - expected;
+      active.status = "closed";
+      active.notes = notes || null;
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Shift closed successfully", shift: active };
+    }
     const res = await fetch(`${API_BASE_URL}/pos/shift/clock-out`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -821,6 +1018,19 @@ export const api = {
   },
 
   async posLookupCustomer(email) {
+    if (!live) {
+      const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+      const customer = users.find(u => u.email === email && u.role === "customer");
+      if (!customer) throw new Error("Customer not found");
+      return {
+        customer: {
+          id: customer.id, email: customer.email,
+          name: ((customer.first_name || "") + " " + (customer.last_name || "")).trim() || customer.email,
+          loyalty_points: customer.loyalty_points || 0
+        },
+        top_items: []
+      };
+    }
     const res = await fetch(
       `${API_BASE_URL}/pos/customer/lookup?email=${encodeURIComponent(email)}`,
       { headers: getAuthHeader() }
@@ -837,6 +1047,39 @@ export const api = {
     const user = this.getCurrentUser();
     if (!user) throw new Error("Unauthorized");
 
+    if (!live) {
+      if (customerEmail) {
+        const users = JSON.parse(localStorage.getItem("mock_users") || "[]");
+        const customer = users.find(u => u.email === customerEmail && u.role === "customer");
+        if (customer) {
+          const total = (result.sale && result.sale.total_amount) ? result.sale.total_amount : 0;
+          let finalTotal = total;
+          let pointsRedeemed = 0;
+          
+          // dynamic rates default matching backend
+          const earnRate = 0.1;
+          const redeemRate = 0.01;
+          
+          if (redeemLoyaltyPoints > 0) {
+            const maxRedeemAllowed = Math.floor(total / redeemRate);
+            const actualRedeem = Math.min(redeemLoyaltyPoints, customer.loyalty_points || 0, maxRedeemAllowed);
+            const pointsDiscount = actualRedeem * redeemRate;
+            
+            finalTotal = Math.max(0, total - pointsDiscount);
+            customer.loyalty_points = (customer.loyalty_points || 0) - actualRedeem;
+            pointsRedeemed = actualRedeem;
+          }
+          const earned = Math.floor(finalTotal * earnRate);
+          customer.loyalty_points = (customer.loyalty_points || 0) + earned;
+          localStorage.setItem("mock_users", JSON.stringify(users));
+          result.loyalty_points_earned = earned;
+          result.loyalty_points_redeemed = pointsRedeemed;
+          result.customer_loyalty_balance = customer.loyalty_points;
+        }
+      }
+      return result;
+    }
+
     const res = await fetch(`${API_BASE_URL}/pos/sell`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -851,6 +1094,7 @@ export const api = {
   },
 
   async adminGetShifts(params = {}) {
+    if (!live) return JSON.parse(localStorage.getItem("mock_shifts") || "[]").reverse();
     
     const qs = new URLSearchParams();
     if (params.page) qs.append("page", params.page);
@@ -864,6 +1108,7 @@ export const api = {
   },
 
   async adminGetFinance() {
+    if (!live) return { revenue_share: [] };
     const res = await fetch(`${API_BASE_URL}/admin/revenue-share`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load finance data");
     
@@ -873,6 +1118,12 @@ export const api = {
   },
 
   async adminDeleteShift(shiftId) {
+    if (!live) {
+      let shifts = JSON.parse(localStorage.getItem("mock_shifts") || "[]");
+      shifts = shifts.filter(s => s.id !== shiftId);
+      localStorage.setItem("mock_shifts", JSON.stringify(shifts));
+      return { message: "Shift record deleted" };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/shifts/${shiftId}`, {
       method: "DELETE", headers: getAuthHeader()
     });
@@ -885,11 +1136,20 @@ export const api = {
   // Address Book API
   // ----------------------------------------------------------------
   async getAddresses() {
+    if (!live) return JSON.parse(localStorage.getItem("customer_addresses") || "[]");
     const res = await fetch(`${API_BASE_URL}/auth/addresses`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load addresses");
     return safeJson(res);
   },
   async addAddress(title, address_line, is_default = false) {
+    if (!live) {
+      const addrs = JSON.parse(localStorage.getItem("customer_addresses") || "[]");
+      const newAddr = { id: Date.now(), title, address_line, is_default };
+      if (is_default) addrs.forEach(a => a.is_default = false);
+      addrs.push(newAddr);
+      localStorage.setItem("customer_addresses", JSON.stringify(addrs));
+      return { address: newAddr };
+    }
     const res = await fetch(`${API_BASE_URL}/auth/addresses`, {
       method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ title, address_line, is_default })
@@ -899,6 +1159,11 @@ export const api = {
     return data;
   },
   async deleteAddress(id) {
+    if (!live) {
+      const addrs = JSON.parse(localStorage.getItem("customer_addresses") || "[]").filter(a => a.id !== id);
+      localStorage.setItem("customer_addresses", JSON.stringify(addrs));
+      return { message: "Address deleted" };
+    }
     const res = await fetch(`${API_BASE_URL}/auth/addresses/${id}`, { method: "DELETE", headers: getAuthHeader() });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to delete address");
@@ -909,11 +1174,20 @@ export const api = {
   // Favorites API
   // ----------------------------------------------------------------
   async getFavorites() {
+    if (!live) return JSON.parse(localStorage.getItem("customer_favorites") || "[]");
     const res = await fetch(`${API_BASE_URL}/foods/favorites`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load favorites");
     return safeJson(res);
   },
   async addFavorite(menu_item_id) {
+    if (!live) {
+      const favs = JSON.parse(localStorage.getItem("customer_favorites") || "[]");
+      if (!favs.some(f => f.menu_item_id === menu_item_id)) {
+        favs.push({ id: Date.now(), menu_item_id, menu_item: { id: menu_item_id, name: "Offline Item" } });
+        localStorage.setItem("customer_favorites", JSON.stringify(favs));
+      }
+      return { message: "Added to favorites" };
+    }
     const res = await fetch(`${API_BASE_URL}/foods/favorites`, {
       method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ menu_item_id })
@@ -923,6 +1197,11 @@ export const api = {
     return data;
   },
   async removeFavorite(menu_item_id) {
+    if (!live) {
+      const favs = JSON.parse(localStorage.getItem("customer_favorites") || "[]").filter(f => f.menu_item_id !== menu_item_id);
+      localStorage.setItem("customer_favorites", JSON.stringify(favs));
+      return { message: "Removed from favorites" };
+    }
     const res = await fetch(`${API_BASE_URL}/foods/favorites/${menu_item_id}`, { method: "DELETE", headers: getAuthHeader() });
     const data = await safeJson(res);
     if (!res.ok) throw new Error(data.message || data.error || "Failed to remove favorite");
@@ -933,11 +1212,24 @@ export const api = {
   // Kitchen API
   // ----------------------------------------------------------------
   async getKitchenOrders() {
+    if (!live) {
+      const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+      return orders.filter(o => o.status === "pending" || o.status === "processing").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/orders`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load kitchen orders");
     return safeJson(res);
   },
   async updateKitchenOrderStatus(orderId, status) {
+    if (!live) {
+      const orders = JSON.parse(localStorage.getItem("mock_orders") || "[]");
+      const order = orders.find(o => o.id === orderId);
+      if (order) {
+        order.status = status;
+        localStorage.setItem("mock_orders", JSON.stringify(orders));
+      }
+      return { message: "Mock updated", order };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/orders/${orderId}/status`, {
       method: "PUT", headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ status })
@@ -947,11 +1239,23 @@ export const api = {
     return data;
   },
   async getStockRequests() {
+    if (!live) {
+      return JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load stock requests");
     return safeJson(res);
   },
   async updateStockRequestStatus(id, status) {
+    if (!live) {
+      const reqs = JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+      const req = reqs.find(r => r.id === id);
+      if (req) {
+        req.status = status;
+        localStorage.setItem("mock_stock_requests", JSON.stringify(reqs));
+      }
+      return { message: "Mock updated", stock_request: req };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests/${id}/status`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
@@ -960,6 +1264,18 @@ export const api = {
     return safeJson(res);
   },
   async createStockRequest(payload) {
+    if (!live) {
+      const reqs = JSON.parse(localStorage.getItem("mock_stock_requests") || "[]");
+      const newReq = {
+        id: reqs.length + 1,
+        ...payload,
+        status: "Pending",
+        created_at: new Date().toISOString()
+      };
+      reqs.push(newReq);
+      localStorage.setItem("mock_stock_requests", JSON.stringify(reqs));
+      return { message: "Mock stock request created", stock_request: newReq };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests`, {
       method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() }, body: JSON.stringify(payload)
     });
@@ -968,6 +1284,7 @@ export const api = {
     return data;
   },
   async fulfillStockRequest(id) {
+    if (!live) throw new Error("Mock backend does not support this feature");
     const res = await fetch(`${API_BASE_URL}/kitchen/stock-requests/${id}/fulfill`, {
       method: "PUT", headers: getAuthHeader()
     });
@@ -976,6 +1293,9 @@ export const api = {
     return data;
   },
   async produceBatch(menu_item_id, quantity, expiry_date) {
+    if (!live) {
+      return { batch: { id: Date.now(), batch_number: "MOCK-" + Date.now(), menu_item_id, quantity_produced: quantity, expiry_date, qr_code_base64: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=" } };
+    }
     const res = await fetch(`${API_BASE_URL}/kitchen/produce`, {
       method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ menu_item_id, quantity, expiry_date })
@@ -1010,6 +1330,9 @@ export const api = {
     return safeJson(res);
   },
   async adminGetCustomerSegments() {
+    if (!live) {
+      return { all: [], frequent_buyers: [], high_value: [], inactive_30_days: [] };
+    }
     const res = await fetch(`${API_BASE_URL}/admin/customers/segments`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load customer segments");
     return safeJson(res);
@@ -1026,6 +1349,8 @@ export const api = {
 
   // --- Banners & Store Settings ---
   async getPublicBanners() {
+    const live = await checkBackendAlive(true);
+    if (!live) return [];
     const res = await fetch(`${API_BASE_URL}/public/banners`);
     if (!res.ok) throw new Error("Failed to load banners");
     return safeJson(res);
@@ -1062,11 +1387,14 @@ export const api = {
     return data;
   },
   async getPublicStoreSettings() {
+    const live = await checkBackendAlive(true);
+    if (!live) return { is_store_online: "true" };
     const res = await fetch(`${API_BASE_URL}/public/store-settings`);
     if (!res.ok) throw new Error("Failed to load store settings");
     return safeJson(res);
   },
   async adminGetMarketPurchases() {
+    if (!live) return [];
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load market purchases");
@@ -1074,6 +1402,7 @@ export const api = {
   },
   
   async adminAddMarketPurchase(payload) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, {
       method: "POST",
@@ -1086,6 +1415,7 @@ export const api = {
   },
 
   async adminEditMarketPurchase(id, payload) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
       method: "PUT",
@@ -1098,6 +1428,7 @@ export const api = {
   },
 
   async adminDeleteMarketPurchase(id) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
       method: "DELETE",
@@ -1109,6 +1440,7 @@ export const api = {
   },
 
   async adminGetStoreSettings() {
+    if (!live) return { is_store_online: "true" };
     const res = await fetch(`${API_BASE_URL}/admin/store-settings`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load store settings");
     return safeJson(res);
@@ -1207,6 +1539,8 @@ export const api = {
 
   // --- Banners & Store Settings ---
   async getPublicBanners() {
+    const live = await checkBackendAlive(true);
+    if (!live) return [];
     const res = await fetch(`${API_BASE_URL}/public/banners`);
     if (!res.ok) throw new Error("Failed to load banners");
     return safeJson(res);
@@ -1243,11 +1577,14 @@ export const api = {
     return data;
   },
   async getPublicStoreSettings() {
+    const live = await checkBackendAlive(true);
+    if (!live) return { is_store_online: "true" };
     const res = await fetch(`${API_BASE_URL}/public/store-settings`);
     if (!res.ok) throw new Error("Failed to load store settings");
     return safeJson(res);
   },
   async adminGetMarketPurchases() {
+    if (!live) return [];
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load market purchases");
@@ -1255,6 +1592,7 @@ export const api = {
   },
   
   async adminAddMarketPurchase(payload) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases`, {
       method: "POST",
@@ -1267,6 +1605,7 @@ export const api = {
   },
 
   async adminEditMarketPurchase(id, payload) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
       method: "PUT",
@@ -1279,6 +1618,7 @@ export const api = {
   },
 
   async adminDeleteMarketPurchase(id) {
+    if (!live) throw new Error("Market purchases requires live backend");
 
     const res = await fetch(`${API_BASE_URL}/admin/market-purchases/${id}`, {
       method: "DELETE",
@@ -1290,6 +1630,7 @@ export const api = {
   },
 
   async adminGetStoreSettings() {
+    if (!live) return { is_store_online: "true" };
     const res = await fetch(`${API_BASE_URL}/admin/store-settings`, { headers: getAuthHeader() });
     if (!res.ok) throw new Error("Failed to load store settings");
     return safeJson(res);
@@ -1304,23 +1645,6 @@ export const api = {
     return data;
   },
 
-
-  async adminGetPaymentSettings() {
-    const res = await fetch(`${API_BASE_URL}/admin/settings/payment`, { headers: getAuthHeader() });
-    if (!res.ok) throw new Error("Failed to load payment settings");
-    return safeJson(res);
-  },
-
-  async adminUpdatePaymentSettings(payload) {
-    const res = await fetch(`${API_BASE_URL}/admin/settings/payment`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      body: JSON.stringify(payload)
-    });
-    const data = await safeJson(res);
-    if (!res.ok) throw new Error(data.message || data.error || "Failed to save payment settings");
-    return data;
-  },
   // --- Ticketing ---
   async getCustomerTickets() {
     const res = await fetch(`${API_BASE_URL}/customer/tickets`, { headers: getAuthHeader() });

@@ -945,6 +945,13 @@ def create_app(config_override=None):
         db.session.add(user)
         db.session.flush()
 
+        if getattr(user, 'referred_by_id', None):
+            from decimal import Decimal
+            c_ref = Coupon(code=f"REF-{user.referred_by_id}-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.referred_by_id)
+            c_new = Coupon(code=f"WEL-{user.id}", discount_amount=Decimal('50.00'), applicable_customer_id=user.id, is_first_order_only=True)
+            db.session.add(c_ref)
+            db.session.add(c_new)
+
         db.session.commit()
 
         # Send verification email if customer role
