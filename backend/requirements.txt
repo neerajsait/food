@@ -12,7 +12,7 @@ qrcode[pil]==7.4.2
 APScheduler==3.10.0
 Flask-Mail==0.10.0
 bleach==6.4.0
-redis==5.0.1
+redis==8.1.0
 # python-magic requires the libmagic system library:
 #   Debian/Ubuntu: apt-get install libmagic1 | Alpine: apk add file-dev | macOS: brew install libmagic
 # (python-magic-bin is Windows-only and must NOT be used on Linux servers)
