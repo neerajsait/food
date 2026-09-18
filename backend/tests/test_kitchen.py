@@ -1,6 +1,6 @@
 import unittest
 from app import create_app, db, bcrypt
-from models import Staff, Outlet, MenuItem, OutletStock, Order, OrderItem
+from models import Staff, KitchenStaff, Outlet, MenuItem, OutletStock, Order, OrderItem
 
 class KitchenTestCase(unittest.TestCase):
     def setUp(self):
@@ -23,9 +23,8 @@ class KitchenTestCase(unittest.TestCase):
         db.session.commit()
 
         # Setup Kitchen Staff
-        self.staff = Staff(email="kitchen@test.com", first_name="Kitchen", outlet_id=self.outlet.id)
+        self.staff = KitchenStaff(email="kitchen@test.com", first_name="Kitchen", outlet_id=self.outlet.id)
         self.staff.set_password("kitchenpass", bcrypt)
-        self.staff.role = "kitchen"
         db.session.add(self.staff)
         db.session.commit()
 
@@ -70,7 +69,7 @@ class KitchenTestCase(unittest.TestCase):
         self.assertEqual(self.order.status, "processing")
 
     def test_kitchen_get_restock_requests(self):
-        resp = self.client.get("/api/kitchen/restock-requests", headers=self.kitchen_headers)
+        resp = self.client.get("/api/kitchen/stock-requests", headers=self.kitchen_headers)
         self.assertEqual(resp.status_code, 200)
         
     def test_kitchen_produce_batch(self):

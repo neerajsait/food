@@ -1,149 +1,101 @@
-# food
+# Food Ordering Platform & POS
 
-> A hands-on project by Neeraj exploring practical software development.
+A comprehensive full-stack application providing a complete ecosystem for food service management. It includes a Customer Storefront (B2C/B2B), a Point of Sale (POS) system, a Kitchen Display System (KDS), and a full Admin Dashboard.
 
-Built with JavaScript.
+## 🚀 Key Features
 
-## About this project
+*   **Customer Storefront:** Browse menus, dynamic product detail pages, shopping cart, guest checkout, wallet system, coupon catalog, and order tracking.
+*   **Point of Sale (POS):** Fast order entry, POS lock screen, QR code generation, walk-in customer management, and receipt generation.
+*   **Kitchen Display System (KDS):** Real-time order synchronization for the kitchen, status toggling, and ticket management.
+*   **Admin & Management:** Granular audit logs, inventory management, role-based access control, bestseller tracking, and dynamic policy pages.
+*   **Security (Zero Trust):** Robust zero-trust schemas, strict JWT token validation with Redis blocklisting, token versioning, and rate limiting.
 
-This repository is part of **Neeraj Sai's** growing collection of software projects, experiments, and learning builds. It reflects a practical, curious approach to creating useful products and understanding how they work under the hood.
+## 🏗️ Architecture & Tech Stack
 
-## Getting started
+*   **Backend:** Python, Flask, SQLAlchemy (ORM), Flask-Migrate (Alembic), JWT Authentication, Redis, APScheduler (Background jobs)
+*   **Customer Frontend:** React (Vite), Tailwind CSS
+*   **Admin/POS Frontend:** React (Vite), Tailwind CSS
 
-Clone the repository and follow the setup instructions for the project's framework or language:
+## ⚙️ Deployment & Production Requirements
 
+### Environment Variables (Backend)
+
+*   `FLASK_ENV`: Set to `production` in live environments.
+*   `SECRET_KEY`: **Required.** Used for session signing, QR code generation, etc.
+*   `JWT_SECRET_KEY`: **Required.** Used for JWT signature.
+*   `REDIS_URL`: **Required in production.** Used for JWT token blocklisting (e.g., `redis://localhost:6379/0`).
+*   `ALLOW_SEED=1`: (Optional) Use only if you intentionally want demo seeds.
+*   `DATABASE_URL`: (Optional) Full connection string. Defaults to SQLite if not provided (except in production).
+*   **MySQL Variables (Alternative to `DATABASE_URL`)**:
+    *   `MYSQL_HOST`: e.g., `localhost`
+    *   `MYSQL_USER`: Database username
+    *   `MYSQL_PASSWORD`: Database password
+    *   `MYSQL_DB`: Database name
+*   **Mail Variables**:
+    *   `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_DEFAULT_SENDER`, `ADMIN_EMAIL`
+
+### Redis Requirement
+
+**Redis is strictly required in production (`FLASK_ENV=production`).** The application uses Redis for token revocation (blocklist) and rate-limiting. If `REDIS_URL` is missing or the Redis instance cannot be pinged on startup, the application will refuse to start.
+
+To run Redis locally via Docker:
 ```bash
-git clone https://github.com/neerajsait/food.git
-cd food
+docker run --name my-redis -p 6379:6379 -d redis
 ```
 
-Check the project files for the available run commands and configuration requirements.
+## 🗄️ Database Migrations
 
-## Links
+The project uses `Flask-Migrate` (Alembic) to handle database schema changes.
 
-[Repository](https://github.com/neerajsait/food)
-
-## Author
-
-**Tiruveedhi Neeraj Venkata Sai**
-
-- GitHub: [@neerajsait](https://github.com/neerajsait)
-- Portfolio: [neeraj's portfolio](https://github.com/neerajsait/portfoliomain)
-
-
-## Existing project documentation
-
-# 🍛 FlavorFlow ERP Platform
-
-[![React](https://img.shields.io/badge/Frontend-React%2018%20%2B%20Vite-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
-[![Flask](https://img.shields.io/badge/Backend-Flask%20(Python)-000000?style=for-the-badge&logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
-[![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy-D71105?style=for-the-badge&logo=redhat&logoColor=white)](https://www.sqlalchemy.org/)
-[![Database](https://img.shields.io/badge/Database-SQLite%20%2F%20MySQL-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://www.mysql.com/)
-
-FlavorFlow is a comprehensive, multi-portal food enterprise platform designed for managing the end-to-end flow of homemade foods and retail snack supply chain networks. It seamlessly integrates a B2C customer portal with a powerful B2B admin/staff dashboard, offering features ranging from dynamic e-commerce, interactive POS cashier terminals, and loyalty programs, to automated background email reports, strict ACID-compliant wallet transactions, and secure QR-based stock dispatch labeling.
-
----
-
-## 📂 Repository Structure
-
-The project is structured into a unified Flask backend API and two distinct React single-page applications.
-
-```directory
-food/
-├── backend/                  # Flask REST API (Python)
-│   ├── app.py                # Main server entrypoint (Endpoints, Schedulers)
-│   ├── models.py             # SQLAlchemy Database Models & Relationships
-│   └── requirements.txt      # Python dependencies
-├── frontend-admin/           # React (Vite) SPA for Admin & Staff (POS)
-│   ├── src/components/       # Admin dashboards, POS terminal, Kitchen views
-│   └── package.json          # Node dependencies
-├── frontend-customer/        # React (Vite) SPA for B2C Customers
-│   ├── src/components/       # Customer storefront, checkout, wallet, support tickets
-│   └── package.json          # Node dependencies
-└── README.md                 # Project documentation
-```
-
----
-
-## ✨ Comprehensive Feature Set
-
-### 1. 🛍️ Customer Portal (`frontend-customer`)
-Designed with a premium glassmorphic visual theme, providing a complete B2C e-commerce experience.
-* **Loyalty & Wallet System:** Customers earn points on purchases and can redeem points at checkout. Full transaction history is tracked in a Wallet Ledger. Cancellations automatically trigger accurate, atomic points refunds.
-* **Referral Program:** Users can refer friends using unique referral codes to earn bonus loyalty points.
-* **Dynamic Menu & Reviews:** Browse categorized food items, view dynamic average ratings, and submit verified reviews.
-* **Customer Support:** Integrated ticketing system allows users to submit queries and read replies from the admin.
-* **Dynamic Marketing Banners:** Displays active promotions, banners, and store-wide settings directly fetched from the backend.
-* **Address Management:** Save multiple delivery addresses and set a default for quick checkouts.
-
-### 2. 🛡️ Admin & Outlet Management (`frontend-admin`)
-A robust command center for enterprise owners and regional managers.
-* **Revenue & Sales Analytics:** View deep sales analytics, profit margins, and B2B revenue-share splits across all outlets.
-* **Supply Chain & Stock Requests:** Manage B2B suppliers, track inventory limits, approve/reject stock requests from retail outlets, and restock batches.
-* **Customer Segments & Marketing:** Analyze customer segments (e.g., VIP, Active, At-Risk) and send targeted broadcast emails or bulk discount coupons.
-* **Audit Logging:** Track critical business events (stock disposals, price changes, admin actions) in a secure audit log.
-
-### 3. 🏪 Staff POS & Kitchen Workflows
-* **Automated Staff Timesheets:** Staff members are automatically "Clocked In" securely in the background when they log into the system using their PIN, and "Clocked Out" upon logging out, generating accurate shift timesheets.
-* **Interactive POS Terminal:** Cashiers process in-store sales using an interactive Point of Sale UI, supporting Cash and **Scan-to-Pay UPI** overlays.
-* **Live Shift Reports:** Calculates cash drawer totals, UPI receipts, and sales margins at the end of every active shift.
-* **Kitchen Display System (KDS):** Kitchen staff can monitor incoming orders in real-time, prepare batches, and update production statuses.
-* **Cryptographic QR Scanning:** Outlets scan incoming stock dispatch labels. QR codes are signed using **HMAC SHA256** checksums tied to the server's `SECRET_KEY` to prevent stock forgery.
-
-### 4. ⚙️ Robust Backend Architecture
-* **ACID Transactions:** Financial operations, like order cancellations and loyalty point ledger adjustments, are wrapped in strict SQLAlchemy `.with_for_update()` database locks to prevent race conditions and ensure data integrity.
-* **Asynchronous Emails:** Automated HTML emails (Order Confirmations, Welcome Emails, Shipment Tracking) are offloaded to background threads, guaranteeing fast, non-blocking API responses for the user.
-* **Background Schedulers:** Uses `APScheduler` to run recurring tasks, such as generating and emailing HTML Daily Digest performance reports to outlet owners every night at 22:00 IST.
-* **Database Agnostic:** Uses SQLAlchemy ORM. Fully supports SQLite for local development and MySQL for production deployments.
-
----
-
-## 🚀 Getting Started
-
-### 1. Backend Setup
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Configure your environment variables in `.env` (SMTP credentials for emails, database URI, and Flask `SECRET_KEY`).
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Start the Flask application:
-   ```bash
-   python app.py
-   ```
-   * *The Flask server runs on `http://localhost:5000`.*
-
-### 2. Frontend Setup (Admin & Customer)
-You need to run both frontend applications concurrently. Open two separate terminal windows.
-
-**For the Admin Portal:**
+When deploying a new version with schema changes, you can simply run:
 ```bash
-cd frontend-admin
-npm install
-npm run dev
+flask db upgrade
 ```
-* *Vite dev server runs on `http://localhost:5173`.*
+*(Note: Manual `ALTER TABLE` commands are no longer needed as Alembic handles schema evolution automatically).*
 
-**For the Customer Portal:**
+## 🔐 Authentication & JWT Lifecycle
+
+*   **Access Token**: Expires in 15 minutes.
+*   **Refresh Token**: Expires in 7 days.
+*   **Endpoints**:
+    *   `POST /api/auth/login`: Returns `access_token` + `refresh_token`.
+    *   `POST /api/auth/refresh`: Accepts `Authorization: Bearer <refresh_token>` and returns a new `access_token` and `refresh_token`.
+    *   `POST /api/auth/logout`: Accepts `Authorization: Bearer <access_token>` and body `{"refresh_token": "<token>"}` to revoke tokens using the Redis blocklist.
+
+## 💳 Online Payments (Razorpay)
+
+The backend ships a complete, self-hosting Razorpay integration. Credentials live in
+`StoreSetting` (Fernet-encrypted with `PAYMENT_ENCRYPTION_KEY`) and are managed from
+**Admin → Payment Gateway**. A documented env-var fallback also exists:
+`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_MODE`, `RAZORPAY_ENABLED`.
+
+### Endpoints
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/payments/razorpay/order` | JWT | Creates a Razorpay order for a customer's pending order, stores `razorpay_order_id`, returns `{razorpay_order_id, amount, currency, key_id, mode}` for checkout.js |
+| `POST /api/payments/razorpay/verify` | JWT | Verifies the checkout.js HMAC signature (`order_id\|payment_id`), marks the order `payment_status='paid'`, records an audit row. Idempotent |
+| `POST /api/payments/razorpay/webhook` | X-Razorpay-Signature | Server-to-server events (`payment.captured`, `payment.failed`, `refund.processed`, `order.paid`). Marks orders paid even if the browser closes mid-payment |
+
+### Customer flow
+
+1. Customer places an order choosing **Pay Online** (or taps **Pay Now** on a pending order in *My Orders*).
+2. Frontend calls `/payments/razorpay/order`, then opens the Razorpay checkout window.
+3. On success the frontend posts the signature to `/payments/razorpay/verify`.
+4. The webhook acts as a safety net — both paths are idempotent, so an order is never double-charged or double-marked.
+
+Every payment event is written to the `payment_transactions` table (source: `checkout` or `webhook`,
+including invalid-signature attempts) for reconciliation.
+
+## 🛡️ Security & Privacy Notes
+
+*   **Ticket Attachments**: Ticket attachment URLs are located under `/static/uploads/tickets/`. Currently, these URLs are unguessable due to timestamp prefixing.
+*   **Token Caching**: For improved performance at scale, it is recommended to cache `user.token_version` in Redis using a short TTL and invalidate it upon password change.
+
+## 🧪 Running Tests
+
+To run the backend test suite, navigate to the `backend` directory and use pytest:
 ```bash
-cd frontend-customer
-npm install
-npm run dev
+cd backend
+REDIS_URL=memory:// python -m pytest tests/ -v --tb=short
 ```
-* *Vite dev server runs on `http://localhost:5174`.*
-
----
-
-## 📋 Production Deployment Checklist
-
-Before deploying this application to production, ensure you complete the following critical steps:
-
-- [ ] **FLASK_ENV**: Set `FLASK_ENV=production` in the backend `.env` file.
-- [ ] **Secrets**: Change the default `SECRET_KEY` and `JWT_SECRET_KEY` to secure, random cryptographic strings.
-- [ ] **Passwords**: Change the default admin password (`admin/admin`). **Crucially**, remove the demo "quick-login" buttons from the Login components to prevent unauthorized access.
-- [ ] **Mail Server**: Configure SMTP parameters in `.env` with a real SMTP provider (e.g., Gmail App Password, SendGrid, AWS SES) to enable order confirmations, password resets, and digest emails.
-- [ ] **SSL (HTTPS)**: Serve the application over HTTPS. The QR Scanner functionality utilizes modern browser Camera APIs which are strictly blocked on non-HTTPS origins in production.
-- [ ] **Database**: Migrate from SQLite to a robust production database like MySQL or PostgreSQL by updating the `DATABASE_URI` in your `.env`.

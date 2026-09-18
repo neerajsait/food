@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from "react";
 import './StaffPOS.css';
 import { createPortal } from "react-dom";
+import EmptyState from './EmptyState';
 import { api, API_BASE_URL } from "../utils/api";
 import {
   Plus, Minus, IndianRupee, QrCode, ShoppingCart, RefreshCw,
   AlertCircle, CheckCircle, Store, Trash2, FileText,
   Volume2, VolumeX, X, LogOut, User, Clock, ShieldAlert,
   KeyRound, Gift, Search, Package
-} from "lucide-react";
+} from "../ui/Icon";
 import QRScanner from "./QRScanner";
 
 export default function StaffPOS({ onLogout, _dbMode }) {
@@ -57,12 +58,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
   const [couponError, setCouponError] = useState("");
   const [availableCoupons, setAvailableCoupons] = useState([]);
 
-  const displayOutlet = outlet || { name: "Mock Outlet", address: "123 Mock St", needs_restock: false, current_stock: 100 };
-  const displayMenu = menu && menu.length > 0 ? menu : [
-    { id: 1, name: "Margherita Pizza", price: 299, current_stock: 50, restock_limit: 10 },
-    { id: 2, name: "Pepperoni Pizza", price: 399, current_stock: 5, restock_limit: 10 },
-    { id: 3, name: "Garlic Bread", price: 149, current_stock: 20, restock_limit: 5 }
-  ];
+  const displayOutlet = outlet || { name: "Loading Outlet...", address: "", needs_restock: false, current_stock: 0 };
+  const displayMenu = menu || [];
 
   // Shift & POS history states
   const [salesHistory, setSalesHistory] = useState([]);
@@ -177,9 +174,10 @@ export default function StaffPOS({ onLogout, _dbMode }) {
     setClockOutLoading(true);
     try {
       const res = await api.posClockOut(cashVal);
-      setClockOutResult(res.shift);
+      setClockOutResult({ ...res.shift, stats: shiftTotals });
       setActiveShift(null);
       setActualCashInput("");
+      setShowClockOutModal(false);
     } catch (err) {
       alert("Clock-out failed: " + err.message);
     } finally {
@@ -297,20 +295,12 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       }
 
       // Load sales history
-      const live = (await api.getMode()) === "Live Backend";
-      if (live) {
-        const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
-          headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
-        });
-        if (res.ok) {
-          const history = await res.json();
-          setSalesHistory(history);
-        }
-      } else {
-        // Fallback demo sales history
-        setSalesHistory([
-          { id: 1, created_at: new Date().toISOString(), total_amount: 140.00, payment_method: "cash", items: [{ menu_item_name: "Challa Chakralu 250g", quantity: 1, price: 120 }, { menu_item_name: "Snack Supply Samosa 250g", quantity: 1, price: 20 }] }
-        ]);
+      const res = await fetch(`${API_BASE_URL}/pos/sales/history`, {
+        headers: { "Authorization": `Bearer ${api.getAccessToken()}` }
+      });
+      if (res.ok) {
+        const history = await res.json();
+        setSalesHistory(history);
       }
 
     } catch (err) {
@@ -641,8 +631,8 @@ export default function StaffPOS({ onLogout, _dbMode }) {
 
   // Compute stats for EOD Report
   const shiftTotals = useMemo(() => {
-    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
-    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_price) || 0) : 0), 0);
+    const cash = salesHistory.reduce((sum, s) => sum + (s.payment_method === "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
+    const upi = salesHistory.reduce((sum, s) => sum + (s.payment_method !== "cash" ? (parseFloat(s.total_amount) || 0) : 0), 0);
     const count = salesHistory.length;
     return { cash, upi, total: cash + upi, count };
   }, [salesHistory]);
@@ -759,7 +749,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             background: "var(--bg-card)", border: "1px solid var(--border-subtle)",
             borderRadius: "1.25rem", padding: "2.5rem", maxWidth: 480, width: "100%", textAlign: "center"
           }}>
-            <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🕐</div>
+            <div style={{ fontSize: "3rem", marginBottom: "1rem" }}></div>
             <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 800, marginBottom: "1rem" }}>Shift Closed</h2>
             <div className="grid-responsive-2col" style={{ gap: "0.75rem", marginBottom: "1.5rem" }}>
               {[
@@ -778,19 +768,39 @@ export default function StaffPOS({ onLogout, _dbMode }) {
             </div>
             {(clockOutResult.cash_discrepancy ?? 0) < 0 && (
               <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
-                ⚠️ Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
+                Cash is short by ₹{Math.abs(clockOutResult.cash_discrepancy).toFixed(2)}. Please investigate.
               </div>
             )}
+            
+            {clockOutResult.stats && (
+              <div style={{ background: "var(--bg-inset)", padding: "1.25rem", borderRadius: "1rem", marginBottom: "1.5rem", border: "1px solid var(--border-subtle)", textAlign: "left" }}>
+                <h4 style={{ margin: "0 0 1rem 0", fontSize: "0.9rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>End of Day Summary</h4>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
+                  <span>Ticket Count:</span>
+                  <strong>{clockOutResult.stats.count}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
+                  <span>Cash Sales:</span>
+                  <strong>₹{clockOutResult.stats.cash.toFixed(2)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem", fontSize: "0.85rem" }}>
+                  <span>UPI/Card Sales:</span>
+                  <strong>₹{clockOutResult.stats.upi.toFixed(2)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px dashed var(--border-subtle)", fontSize: "1rem", fontWeight: "800", color: "var(--brand)" }}>
+                  <span>Total Sales:</span>
+                  <span>₹{clockOutResult.stats.total.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+
             <button
               id="clock-out-done-btn"
               className="btn btn-primary"
               style={{ width: "100%", padding: "0.875rem", marginBottom: "0.75rem" }}
-              onClick={() => { setClockOutResult(null); }}
+              onClick={() => { setClockOutResult(null); onLogout(); }}
             >
-              Done
-            </button>
-            <button className="btn btn-secondary" style={{ width: "100%" }} onClick={onLogout}>
-              <LogOut size={14} /> Sign Out
+              Done & Sign Out
             </button>
           </div>
         </div>
@@ -921,6 +931,22 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           >
             <FileText size={14} /> Shift Report
           </button>
+          {!activeShift ? (
+            <button
+              onClick={() => setShowClockInModal(true)}
+              className="clock-in"
+              style={{ background: "#22c55e", color: "#fff" }}
+            >
+              <Clock size={14} /> Clock In
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowClockOutModal(true)}
+              className="clock-out"
+            >
+              <Clock size={14} /> Clock Out
+            </button>
+          )}
           <button
             onClick={openProfileModal}
             
@@ -943,7 +969,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
       )}
 
       {false ? (
-        <div style={{ textAlign: "center", padding: "4rem 2rem", maxWidth: "500px", margin: "3rem auto" }} className="glass-panel animate-fade-in">
+        <div style={{ textAlign: "center", padding: "4rem 2rem", maxWidth: "500px", margin: "3rem auto" }} className="panel animate-fade-in">
           <div style={{ width: 64, height: 64, background: "rgba(239, 68, 68, 0.1)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--error)", margin: "0 auto 1.5rem" }}>
             <AlertCircle size={32} />
           </div>
@@ -972,7 +998,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           <div className="pos-grid">
             
             {/* ── REGISTER CATALOG ITEMS ── */}
-            <div className="glass-panel" style={{ padding: "1.5rem" }}>
+            <div className="panel" style={{ padding: "1.5rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
                 <div>
                   <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.1rem", fontWeight: 800, margin: 0 }}>{displayOutlet.name}</h2>
@@ -1034,7 +1060,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                       {inSale > 0 && (
                         <div style={{ position: "absolute", top: 6, left: 6, width: 20, height: 20, borderRadius: "50%", background: "var(--brand)", color: "#fff", fontSize: "0.68rem", fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{inSale}</div>
                       )}
-                      <div style={{ fontSize: "1.75rem", marginBottom: "0.5rem" }}>🍱</div>
+                      <div style={{ fontSize: "1.75rem", marginBottom: "0.5rem" }}></div>
                       <h4 style={{ fontSize: "0.8rem", fontWeight: 700, margin: "0 0 0.4rem", color: "var(--text-primary)", lineHeight: 1.3 }}>{item.name}</h4>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontFamily: "var(--font-heading)", fontSize: "1rem", fontWeight: 800, color: "var(--brand)" }}>₹{item.price.toFixed(0)}</span>
@@ -1109,10 +1135,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                   )}
 
                   {Object.keys(activeSale).length === 0 ? (
-                    <div className="empty-state" style={{ padding: "2rem" }}>
-                      <div className="empty-state-icon"><ShoppingCart size={22} /></div>
-                      <p style={{ fontSize: "0.8rem" }}>Tap items on the left to add them here</p>
-                    </div>
+                    <EmptyState icon={ShoppingCart} message="Tap items on the left to add them here" />
                   ) : (
                     Object.entries(activeSale).map(([id, qty]) => {
                       const item = displayMenu.find(m => m.id === parseInt(id));
@@ -1151,7 +1174,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
                     </div>
                   </div>
 
-                  <button onClick={() => setShowCheckoutModal(true)} disabled={getSaleTotalQty() === 0 || loading} className={`pos-checkout-btn `}>
+                  <button onClick={() => {
+                    if (!activeShift) {
+                      alert("pls start clock in");
+                      return;
+                    }
+                    setShowCheckoutModal(true);
+                  }} disabled={getSaleTotalQty() === 0 || loading} className={`pos-checkout-btn `}>
                     {loading ? "Processing…" : `Proceed to Checkout · ₹${finalTotalAmount.toFixed(0)}`}
                   </button>
                 </div>
@@ -1177,7 +1206,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <Store size={18} style={{ color: "var(--brand)" }} /> End of Shift
+                <Store size={18} style={{ color: "var(--brand)" }} /> Shift Report
               </h2>
               <button className="modal-close" onClick={() => setShowShiftReport(false)}><X size={16} /></button>
             </div>
@@ -1215,9 +1244,11 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               <button className="modal-close" onClick={() => setShowMyShiftsModal(false)}><X size={16} /></button>
             </div>
             {myShiftsLoading ? (
-              <div style={{ textAlign: "center", padding: "2rem" }}>Loading...</div>
+              <div style={{ textAlign: "center", padding: "4rem 2rem" }}>
+                <RefreshCw className="animate-spin" size={32} style={{ color: "var(--brand)", margin: "0 auto" }} />
+              </div>
             ) : myShifts.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>No shift history found.</div>
+              <EmptyState icon={Clock} message="No shift history found." />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 {myShifts.map(s => (
@@ -1445,13 +1476,13 @@ export default function StaffPOS({ onLogout, _dbMode }) {
               )}
               {couponError && (
                 <div style={{ fontSize: "0.8rem", color: "var(--error)", marginTop: "0.4rem", fontWeight: "600" }}>
-                  ❌ {couponError}
+                  {couponError}
                 </div>
               )}
               {appliedCoupon && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: "6px", padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
                   <span style={{ fontSize: "0.85rem", color: "var(--success)", fontWeight: "700" }}>
-                    ✓ "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
+                    Applied "{appliedCoupon.code}" ({appliedCoupon.discount_pct}% Off)
                   </span>
                   <button
                     type="button"
@@ -1604,7 +1635,7 @@ export default function StaffPOS({ onLogout, _dbMode }) {
           fontWeight: 600, fontSize: "0.88rem", display: "flex",
           alignItems: "center", gap: "0.6rem"
         }}>
-          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "⚡" : "⚠"}</span>
+          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "" : ""}</span>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", marginLeft: "1rem", opacity: 0.8, fontSize: "0.8rem", display: "flex", alignItems: "center" }}><X size={14} /></button>
         </div>

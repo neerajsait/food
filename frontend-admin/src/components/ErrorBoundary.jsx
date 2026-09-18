@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, RefreshCw, Home } from "lucide-react";
+import { AlertTriangle, RefreshCw, Home } from "../ui/Icon";
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -21,8 +21,8 @@ export default class ErrorBoundary extends React.Component {
   };
 
   handleGoHome = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("user");
     window.location.href = "/";
   };
 

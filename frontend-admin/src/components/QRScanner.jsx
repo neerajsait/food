@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from "react";
 import { Scanner } from "@yudiel/react-qr-scanner";
 import { api } from "../utils/api";
-import { ScanLine, CheckCircle, XCircle, Package, X } from "lucide-react";
+import { ScanLine, CheckCircle, XCircle, Package, X } from "../ui/Icon";
 
 export default function QRScanner({ onStockUpdated }) {
   const [scanning, setScanning] = useState(false);
@@ -51,7 +51,7 @@ export default function QRScanner({ onStockUpdated }) {
   };
 
   return (
-    <div className="glass-panel" style={{ padding: "1.5rem" }}>
+    <div className="panel" style={{ padding: "1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
           <ScanLine size={18} /> Scan Stock Arrival
@@ -118,8 +118,8 @@ export default function QRScanner({ onStockUpdated }) {
                 <Package size={13} />
                 <strong>{result.data.item}</strong>
               </div>
-              <div>✅ <strong>+{result.data.qty_added}</strong> units added</div>
-              <div>📦 New total stock: <strong>{result.data.new_stock}</strong> units</div>
+              <div><strong>+{result.data.qty_added}</strong> units added</div>
+              <div> New total stock: <strong>{result.data.new_stock}</strong> units</div>
             </div>
           )}
 

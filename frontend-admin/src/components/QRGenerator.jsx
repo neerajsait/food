@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { api } from "../utils/api";
-import { QrCode, Printer, RefreshCw, CheckCircle } from "lucide-react";
+import { QrCode, Printer, RefreshCw, CheckCircle } from "../ui/Icon";
 
 export default function QRGenerator({ outlets, menuItems }) {
   const [form, setForm] = useState({ order_id: "", type: "B2B2C", item: "", qty: "", outlet_id: "", destination: "", batch_number: "", expiry_date: "" });
@@ -51,7 +51,7 @@ export default function QRGenerator({ outlets, menuItems }) {
       img{display:block;margin:16px auto;width:220px;height:220px}
       .note{font-size:11px;color:#999;margin-top:12px}
     </style></head><body onload="window.print()"><div class="box">
-      <h2>📦 Dispatch Label</h2>
+      <h2> Dispatch Label</h2>
       <p><strong>Item:</strong> ${p.item}</p>
       <p><strong>Qty:</strong> ${p.qty} units</p>
       <p><strong>Destination:</strong> ${p.destination || "—"}</p>
@@ -59,7 +59,7 @@ export default function QRGenerator({ outlets, menuItems }) {
       ${p.batch_number ? `<p><strong>Batch:</strong> ${p.batch_number}</p>` : ""}
       ${p.expiry_date ? `<p><strong>Expiry:</strong> ${p.expiry_date}</p>` : ""}
       <p><strong>Type:</strong> ${p.type}</p>
-      <img src="${qrResult.qr_image}" alt="QR"/>
+      <img referrerPolicy="no-referrer" src="${qrResult.qr_image}" alt="QR"/>
       <p class="note">Scan on arrival to update stock</p>
     </div></body></html>`);
     w.document.close();
@@ -67,7 +67,7 @@ export default function QRGenerator({ outlets, menuItems }) {
 
   return (
     <div className="grid-responsive-2col" style={{ gap: "1.5rem", alignItems: "start" }}>
-      <div className="glass-panel" style={{ padding: "1.5rem" }}>
+      <div className="panel" style={{ padding: "1.5rem" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: "700", marginBottom: "1.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <QrCode size={18} /> Generate Dispatch QR
         </h3>
@@ -122,7 +122,7 @@ export default function QRGenerator({ outlets, menuItems }) {
         </form>
       </div>
 
-      <div className="glass-panel" style={{ padding: "1.5rem", minHeight: "320px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+      <div className="panel" style={{ padding: "1.5rem", minHeight: "320px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
         {!qrResult ? (
           <div style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
             <QrCode size={48} style={{ opacity: 0.2, marginBottom: "0.75rem", display: "block", margin: "0 auto 0.75rem" }} />
@@ -135,9 +135,9 @@ export default function QRGenerator({ outlets, menuItems }) {
               <span style={{ fontSize: "0.82rem", color: "var(--success-color)", fontWeight: "600", marginLeft: "0.4rem" }}>QR Ready!</span>
             </div>
             {qrResult.qr_image ? (
-              <img src={qrResult.qr_image} alt="Dispatch QR Code" style={{ width: "200px", height: "200px", border: "1px solid var(--border-light)", borderRadius: "8px", marginBottom: "1rem" }} />
+              <img referrerPolicy="no-referrer" src={qrResult.qr_image} alt="Dispatch QR Code" style={{ width: "200px", height: "200px", border: "1px solid var(--border-light)", borderRadius: "8px", marginBottom: "1rem" }} />
             ) : (
-              <div style={{ width: "200px", height: "200px", background: "var(--bg-secondary)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>Demo Mode — No image</div>
+              <div style={{ width: "200px", height: "200px", background: "var(--bg-secondary)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "1rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>No image returned</div>
             )}
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "1rem", textAlign: "left", width: "100%", lineHeight: "1.6" }}>
               <div><strong>Item:</strong> {qrResult.payload.item}</div>

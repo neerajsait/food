@@ -4,7 +4,8 @@ import { api } from "../utils/api";
 import {
   Package, AlertTriangle, Plus, Store, MapPin, 
   Globe, RefreshCw, Edit3, X, LogOut, User
-} from "lucide-react";
+} from "../ui/Icon";
+import EmptyState from './EmptyState';
 import "./OutletOwnerView.css";
 
 /* ── Modal Wrapper ── */
@@ -141,7 +142,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         if (data?.length > 0) {
           setOutletLatitude(parseFloat(data[0].lat).toFixed(6));
           setOutletLongitude(parseFloat(data[0].lon).toFixed(6));
-          setGeocodingMsg("✓ Coordinates fetched!");
+          setGeocodingMsg("Updated coordinates fetched!");
         } else {
           setGeocodingMsg("Address not found.");
         }
@@ -159,7 +160,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         if (data?.length > 0) {
           setEditLatitude(parseFloat(data[0].lat).toFixed(6));
           setEditLongitude(parseFloat(data[0].lon).toFixed(6));
-          setEditGeocodingMsg("✓ Coordinates fetched!");
+          setEditGeocodingMsg("Updated coordinates fetched!");
         } else {
           setEditGeocodingMsg("Address not found.");
         }
@@ -270,7 +271,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               border: "1px solid rgba(255,255,255,0.25)",
               textTransform: "uppercase", letterSpacing: "0.05em"
             }}>
-              {dbMode.includes("Live") ? "● Live Database" : "● Demo Mode"}
+              {dbMode.includes("Live") ? "● Live Database" : "● Server Offline"}
             </div>
           )}
           <button className="btn" onClick={loadData} disabled={loading} style={{
@@ -434,10 +435,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
         }}>
           <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, marginBottom: "1.25rem", color: "var(--text-primary)" }}>My Outlets</h2>
           {outlets.length === 0 ? (
-            <div className="empty-state" style={{ padding: "3rem 1rem", textAlign: "center" }}>
-              <div style={{ width: 44, height: 44, background: "var(--bg-secondary)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1rem", color: "var(--text-muted)" }}><Store size={20} /></div>
-              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>No outlets registered yet. Click 'Register Outlet' to add one.</p>
-            </div>
+            <EmptyState icon={Store} message="No outlets registered yet. Click 'Register Outlet' to add one." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {outlets.map(o => {
@@ -508,7 +506,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
             <div className="animate-fade-in" key={selectedOutlet.id}>
               <div style={{ borderBottom: "1px solid var(--border-light)", paddingBottom: "1.25rem", marginBottom: "1.5rem" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "1.5rem" }}>🏪</span>
+                  <span style={{ fontSize: "1.5rem" }}></span>
                   <h2 style={{ fontFamily: "var(--font-heading)", fontSize: "1.4rem", fontWeight: 900, color: "var(--brand)", margin: 0 }}>{selectedOutlet.name}</h2>
                 </div>
                 <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.35rem" }}>
@@ -516,8 +514,8 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
                 </p>
                 {selectedOutlet.latitude && (
                   <div style={{ display: "flex", gap: "0.75rem", fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.35rem" }}>
-                    <span>📍 Lat: {selectedOutlet.latitude}</span>
-                    <span>📍 Lng: {selectedOutlet.longitude}</span>
+                    <span> Lat: {selectedOutlet.latitude}</span>
+                    <span> Lng: {selectedOutlet.longitude}</span>
                   </div>
                 )}
               </div>
@@ -600,10 +598,8 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </div>
             </div>
           ) : (
-            <div className="empty-state" style={{ padding: "6rem 2rem", textAlign: "center" }}>
-              <div style={{ width: 56, height: 56, background: "rgba(67, 160, 71, 0.06)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1.25rem", color: "var(--brand)" }}><Package size={26} /></div>
-              <h3 style={{ fontFamily: "var(--font-heading)", fontSize: "1.2rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "0.5rem" }}>No Outlet Selected</h3>
-              <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", maxWidth: "320px", margin: "0 auto" }}>Select an outlet from the left sidebar to view its live stock, coordinates, and safety limit reports.</p>
+            <div style={{ padding: "6rem 2rem" }}>
+              <EmptyState icon={Package} title="No Outlet Selected" message="Select an outlet from the left sidebar to view its live stock, coordinates, and safety limit reports." />
             </div>
           )}
         </div>
@@ -611,7 +607,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
       </div>
       )}
 
-      {/* 🔹 MODALS 🔹 */}
+      {/*  MODALS  */}
 
       {/* Register Outlet */}
       <Modal open={showAddOutlet} onClose={() => setShowAddOutlet(false)} title="Register New Outlet">
@@ -629,7 +625,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </button>
             </div>
             {geocodingMsg && (
-              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: geocodingMsg.includes("✓") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
+              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: geocodingMsg.startsWith("Updated") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
                 {geocodingMsg}
               </div>
             )}
@@ -667,7 +663,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
               </button>
             </div>
             {editGeocodingMsg && (
-              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: editGeocodingMsg.includes("✓") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
+              <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", color: editGeocodingMsg.startsWith("Updated") ? "var(--success)" : "var(--error)", fontWeight: "600" }}>
                 {editGeocodingMsg}
               </div>
             )}
@@ -726,7 +722,7 @@ export default function OutletOwnerView({ onLogout, dbMode }) {
           fontWeight: 600, fontSize: "0.88rem", display: "flex",
           alignItems: "center", gap: "0.6rem"
         }}>
-          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "⚡" : "⚠"}</span>
+          <span style={{ fontSize: "1.1rem" }}>{toast.type === "success" ? "" : ""}</span>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", marginLeft: "1rem", opacity: 0.8, fontSize: "0.8rem", display: "flex", alignItems: "center" }}><X size={14} /></button>
         </div>

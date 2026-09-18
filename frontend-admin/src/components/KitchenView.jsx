@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   ChefHat, Package, Clock, CheckCircle, Flame, ArrowRight,
   LogOut, RefreshCw, AlertTriangle, Plus, Grid, QrCode
-} from "lucide-react";
+} from "../ui/Icon";
 
 const premiumStyles = `
   .kv-wrapper {
@@ -222,26 +222,6 @@ const premiumStyles = `
     box-shadow: 0 0 0 2px var(--brand-glow);
   }
   
-  .kv-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.9rem;
-  }
-  .kv-table th {
-    text-align: left;
-    padding: 0.75rem;
-    color: var(--text-secondary);
-    font-weight: 600;
-    border-bottom: 2px solid var(--border-default);
-  }
-  .kv-table td {
-    padding: 0.75rem;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-  .kv-table tr:hover td {
-    background: var(--bg-hover);
-  }
-
   .spin-anim {
     animation: spin 1s linear infinite;
   }
@@ -282,7 +262,7 @@ export default function KitchenView({ onLogout, dbMode }) {
       } else {
         const r = await api.getStockRequests();
         setRestockReqs(r);
-        const m = await api.getMenu();
+        const m = await api.getFoodsMenu();
         setMenuItems(m);
       }
     } catch (err) {
@@ -431,7 +411,7 @@ export default function KitchenView({ onLogout, dbMode }) {
                 <h3 style={{ margin: 0, fontSize: "1.25rem", color: "#0f172a" }}>Critical Restock Alerts</h3>
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table className="kv-table">
+                <table className="custom-table">
                   <thead>
                     <tr>
                       <th>Location</th>
@@ -535,7 +515,7 @@ export default function KitchenView({ onLogout, dbMode }) {
               ) : (
                 <div style={{ textAlign: "center" }}>
                   <div style={{ background: "#f8fafc", padding: "1.5rem", borderRadius: "20px", display: "inline-block", marginBottom: "1.5rem", border: "2px dashed #cbd5e1" }}>
-                    <img src={producedQR.qr_code_base64} alt="Batch QR Code" style={{ width: "200px", height: "200px" }} />
+                    <img referrerPolicy="no-referrer" src={producedQR.qr_code_base64} alt="Batch QR Code" style={{ width: "200px", height: "200px" }} />
                   </div>
                   <h3 style={{ fontSize: "1.5rem", fontWeight: 800, color: "#ea580c", marginBottom: "0.5rem" }}>{producedQR.batch_number}</h3>
                   <div style={{ display: "inline-block", background: "#f1f5f9", padding: "1rem 2rem", borderRadius: "12px", marginBottom: "2rem" }}>
@@ -558,7 +538,7 @@ export default function KitchenView({ onLogout, dbMode }) {
                 <h3 style={{ fontSize: "1.5rem", fontWeight: 800, color: "#0f172a", marginBottom: "0.5rem" }}>Order #{viewOrderQR.id}</h3>
                 <p style={{ margin: "0 0 1.5rem", color: "#64748b", fontWeight: 600 }}>Scan QR to track or fulfill</p>
                 <div style={{ background: "#f8fafc", padding: "1.5rem", borderRadius: "20px", display: "inline-block", marginBottom: "1.5rem", border: "2px dashed #cbd5e1" }}>
-                  <img src={viewOrderQR.qr_code_base64} alt="Order QR Code" style={{ width: "200px", height: "200px" }} />
+                  <img referrerPolicy="no-referrer" src={viewOrderQR.qr_code_base64} alt="Order QR Code" style={{ width: "200px", height: "200px" }} />
                 </div>
                 <div style={{ display: "flex", justifyContent: "center" }}>
                   <button type="button" className="kv-btn" style={{ background: "#e2e8f0", color: "#475569" }} onClick={() => setViewOrderQR(null)}>

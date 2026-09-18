@@ -9,7 +9,7 @@ const CustomerView = lazy(() => import("./components/CustomerView"));
 import {
   LogOut, Zap, 
   ChevronRight, Lock
-} from "lucide-react";
+} from "./ui/Icon";
 
 
 
@@ -23,6 +23,7 @@ export default function App() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [forceChangeLoading, setForceChangeLoading] = useState(false);
   const [forceChangeError, setForceChangeError] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
 
 
   const checkSession = async () => {
@@ -30,8 +31,10 @@ export default function App() {
       const mode = await api.getMode();
       setDbMode(mode);
       
-      const token = localStorage.getItem("token");
-      if (token) {
+      // Silent refresh: restore the access token into memory via the
+      // HttpOnly refresh cookie (token is never persisted client-side).
+      const restored = await api.ensureSession();
+      if (restored) {
         const user = await api.getMe();
         if (user) {
           setCurrentUser(user);
@@ -60,6 +63,28 @@ export default function App() {
     api.logout();
     setCurrentUser(null);
   };
+
+  // Idle timeout (1 hour)
+  useEffect(() => {
+    let timeoutId;
+    const resetTimer = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        if (currentUser) {
+          handleLogout();
+        }
+      }, 3600000); // 1 hour
+    };
+
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    events.forEach(event => document.addEventListener(event, resetTimer));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timeoutId);
+      events.forEach(event => document.removeEventListener(event, resetTimer));
+    };
+  }, [currentUser]);
 
   const handleForcePasswordChangeSubmit = async (e) => {
     e.preventDefault();
@@ -99,7 +124,7 @@ export default function App() {
           borderRadius: "var(--r-xl)", display: "flex", alignItems: "center",
           justifyContent: "center", fontSize: "1.75rem",
           boxShadow: "0 2px 12px rgba(0, 0, 0, 0.08)", animation: "pulse-glow 2s ease-in-out infinite"
-        }}>🍱</div>
+        }}></div>
         <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
           Starting FlavorFlow…
         </p>
@@ -111,17 +136,24 @@ export default function App() {
     return <VerifyEmail />;
   }
 
-  // No user — show login (no sidebar)
-  if (!currentUser) {
-    return <Login onLoginSuccess={handleLoginSuccess} />;
+  // If user specifically requested login, or we need authentication to proceed (optional later)
+  if (showLogin && !currentUser) {
+    return <Login onLoginSuccess={(user) => { setShowLogin(false); handleLoginSuccess(user); }} />;
   }
 
-  // Render the correct view
+  // Render the correct view (allow guests)
   const renderView = () => {
     return (
       <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
-        {currentUser.role === 'customer' && <CustomerView onLogout={handleLogout} dbMode={dbMode} currentUser={currentUser} />}
-        {currentUser.role !== 'customer' && (
+        {(!currentUser || currentUser.role === 'customer') && (
+          <CustomerView 
+            onLogout={handleLogout} 
+            onLoginRequest={() => setShowLogin(true)} 
+            dbMode={dbMode} 
+            currentUser={currentUser} 
+          />
+        )}
+        {currentUser && currentUser.role !== 'customer' && (
           <div style={{ padding: "3rem", textAlign: "center" }}>
             <div className="empty-state">
               <div className="empty-state-icon">
@@ -141,7 +173,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="animate-fade-in">
+      <div>
         {renderView()}
       </div>
 

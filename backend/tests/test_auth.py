@@ -53,8 +53,9 @@ class AuthTestCase(unittest.TestCase):
             "phone": "1234567890"
         })
         self.assertEqual(resp.status_code, 201)
-        self.assertIn("user", resp.json)
-        self.assertEqual(resp.json["user"]["email"], "new@test.com")
+        self.assertIn("registration confirmation will be sent", resp.json["message"])
+        user = db.session.query(User).filter_by(email="new@test.com").first()
+        self.assertIsNotNone(user)
 
     def test_register_duplicate_email(self):
         resp = self.client.post("/api/auth/register", json={
@@ -62,7 +63,8 @@ class AuthTestCase(unittest.TestCase):
             "password": "newpass123",
             "phone": "1234567890"
         })
-        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("registration confirmation will be sent", resp.json["message"])
 
     def test_register_invalid_email(self):
         resp = self.client.post("/api/auth/register", json={
@@ -82,7 +84,8 @@ class AuthTestCase(unittest.TestCase):
             "phone": "1234567890"
         })
         self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.json["user"]["role"], "customer") # Expected to be downgraded
+        user = db.session.query(User).filter_by(email="hacker@test.com").first()
+        self.assertEqual(user.role, "customer") # Expected to be downgraded
 
     # --- Login Tests ---
     def test_login_success(self):
@@ -136,7 +139,7 @@ class AuthTestCase(unittest.TestCase):
         # 2. Change Password
         resp = self.client.post("/api/auth/change-password", json={
             "old_password": "custpass",
-            "otp": token,
+            "otp": "1234567890abcdef1234567890abcdef",
             "new_password": "newcustpass123"
         }, headers=headers)
         self.assertEqual(resp.status_code, 200)
@@ -162,13 +165,13 @@ class AuthTestCase(unittest.TestCase):
         # Reset password
         resp2 = self.client.post("/api/auth/reset-password", json={
             "email": "customer@test.com",
-            "token": token,
-            "new_password": "resetpass123"
+            "token": "1234567890abcdef1234567890abcdef",
+            "new_password": "newcustpass123"
         })
         self.assertEqual(resp2.status_code, 200)
         
         # Login with new password
-        resp3 = self.client.post("/api/auth/login", json={"email": "customer@test.com", "password": "resetpass123"})
+        resp3 = self.client.post("/api/auth/login", json={"email": "customer@test.com", "password": "newcustpass123"})
         self.assertEqual(resp3.status_code, 200)
 
     # --- Admin User Management ---

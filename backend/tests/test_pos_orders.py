@@ -135,5 +135,44 @@ class PosOrdersTestCase(unittest.TestCase):
         }, headers=self.cust_headers)
         self.assertEqual(resp_fb2.status_code, 409)
 
-if __name__ == '__main__':
-    unittest.main()
+
+    def test_coupon_usage_atomic(self):
+        # Create a coupon
+        from models import Coupon
+        coupon = Coupon(code="ATOMIC10", discount_pct=10, usage_limit=1)
+        db.session.add(coupon)
+        db.session.commit()
+        
+        # Test applying it twice - only one should succeed if we were running concurrently, 
+        # but since we test serially, we just verify it fails on second try
+        res = self.client.post('/api/pos/sell', json={
+            "items": [{"menu_item_id": self.item.id, "quantity": 1}],
+            "payment_method": "Cash",
+            "coupon_code": "ATOMIC10"
+        }, headers=self.staff_headers)
+        self.assertEqual(res.status_code, 201)
+        
+        res2 = self.client.post('/api/pos/sell', json={
+            "items": [{"menu_item_id": self.item.id, "quantity": 1}],
+            "payment_method": "Cash",
+            "coupon_code": "ATOMIC10"
+        }, headers=self.staff_headers)
+        self.assertEqual(res2.status_code, 400)
+
+    def test_dispose_stock_atomic(self):
+        # Current stock is 50. Let's dispose 50, then try to dispose 1 more.
+        res = self.client.post('/api/pos/disposal', json={
+            "menu_item_id": self.item.id,
+            "quantity": 50,
+            "reason": "Test"
+        }, headers=self.staff_headers)
+        self.assertEqual(res.status_code, 200)
+
+        res2 = self.client.post('/api/pos/disposal', json={
+            "menu_item_id": self.item.id,
+            "quantity": 1,
+            "reason": "Test"
+        }, headers=self.staff_headers)
+        self.assertIn(res2.status_code, [400, 409])
+
+

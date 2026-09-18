@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { api } from "../utils/api";
-import { CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { CheckCircle, XCircle, Loader2 } from "../ui/Icon";
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState("loading");

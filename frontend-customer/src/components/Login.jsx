@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag,
   Store, BarChart3, Package, Shield, Zap, Star
-} from "lucide-react";
+} from "../ui/Icon";
 
 const FEATURES = [
   { icon: ShoppingBag, label: "B2C Online Shop", desc: "Full e-commerce ordering for home foods" },
@@ -63,24 +63,6 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  const handleQuickLogin = async (qEmail, qPass) => {
-    setError(""); setMessage(""); setLoading(true);
-    try {
-      let payload = {};
-      if (qEmail.includes("@") || qEmail === "admin") {
-         payload = { email: qEmail, password: qPass };
-      } else {
-         payload = { staff_code: qEmail, pin: qPass };
-      }
-      const data = await api.login(payload);
-      onLoginSuccess(data.user);
-    } catch (err) {
-      setError(err.message || "Quick login failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleForgotSubmit = async (e) => {
     e.preventDefault();
     setForgotError(""); setForgotMessage(""); setForgotLoading(true);
@@ -110,349 +92,239 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-
   return (
-    <div className="login-shell">
-
-      {/* ── Left Hero Panel ── */}
-      <div className="login-hero">
-        <div className="login-hero-content animate-fade-in">
-          {/* Logo */}
-          <div className="login-hero-logo">🍱</div>
-
-          <h1>
-            Flavor<span>Flow</span>
-          </h1>
-          <p>
-            The all-in-one food business platform — from home cooking to snack supply chain.
-          </p>
-
-          {/* Stats row */}
-          <div style={{
-            display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
-            gap: "0.75rem", marginBottom: "2.5rem"
-          }}>
-            {STATS.map(s => (
-              <div key={s.label} style={{
-                background: "var(--brand-glow)",
-                border: "1px solid var(--brand-glow)",
-                borderRadius: "var(--r-lg)", padding: "0.875rem",
-                textAlign: "center"
-              }}>
-                <div style={{
-                  fontFamily: "var(--font-heading)", fontSize: "1.5rem",
-                  fontWeight: 900, color: "var(--brand)", lineHeight: 1
-                }}>{s.value}</div>
-                <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: "0.2rem", fontWeight: 600 }}>
-                  {s.label}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Features */}
-          <div className="login-features">
-            {FEATURES.map(f => (
-              <div key={f.label} className="login-feature-item">
-                <div className="login-feature-icon">
-                  <f.icon size={16} />
-                </div>
-                <div>
-                  <div style={{ fontWeight: 700, color: "var(--text-primary)", fontSize: "0.875rem" }}>{f.label}</div>
-                  <div style={{ color: "var(--text-secondary)", fontSize: "0.78rem" }}>{f.desc}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+    <div className="split-layout">
+      
+      {/* ── Login Panel ── */}
+      <div 
+        className={`split-panel left-panel ${!isRegistering ? "active" : "inactive"}`}
+        onClick={() => { if (isRegistering) setIsRegistering(false); }}
+      >
+        <div className="split-bg" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=1600&q=80')" }}></div>
+        <div className="split-overlay-text" style={{ writingMode: "horizontal-tb", transform: "none", textAlign: "center" }}>
+          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}> SUGGULA'S KITCHEN</div>
+          <div style={{ fontSize: "1.5rem" }}>SIGN IN</div>
         </div>
-      </div>
-
-      {/* ── Right Form Panel ── */}
-      <div className="login-form-panel">
-        <div className="login-form-wrap animate-fade-in">
-
-          <div className="login-form-title">
-            {isRegistering ? "Create Account" : "Welcome back"}
-          </div>
-          <div className="login-form-sub">
-            {isRegistering
-              ? "Register as a customer to start ordering"
-              : "Sign in to access your workspace"}
-          </div>
-
-          {error && (
-            <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
-              <Zap size={15} style={{ flexShrink: 0 }} /> {error}
-            </div>
-          )}
-          {message && (
-            <div className="alert alert-success" style={{ marginBottom: "1rem" }}>
-              <Star size={15} style={{ flexShrink: 0 }} /> {message}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {/* Email */}
-            <div className="form-group" style={{ margin: 0 }}>
-              <label className="form-label">Email or Username</label>
-              <div className="input-icon-wrap">
-                <Mail size={15} className="input-icon" />
-                <input
-                  type="text"
-                  required
-                  className="form-input"
-                  placeholder="admin or email@example.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                />
+        
+        <div className="split-content">
+          <div className="glass-form">
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "2rem" }}>
+              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}></div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: "1.1rem", lineHeight: 1 }}>FlavorFlow</div>
+                <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "1px" }}>Suggula's Kitchen</div>
               </div>
             </div>
 
-            {/* Password */}
-            <div className="form-group" style={{ margin: 0 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <label className="form-label">Password</label>
-                {!isRegistering && (
+            <h2 className="glass-title">Welcome Back</h2>
+            <p className="glass-sub">Sign in to access your workspace.</p>
+
+            {error && !isRegistering && (
+              <div className="alert alert-error" style={{ marginBottom: "1rem", background: "rgba(239, 68, 68, 0.2)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#fff" }}>
+                <Zap size={15} style={{ flexShrink: 0 }} /> {error}
+              </div>
+            )}
+            {message && !isRegistering && (
+              <div className="alert alert-success" style={{ marginBottom: "1rem", background: "rgba(34, 197, 94, 0.2)", border: "1px solid rgba(34, 197, 94, 0.4)", color: "#fff" }}>
+                <Star size={15} style={{ flexShrink: 0 }} /> {message}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: "1.5rem" }}>
+                <label className="glass-label">Email or Username</label>
+                <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                  <input 
+                    type="text" 
+                    required 
+                    className="glass-input" 
+                    placeholder="admin or email@example.com" 
+                    value={email} 
+                    onChange={e => setEmail(e.target.value)} 
+                  />
+                  <Mail size={18} className="glass-icon" />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "1.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6rem" }}>
+                  <label className="glass-label" style={{ marginBottom: 0 }}>Password</label>
                   <button
                     type="button"
                     onClick={() => {
                       setShowForgotModal(true);
-                      setForgotStep(1);
-                      setForgotEmail(email);
-                      setForgotToken("");
-                      setForgotNewPassword("");
-                      setForgotError("");
-                      setForgotMessage("");
+                      setForgotStep(1); setForgotEmail(email); setForgotToken(""); setForgotNewPassword(""); setForgotError(""); setForgotMessage("");
                     }}
-                    style={{
-                      background: "none", border: "none", color: "var(--brand)",
-                      cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
-                      padding: 0, textDecoration: "underline", fontFamily: "var(--font-body)"
-                    }}
+                    className="glass-link"
                   >
                     Forgot Password?
                   </button>
-                )}
+                </div>
+                <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                  <input 
+                    type={showPass ? "text" : "password"} 
+                    required 
+                    className="glass-input" 
+                    placeholder="••••••••" 
+                    value={password} 
+                    onChange={e => setPassword(e.target.value)} 
+                  />
+                  <Lock size={18} className="glass-icon" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    style={{
+                      position: "absolute", right: "1rem", top: "50%", transform: "translateY(-50%)",
+                      background: "none", border: "none", color: "rgba(255,255,255,0.5)", cursor: "pointer", display: "flex"
+                    }}
+                  >
+                    {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
-              <div className="input-icon-wrap" style={{ position: "relative" }}>
 
-                <Lock size={15} className="input-icon" />
-                <input
-                  type={showPass ? "text" : "password"}
-                  required
-                  className="form-input"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  style={{ paddingRight: "2.8rem" }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  style={{
-                    position: "absolute", right: "0.9rem", top: "50%",
-                    transform: "translateY(-50%)", background: "none",
-                    border: "none", color: "var(--text-muted)", cursor: "pointer",
-                    display: "flex"
-                  }}
-                >
-                  {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
+              <button type="submit" className="glass-btn" disabled={loading}>
+                {loading ? "Signing in..." : <>Sign In <LogIn size={18} /></>}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Register Panel ── */}
+      <div 
+        className={`split-panel right-panel ${isRegistering ? "active" : "inactive"}`}
+        onClick={() => { if (!isRegistering) setIsRegistering(true); }}
+      >
+        <div className="split-bg" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=1600&q=80')" }}></div>
+        <div className="split-overlay-text" style={{ writingMode: "horizontal-tb", transform: "none", textAlign: "center" }}>
+          <div style={{ fontSize: "1rem", color: "var(--green)", marginBottom: "0.5rem", letterSpacing: "1px" }}> SUGGULA'S KITCHEN</div>
+          <div style={{ fontSize: "1.5rem" }}>REGISTER</div>
+        </div>
+
+        <div className="split-content">
+          <div className="glass-form" style={{ padding: "2rem 2.5rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "2rem" }}>
+              <div style={{ width: 40, height: 40, background: "var(--green)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.25rem" }}></div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: "1.1rem", lineHeight: 1 }}>FlavorFlow</div>
+                <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "1px" }}>Suggula's Kitchen</div>
               </div>
             </div>
+            
+            <h2 className="glass-title">Create Account</h2>
+            <p className="glass-sub">Join Suggula's Kitchen today.</p>
 
-            {/* Registration extra fields */}
-            {isRegistering && (
-              <div className="animate-fade-in" style={{
-                borderTop: "1px solid var(--border-subtle)", paddingTop: "1rem",
-                display: "flex", flexDirection: "column", gap: "0.75rem"
-              }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                  <div className="form-group" style={{ margin: 0 }}>
-                    <label className="form-label">First Name</label>
-                    <input type="text" required className="form-input" placeholder="Priya" value={firstName} onChange={e => setFirstName(e.target.value)} />
-                  </div>
-                  <div className="form-group" style={{ margin: 0 }}>
-                    <label className="form-label">Last Name</label>
-                    <input type="text" required className="form-input" placeholder="Sharma" value={lastName} onChange={e => setLastName(e.target.value)} />
-                  </div>
-                </div>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Phone Number</label>
-                  <input type="tel" required maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setPhone(val); }} />
-                </div>
+            {error && isRegistering && (
+              <div className="alert alert-error" style={{ marginBottom: "1rem", background: "rgba(239, 68, 68, 0.2)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#fff" }}>
+                <Zap size={15} style={{ flexShrink: 0 }} /> {error}
+              </div>
+            )}
+            {message && isRegistering && (
+              <div className="alert alert-success" style={{ marginBottom: "1rem", background: "rgba(34, 197, 94, 0.2)", border: "1px solid rgba(34, 197, 94, 0.4)", color: "#fff" }}>
+                <Star size={15} style={{ flexShrink: 0 }} /> {message}
               </div>
             )}
 
-            <button type="submit" disabled={loading} className="btn btn-primary" style={{ marginTop: "0.5rem", padding: "0.875rem" }}>
-              {loading
-                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> Processing…</>
-                : isRegistering
-                  ? <><UserPlus size={16} /> Create Account</>
-                  : <><LogIn size={16} /> Sign In</>
-              }
-            </button>
-          </form>
-
-          {/* Toggle mode */}
-          <div style={{ textAlign: "center", marginTop: "1rem" }}>
-            <button
-              onClick={() => { setIsRegistering(!isRegistering); setError(""); setMessage(""); }}
-              style={{
-                background: "none", border: "none", color: "var(--text-secondary)",
-                cursor: "pointer", fontWeight: 600, fontSize: "0.82rem",
-                textDecoration: "underline", fontFamily: "var(--font-body)"
-              }}
-            >
-              {isRegistering ? "← Back to Sign In" : "New customer? Create account"}
-            </button>
-          </div>
-
-          {/* Quick Demo Access */}
-          {!isRegistering && import.meta.env.DEV && (
-            <>
-              <div className="divider">Quick Demo Access</div>
-              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("admin", "admin")} disabled={loading}>
-                  <Shield size={16} />
-                  <span>Admin</span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("customer@gmail.com", "customer")} disabled={loading}>
-                  <ShoppingBag size={16} />
-                  <span>Customer</span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("1001", "staff123")} disabled={loading} title="Staff Code: 1001">
-                  <Store size={16} />
-                  <span>Staff<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 1001</small></span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("2001", "kitchen123")} disabled={loading} title="Kitchen Code: 2001">
-                  <Zap size={16} />
-                  <span>Kitchen<br/><small style={{fontSize:"0.65rem",opacity:0.75}}>Code: 2001</small></span>
-                </button>
-                <button className="quick-login-btn" onClick={() => handleQuickLogin("owner@brand.com", "owner")} disabled={loading}>
-                  <UserPlus size={16} />
-                  <span>Owner</span>
-                </button>
+            <form onSubmit={handleSubmit}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
+                <div>
+                  <label className="glass-label">First Name</label>
+                  <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                    <input type="text" required className="glass-input" style={{ paddingLeft: "1rem" }} placeholder="John" value={firstName} onChange={e => setFirstName(e.target.value)} />
+                  </div>
+                </div>
+                <div>
+                  <label className="glass-label">Last Name</label>
+                  <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                    <input type="text" required className="glass-input" style={{ paddingLeft: "1rem" }} placeholder="Doe" value={lastName} onChange={e => setLastName(e.target.value)} />
+                  </div>
+                </div>
               </div>
-            </>
-          )}
+
+              <div style={{ marginBottom: "1.5rem" }}>
+                <label className="glass-label">Email</label>
+                <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                  <input type="email" required className="glass-input" placeholder="john@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+                  <Mail size={18} className="glass-icon" />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "1.5rem" }}>
+                <label className="glass-label">Password</label>
+                <div className="glass-input-wrap" style={{ marginBottom: 0 }}>
+                  <input type={showPass ? "text" : "password"} required className="glass-input" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+                  <Lock size={18} className="glass-icon" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    style={{
+                      position: "absolute", right: "1rem", top: "50%", transform: "translateY(-50%)",
+                      background: "none", border: "none", color: "rgba(255,255,255,0.5)", cursor: "pointer", display: "flex"
+                    }}
+                  >
+                    {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <button type="submit" className="glass-btn" disabled={loading} style={{ marginTop: "0.5rem" }}>
+                {loading ? "Creating account..." : <>Create Account <UserPlus size={18} /></>}
+              </button>
+            </form>
+          </div>
         </div>
       </div>
 
       {/* Forgot Password Modal */}
       {showForgotModal && (
-        <div className="modal-overlay" style={{
-          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-          background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center",
-          justifyContent: "center", zIndex: 1000
-        }}>
-          <div className="modal-content animate-fade-in" style={{
-            background: "rgba(18, 22, 28, 0.95)", border: "1px solid rgba(249, 115, 22, 0.2)",
-            boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.37)", borderRadius: "var(--r-lg)",
-            padding: "2rem", width: "100%", maxWidth: "420px", position: "relative"
-          }}>
-            <h3 style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)", fontSize: "1.25rem", marginBottom: "0.5rem", fontWeight: 700, display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              <Lock size={18} className="text-brand" />
-              {forgotStep === 1 ? "Forgot Password" : "Reset Password"}
-            </h3>
-            <p style={{ color: "var(--text-secondary)", fontSize: "0.82rem", marginBottom: "1.25rem", lineHeight: 1.4 }}>
-              {forgotStep === 1
-                ? "Enter your account email to request a secure password reset token."
-                : "Enter the reset token sent to your email (or logged to console) along with your new password."}
-            </p>
+        <div className="modal-overlay" style={{ backdropFilter: "blur(8px)" }} onClick={() => setShowForgotModal(false)}>
+          <div className="modal-content animate-fade-in" onClick={e => e.stopPropagation()} style={{ background: "rgba(20,20,20,0.85)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff", backdropFilter: "blur(16px)" }}>
+            <h2 style={{ fontSize: "1.25rem", fontWeight: 800, marginBottom: "0.5rem" }}>Reset Password</h2>
+            
+            {forgotError && <div className="alert alert-error" style={{ marginBottom: "1rem" }}>{forgotError}</div>}
+            {forgotMessage && <div className="alert alert-success" style={{ marginBottom: "1rem" }}>{forgotMessage}</div>}
 
-            {forgotError && (
-              <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
-                <Zap size={15} style={{ flexShrink: 0 }} /> {forgotError}
-              </div>
-            )}
-            {forgotMessage && (
-              <div className="alert alert-success" style={{ marginBottom: "1rem" }}>
-                <Star size={15} style={{ flexShrink: 0 }} /> {forgotMessage}
-              </div>
-            )}
-
-            {forgotStep === 1 ? (
-              <form onSubmit={handleForgotSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    className="form-input"
-                    placeholder="email@example.com"
-                    value={forgotEmail}
-                    onChange={e => setForgotEmail(e.target.value)}
-                  />
+            {forgotStep === 1 && (
+              <form onSubmit={handleForgotSubmit}>
+                <p style={{ fontSize: "0.875rem", color: "rgba(255,255,255,0.6)", marginBottom: "1rem" }}>Enter your email to receive a reset token.</p>
+                <div>
+                  <label className="glass-label">Email Address</label>
+                  <div className="glass-input-wrap" style={{ marginBottom: "1.5rem" }}>
+                    <input type="email" required className="glass-input" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} />
+                    <Mail size={18} className="glass-icon" />
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => setShowForgotModal(false)}
-                    className="btn btn-secondary"
-                    style={{ flex: 1, padding: "0.75rem" }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={forgotLoading}
-                    className="btn btn-primary"
-                    style={{ flex: 1, padding: "0.75rem" }}
-                  >
+                <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+                  <button type="button" className="glass-link" onClick={() => setShowForgotModal(false)}>Cancel</button>
+                  <button type="submit" className="glass-btn" style={{ width: "auto", padding: "0.75rem 1.5rem", marginTop: 0 }} disabled={forgotLoading}>
                     {forgotLoading ? "Sending..." : "Send Token"}
                   </button>
                 </div>
               </form>
-            ) : (
-              <form onSubmit={handleResetSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    className="form-input"
-                    value={forgotEmail}
-                    disabled
-                  />
+            )}
+
+            {forgotStep === 2 && (
+              <form onSubmit={handleResetSubmit}>
+                <p style={{ fontSize: "0.875rem", color: "rgba(255,255,255,0.6)", marginBottom: "1rem" }}>Enter the token sent to your email and your new password.</p>
+                
+                <div>
+                  <label className="glass-label">Reset Token</label>
+                  <div className="glass-input-wrap">
+                    <input type="text" required className="glass-input" style={{ paddingLeft: "1rem" }} value={forgotToken} onChange={e => setForgotToken(e.target.value)} />
+                  </div>
                 </div>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Reset Token</label>
-                  <input
-                    type="text"
-                    required
-                    className="form-input"
-                    placeholder="Enter received token"
-                    value={forgotToken}
-                    onChange={e => setForgotToken(e.target.value)}
-                  />
+
+                <div>
+                  <label className="glass-label">New Password</label>
+                  <div className="glass-input-wrap">
+                    <input type="password" required className="glass-input" style={{ paddingLeft: "1rem" }} value={forgotNewPassword} onChange={e => setForgotNewPassword(e.target.value)} />
+                  </div>
                 </div>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">New Password</label>
-                  <input
-                    type="password"
-                    required
-                    className="form-input"
-                    placeholder="••••••••"
-                    value={forgotNewPassword}
-                    onChange={e => setForgotNewPassword(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => setForgotStep(1)}
-                    className="btn btn-secondary"
-                    style={{ flex: 1, padding: "0.75rem" }}
-                  >
-                    Back
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={forgotLoading}
-                    className="btn btn-primary"
-                    style={{ flex: 1, padding: "0.75rem" }}
-                  >
+
+                <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+                  <button type="button" className="glass-link" onClick={() => setShowForgotModal(false)}>Cancel</button>
+                  <button type="submit" className="glass-btn" style={{ width: "auto", padding: "0.75rem 1.5rem", marginTop: 0 }} disabled={forgotLoading}>
                     {forgotLoading ? "Resetting..." : "Reset Password"}
                   </button>
                 </div>
@@ -461,7 +333,7 @@ export default function Login({ onLoginSuccess }) {
           </div>
         </div>
       )}
+
     </div>
   );
 }
-

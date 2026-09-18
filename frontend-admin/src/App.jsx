@@ -3,16 +3,17 @@ import { api } from "./utils/api";
 import Login from "./components/Login";
 import ErrorBoundary from "./components/ErrorBoundary";
 import VerifyEmail from "./components/VerifyEmail";
+import SkeletonLoader from "./components/SkeletonLoader";
+import {
+  LogOut, Zap, 
+  ChevronRight, Lock
+} from "./ui/Icon";
 
 // Lazy load views for code splitting
 const AdminView = lazy(() => import("./components/AdminView"));
 const StaffPOS = lazy(() => import("./components/StaffPOS"));
 const OutletOwnerView = lazy(() => import("./components/OutletOwnerView"));
 const KitchenView = lazy(() => import("./components/KitchenView"));
-import {
-  LogOut, Zap, 
-  ChevronRight, Lock
-} from "lucide-react";
 
 
 
@@ -33,11 +34,16 @@ export default function App() {
       const mode = await api.getMode();
       setDbMode(mode);
       
-      const token = localStorage.getItem("token");
-      if (token) {
+      // Silent refresh: restore the access token into memory via the
+      // HttpOnly refresh cookie (token is never persisted client-side).
+      const restored = await api.ensureSession();
+      if (restored) {
         const user = await api.getMe();
         if (user) {
           setCurrentUser(user);
+          if (window.location.pathname === '/login') {
+            window.history.replaceState({}, '', window.location.hash || '/');
+          }
         } else {
           api.logout();
           setCurrentUser(null);
@@ -57,12 +63,37 @@ export default function App() {
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
     api.getMode().then(setDbMode);
+    if (window.location.pathname === '/login') {
+      window.history.replaceState({}, '', window.location.hash || '/');
+    }
   };
 
   const handleLogout = () => {
     api.logout();
     setCurrentUser(null);
   };
+
+  // Idle timeout (1 hour)
+  useEffect(() => {
+    let timeoutId;
+    const resetTimer = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        if (currentUser) {
+          handleLogout();
+        }
+      }, 3600000); // 1 hour
+    };
+
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    events.forEach(event => document.addEventListener(event, resetTimer));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timeoutId);
+      events.forEach(event => document.removeEventListener(event, resetTimer));
+    };
+  }, [currentUser]);
 
   const handleForcePasswordChangeSubmit = async (e) => {
     e.preventDefault();
@@ -102,7 +133,7 @@ export default function App() {
           borderRadius: "var(--r-xl)", display: "flex", alignItems: "center",
           justifyContent: "center", fontSize: "1.75rem",
           boxShadow: "0 2px 12px rgba(0, 0, 0, 0.08)", animation: "pulse-glow 2s ease-in-out infinite"
-        }}>🍱</div>
+        }}></div>
         <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
           Starting FlavorFlow…
         </p>
@@ -122,8 +153,8 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="animate-fade-in">
-        <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh', color: 'var(--brand)' }}>Loading View...</div>}>
+      <div>
+        <Suspense fallback={<SkeletonLoader />}>
           {currentUser.role === 'admin' && <AdminView onLogout={handleLogout} dbMode={dbMode} />}
           {currentUser.role === 'staff' && <StaffPOS onLogout={handleLogout} dbMode={dbMode} />}
           {currentUser.role === 'outlet_owner' && <OutletOwnerView onLogout={handleLogout} dbMode={dbMode} />}

@@ -3,7 +3,7 @@ import { api } from "../utils/api";
 import {
   Lock, Mail, UserPlus, LogIn, Eye, EyeOff, ShoppingBag,
   Store, BarChart3, Package, Shield, Zap, Star
-} from "lucide-react";
+} from "../ui/Icon";
 
 const FEATURES = [
   { icon: ShoppingBag, label: "B2C Online Shop", desc: "Full e-commerce ordering for home foods" },
@@ -31,7 +31,6 @@ export default function Login({ onLoginSuccess }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
-  const [referralCode, setReferralCode] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -53,11 +52,10 @@ export default function Login({ onLoginSuccess }) {
     setError(""); setMessage(""); setLoading(true);
     try {
       if (isRegistering) {
-        await api.register(email, password, "customer", firstName, lastName, phone, null, referralCode.trim() || null);
+        await api.register(email, password, "customer", firstName, lastName, phone);
         setMessage("Account created! Please sign in.");
         setIsRegistering(false);
         setPassword("");
-        setReferralCode("");
       } else {
         const payload = loginMode === "staff" ? { staff_code: staffCode, pin } : { email, password };
         const data = await api.login(payload);
@@ -119,13 +117,13 @@ export default function Login({ onLoginSuccess }) {
       <div className="login-hero">
         <div className="login-hero-content animate-fade-in">
           {/* Logo */}
-          <div className="login-hero-logo">🍱</div>
+          <div className="login-hero-logo"></div>
 
           <h1>
             Flavor<span>Flow</span>
           </h1>
           <p>
-            The all-in-one food business platform — from home cooking to snack supply chain.
+            One platform for home cooking and the full snack supply chain.
           </p>
 
           {/* Stats row */}
@@ -366,12 +364,6 @@ export default function Login({ onLoginSuccess }) {
                 <div className="form-group" style={{ margin: 0 }}>
                   <label className="form-label">Phone Number</label>
                   <input type="tel" required maxLength={10} className="form-input" placeholder="9876543210" pattern="\d{10}" value={phone} onChange={e => { const val = e.target.value.replace(/\D/g, ''); if (val.length <= 10) setPhone(val); }} />
-                </div>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                    🎁 Referral Code <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 400 }}>(optional — earn 50 bonus points!)</span>
-                  </label>
-                  <input type="text" className="form-input" placeholder="e.g. SARAH2024" value={referralCode} onChange={e => setReferralCode(e.target.value.toUpperCase())} style={{ letterSpacing: "0.05em" }} />
                 </div>
               </div>
             )}

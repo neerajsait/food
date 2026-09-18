@@ -5,6 +5,18 @@ from sqlalchemy.orm import relationship
 
 db = SQLAlchemy()
 
+# ===========================================================================
+# IMPORTANT: REDIS ARCHITECTURE NOTE
+# ===========================================================================
+# The application uses Redis for JWT blocklisting and real-time state.
+# While a fallback `MemoryRedis` exists in `redis_client.py` for local 
+# development (using `memory://`), it is STRICTLY a single-process constraint.
+# In a multi-process environment (like Gunicorn/uWSGI) or multi-node setup,
+# `MemoryRedis` will fail to share state between workers, leading to critical
+# bugs such as security token leaks and desynchronized caches.
+# For production deployments, a real Redis server (e.g., redis-server) is REQUIRED.
+# ===========================================================================
+
 
 # ---------------------------------------------------------------------------
 # Outlet — physical snack supply station
@@ -19,6 +31,7 @@ class Outlet(db.Model):
     longitude = Column(Float, nullable=True)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL', use_alter=True, name='fk_outlet_owner_id'), nullable=True)
     revenue_share_percentage = Column(Numeric(5, 2), nullable=True, default=0.00)
+    revenue_cutoff_date = Column(DateTime, nullable=True, default=lambda: datetime.now(timezone.utc))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -65,6 +78,7 @@ class User(db.Model):
     id = Column(Integer, primary_key=True)
     email = Column(String(120), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+    token_version = Column(Integer, default=0, nullable=False)
     role = Column(String(20), nullable=False, default='customer')
     
     __mapper_args__ = {
@@ -93,6 +107,7 @@ class User(db.Model):
     admin_department = Column(String(50), nullable=True)
 
     # --- STI Subclass Fields ---
+    rfid_tag = Column(String(100), unique=True, nullable=True)
     loyalty_points = Column(Integer, default=0, nullable=False)
     outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='SET NULL'), nullable=True)
     pin_hash = Column(String(255), nullable=True)
@@ -113,12 +128,26 @@ class User(db.Model):
 
     def set_password(self, password: str, bcrypt):
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+        self.bump_token_version()
+
+    def bump_token_version(self):
+        if getattr(self, 'token_version', None) is None:
+            self.token_version = 0
+        self.token_version += 1
+        try:
+            from redis_client import get_redis
+            rc = get_redis()
+            if rc and getattr(self, 'id', None):
+                rc.setex(f"user_tv:{self.id}", 2 * 86400, self.token_version)
+        except Exception:
+            pass
 
     def check_password(self, password: str, bcrypt) -> bool:
         return bcrypt.check_password_hash(self.password_hash, password)
 
     def set_pin(self, pin: str, bcrypt):
         self.pin_hash = bcrypt.generate_password_hash(pin).decode('utf-8')
+        self.bump_token_version()
 
     def check_pin(self, pin: str, bcrypt) -> bool:
         if not self.pin_hash:
@@ -218,7 +247,7 @@ class MenuItem(db.Model):
     __tablename__ = 'menu_items'
 
     id = Column(Integer, primary_key=True)
-    code = Column(String(20), unique=True, nullable=True)  # auto-generated 4-digit product code
+    code = Column(String(20), unique=True, nullable=True)  # auto-generated 8-digit product code
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     price = Column(Numeric(10, 2), nullable=False)
@@ -232,9 +261,14 @@ class MenuItem(db.Model):
     spice_level = Column(String(20), default='medium')
     tag = Column(String(50), nullable=True)
     admin_rating = Column(Float, nullable=True)
+    is_best_seller = Column(Boolean, default=False)
+    is_popular = Column(Boolean, default=False)
+    ingredients = Column(Text, nullable=True)
+    nutritional_info = Column(Text, nullable=True)
+    dietary_guidelines = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium', tag=None, admin_rating=None):
+    def __init__(self, name, price, business_type, code=None, description=None, category=None, image_url=None, global_stock=None, is_active=True, is_veg=True, is_gluten_free=False, spice_level='medium', tag=None, admin_rating=None, is_popular=False, ingredients=None, nutritional_info=None, dietary_guidelines=None):
         self.code = code
         self.name = name
         self.price = price
@@ -249,6 +283,10 @@ class MenuItem(db.Model):
         self.spice_level = spice_level
         self.tag = tag
         self.admin_rating = admin_rating
+        self.is_popular = is_popular
+        self.ingredients = ingredients
+        self.nutritional_info = nutritional_info
+        self.dietary_guidelines = dietary_guidelines
 
     @property
     def visible_reviews(self):
@@ -259,15 +297,11 @@ class MenuItem(db.Model):
     @property
     def average_rating(self):
         v_reviews = self.visible_reviews
-        print(f"DEBUG: calculating average_rating for {self.name}, visible_reviews: {len(v_reviews)}")
         if v_reviews:
             avg = round(sum(r.rating for r in v_reviews) / len(v_reviews), 1)
-            print(f"DEBUG: calculated avg {avg}")
             return avg
         if self.admin_rating is not None:
-            print(f"DEBUG: returning admin_rating {self.admin_rating}")
             return float(self.admin_rating)
-        print("DEBUG: returning default 4.0")
         return 4.0
 
     @property
@@ -291,8 +325,13 @@ class MenuItem(db.Model):
             "spice_level": self.spice_level,
             "tag": self.tag,
             "admin_rating": self.admin_rating,
+            "is_best_seller": self.is_best_seller,
+            "is_popular": self.is_popular,
             "average_rating": self.average_rating,
-            "reviews_count": self.reviews_count
+            "reviews_count": self.reviews_count,
+            "ingredients": self.ingredients,
+            "nutritional_info": self.nutritional_info,
+            "dietary_guidelines": self.dietary_guidelines
         }
 
 
@@ -536,14 +575,30 @@ class Order(db.Model):
     
     status = Column(String(20), nullable=False, default='pending', index=True)
     total_price = Column(Numeric(10, 2), nullable=False, default=0.00)
+    
+    # Guest Checkout Details
+    guest_name = Column(String(100), nullable=True)
+    guest_email = Column(String(120), nullable=True)
+    guest_phone = Column(String(20), nullable=True)
+
     tracking_code = Column(String(100), nullable=True)
     tracking_label = Column(Text, nullable=True)
     tracking_link = Column(String(500), nullable=True)  # 3rd party tracking URL
     is_received = Column(Boolean, default=False)
     cancel_reason = Column(String(255), nullable=True)
+    refund_status = Column(String(20), nullable=True)
+    refund_amount = Column(Numeric(10, 2), nullable=True, default=0.00)
+    refund_reason = Column(Text, nullable=True)
     delivery_address = Column(String(500), nullable=True)
     delivery_charge = Column(Numeric(10, 2), default=0.00, nullable=False)
     payment_method = Column(String(50), nullable=False, default='COD')
+
+    # Online payment tracking (Razorpay)
+    razorpay_order_id = Column(String(64), nullable=True, index=True)
+    razorpay_payment_id = Column(String(64), nullable=True)
+    payment_status = Column(String(20), nullable=False, default='unpaid', index=True)  # unpaid | paid | failed | refunded
+    paid_at = Column(DateTime, nullable=True)
+
     loyalty_points_earned = Column(Integer, default=0, nullable=False)
     loyalty_points_redeemed = Column(Integer, default=0, nullable=False)
     applied_coupon_code = Column(String(50), nullable=True)
@@ -560,7 +615,8 @@ class Order(db.Model):
 
     def __init__(self, total_price=0.00, status='pending', items=None, payment_method='COD', 
                  order_type='online', customer_id=None, outlet_id=None, staff_id=None, delivery_address=None,
-                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None, review_code=None):
+                 delivery_charge=0.00, loyalty_points_earned=0, loyalty_points_redeemed=0, applied_coupon_code=None, 
+                 review_code=None, guest_name=None, guest_email=None, guest_phone=None):
         self.order_type = order_type
         self.customer_id = customer_id
         self.outlet_id = outlet_id
@@ -574,6 +630,9 @@ class Order(db.Model):
         self.loyalty_points_redeemed = loyalty_points_redeemed
         self.applied_coupon_code = applied_coupon_code
         self.review_code = review_code
+        self.guest_name = guest_name
+        self.guest_email = guest_email
+        self.guest_phone = guest_phone
         self.delivery_confirmation_code = None
         if items:
             self.items = items
@@ -583,16 +642,21 @@ class Order(db.Model):
             "id": self.id,
             "order_type": self.order_type,
             "customer_id": self.customer_id,
-            "customer_email": self.customer.email if self.customer else None,
-            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() if self.customer else None,
-            "customer_phone": self.customer.phone if self.customer else None,
+            "customer_email": self.customer.email if self.customer else self.guest_email,
+            "customer_name": f"{self.customer.first_name or ''} {self.customer.last_name or ''}".strip() if self.customer else self.guest_name,
+            "customer_phone": self.customer.phone if self.customer else self.guest_phone,
             "outlet_id": self.outlet_id,
             "outlet_name": self.outlet.name if self.outlet else None,
             "staff_id": self.staff_id,
             "staff_email": self.staff.email if self.staff else None,
             "status": self.status,
             "total_price": float(self.total_price),
+            "refund_status": self.refund_status,
+            "refund_amount": float(self.refund_amount) if self.refund_amount is not None else 0.0,
+            "refund_reason": self.refund_reason,
             "payment_method": self.payment_method,
+            "payment_status": self.payment_status or "unpaid",
+            "paid_at": self.paid_at.isoformat() if self.paid_at else None,
             "loyalty_points_earned": self.loyalty_points_earned,
             "loyalty_points_redeemed": self.loyalty_points_redeemed,
             "qr_code_base64": self.qr_code_base64,
@@ -614,6 +678,45 @@ class Order(db.Model):
                 "feedback_submitted": self.review is not None
             })
         return d
+
+
+# ---------------------------------------------------------------------------
+# PaymentTransaction — immutable audit trail of every payment event
+# ---------------------------------------------------------------------------
+class PaymentTransaction(db.Model):
+    __tablename__ = 'payment_transactions'
+
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey('orders.id', ondelete='CASCADE'), nullable=True, index=True)
+    provider = Column(String(30), nullable=False, default='razorpay')
+    provider_order_id = Column(String(64), nullable=True)
+    provider_payment_id = Column(String(64), nullable=True)
+    amount = Column(Numeric(10, 2), nullable=False, default=0.00)  # in major units (INR)
+    currency = Column(String(10), nullable=False, default='INR')
+    status = Column(String(30), nullable=False)          # created | captured | failed | refunded
+    event = Column(String(50), nullable=False)           # checkout_verify | payment.captured | ...
+    signature_valid = Column(Boolean, nullable=True)
+    source = Column(String(20), nullable=False, default='checkout')  # checkout | webhook
+    raw_payload = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    order = relationship('Order', backref='payment_transactions')
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "order_id": self.order_id,
+            "provider": self.provider,
+            "provider_order_id": self.provider_order_id,
+            "provider_payment_id": self.provider_payment_id,
+            "amount": float(self.amount) if self.amount is not None else 0.0,
+            "currency": self.currency,
+            "status": self.status,
+            "event": self.event,
+            "signature_valid": self.signature_valid,
+            "source": self.source,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1121,9 @@ class Banner(db.Model):
     __tablename__ = 'banners'
     id = Column(Integer, primary_key=True)
     title = Column(String(100), nullable=False)
+    description = Column(String(500), nullable=True)
+    eyebrow_text = Column(String(100), nullable=True)
+    button_text = Column(String(50), nullable=True)
     image_url = Column(Text, nullable=False)  # Stores path/URL or raw base64
     target_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
@@ -1039,11 +1145,14 @@ class Banner(db.Model):
     
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    def __init__(self, title, image_url, target_url=None, is_active=True, display_order=0, display_location='home',
+    def __init__(self, title, image_url, description=None, eyebrow_text=None, button_text=None, target_url=None, is_active=True, display_order=0, display_location='home',
                  start_date=None, end_date=None, target_audience='all', placement_zone='hero_carousel', 
                  display_style='cinematic_21_9', has_countdown=False, countdown_end_time=None, 
                  linked_product_id=None, linked_coupon_code=None):
         self.title = title
+        self.description = description
+        self.eyebrow_text = eyebrow_text
+        self.button_text = button_text
         self.image_url = image_url
         self.target_url = target_url
         self.is_active = is_active
@@ -1065,6 +1174,9 @@ class Banner(db.Model):
         return {
             "id": self.id,
             "title": self.title,
+            "description": self.description,
+            "eyebrow_text": self.eyebrow_text,
+            "button_text": self.button_text,
             "image_url": self.image_url,
             "target_url": self.target_url,
             "is_active": self.is_active,
@@ -1121,18 +1233,21 @@ class SupportTicket(db.Model):
     status = Column(String(20), default='Open')  # 'Open', 'Resolved', 'Closed'
     admin_reply = Column(Text, nullable=True)
     attachment_url = Column(Text, nullable=True)
+    attachment_filename = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     customer = relationship('User', foreign_keys=[customer_id])
     order = relationship('Order', foreign_keys=[order_id])
 
-    def __init__(self, customer_id, issue_type, description, order_id=None, attachment_url=None):
+    def __init__(self, customer_id, issue_type, description, order_id=None,
+                 attachment_url=None, attachment_filename=None):
         self.customer_id = customer_id
         self.issue_type = issue_type
         self.description = description
         self.order_id = order_id
         self.attachment_url = attachment_url
+        self.attachment_filename = attachment_filename
         self.status = 'Open'
 
     def to_dict(self):
@@ -1146,6 +1261,7 @@ class SupportTicket(db.Model):
             "status": self.status,
             "admin_reply": self.admin_reply,
             "attachment_url": self.attachment_url,
+            "attachment_filename": self.attachment_filename,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
@@ -1186,5 +1302,116 @@ class StockRequest(db.Model):
             "quantity": self.quantity,
             "status": self.status,
             "type": self.type,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+# ---------------------------------------------------------------------------
+# Market Purchases (B2B Admin Expenses)
+# ---------------------------------------------------------------------------
+class MarketPurchase(db.Model):
+    __tablename__ = 'market_purchases'
+    
+    id = Column(Integer, primary_key=True)
+    ingredient_name = Column(String(150), nullable=False)
+    category = Column(String(100), nullable=True)
+    quantity = Column(Numeric(10, 2), nullable=True)
+    unit = Column(String(20), nullable=True)
+    cost = Column(Numeric(10, 2), nullable=False)
+    expiration_date = Column(Date, nullable=True)
+    receipt_url = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    purchased_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    admin_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
+    admin = relationship('User', foreign_keys=[admin_id])
+
+    def __init__(self, ingredient_name, cost, quantity=None, unit=None, category=None, expiration_date=None, receipt_url=None, notes=None, admin_id=None):
+        self.ingredient_name = ingredient_name
+        self.cost = cost
+        self.quantity = quantity
+        self.unit = unit
+        self.category = category
+        self.expiration_date = expiration_date
+        self.receipt_url = receipt_url
+        self.notes = notes
+        self.admin_id = admin_id
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ingredient_name": self.ingredient_name,
+            "category": self.category,
+            "quantity": float(self.quantity) if self.quantity is not None else None,
+            "unit": self.unit,
+            "cost": float(self.cost),
+            "expiration_date": self.expiration_date.isoformat() if self.expiration_date else None,
+            "receipt_url": self.receipt_url,
+            "notes": self.notes,
+            "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
+            "admin_id": self.admin_id,
+            "admin_email": getattr(self.admin, 'email', None) if getattr(self, 'admin', None) else None
+        }
+
+# ---------------------------------------------------------------------------
+# AuditLog — tracks critical system actions
+# ---------------------------------------------------------------------------
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    actor_role = Column(String(50), nullable=True)
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(Integer, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    actor = relationship('User', foreign_keys=[actor_id])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "actor_id": self.actor_id,
+            "actor_email": self.actor.email if self.actor else None,
+            "actor_role": self.actor_role,
+            "action": self.action,
+            "resource_type": self.resource_type,
+            "resource_id": self.resource_id,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+        }
+
+# ---------------------------------------------------------------------------
+# MonthlyRevenueHistory — preserves historical monthly revenues
+# ---------------------------------------------------------------------------
+class MonthlyRevenueHistory(db.Model):
+    __tablename__ = 'monthly_revenue_history'
+
+    id = Column(Integer, primary_key=True)
+    outlet_id = Column(Integer, ForeignKey('outlets.id', ondelete='CASCADE'), nullable=True)
+    month_year = Column(String(20), nullable=False) # e.g., '2026-08'
+    total_revenue = Column(Numeric(15, 2), nullable=False, default=0.00)
+    reset_by_admin_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    admin = relationship('User', foreign_keys=[reset_by_admin_id])
+    outlet = relationship('Outlet', foreign_keys=[outlet_id])
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "outlet_id": self.outlet_id,
+            "month_year": self.month_year,
+            "total_revenue": float(self.total_revenue),
+            "reset_by_admin_id": self.reset_by_admin_id,
+            "reset_by_admin_email": self.admin.email if self.admin else None,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }

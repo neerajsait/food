@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { api } from "../utils/api";
-import { CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { CheckCircle, XCircle, Loader2 } from "../ui/Icon";
 
 export default function VerifyEmail() {
   const [status, setStatus] = useState("loading");
@@ -28,7 +28,7 @@ export default function VerifyEmail() {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-base)", padding: "2rem" }}>
-      <div className="glass-panel" style={{ padding: "3rem", textAlign: "center", maxWidth: "400px", width: "100%" }}>
+      <div className="panel" style={{ padding: "3rem", textAlign: "center", maxWidth: "400px", width: "100%" }}>
         {status === "loading" && (
           <div style={{ color: "var(--brand)" }}>
             <Loader2 size={48} className="animate-spin" style={{ margin: "0 auto 1rem" }} />

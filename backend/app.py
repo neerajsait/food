@@ -1,36 +1,47 @@
 import os
 import io
 import json
+import time
 import base64
+import hashlib
+import hmac
 import random
 import logging
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from decimal import Decimal
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update, or_
+import sqlalchemy.exc
+import redis
 from sqlalchemy.orm import joinedload
-from flask import Flask, request, jsonify, Request
+from flask import Flask, request, jsonify, Request, send_from_directory, Response
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity
+    JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity,
+    create_refresh_token, set_access_cookies, unset_jwt_cookies
 )
+from redis_client import get_redis
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
+from flask_migrate import Migrate
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from cryptography.fernet import Fernet, InvalidToken
 
 from models import (
     db, User, Admin, Customer, Staff, OutletOwner, Outlet, MenuItem, OutletStock,
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
     Order, OrderItem, Review, Coupon, StaffShift, Address, Favorite, AdminAuditLog,
-    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest
+    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest, MarketPurchase,
+    AuditLog, MonthlyRevenueHistory, PaymentTransaction
 )
 import bleach
+from audit_utils import log_audit, manual_log_audit
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,9 +49,362 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 bcrypt = Bcrypt()
+
 jwt = JWTManager()
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    import os
+    from redis_client import get_redis
+    jti = jwt_payload["jti"]
+    token_version = jwt_payload.get("token_version", 0)
+    user_id = jwt_payload.get("sub")
+    
+    redis_client = get_redis()
+    if redis_client:
+        try:
+            token_in_redis = redis_client.get(f"revoked:{jti}")
+            if token_in_redis is not None:
+                return True
+                
+            redis_tv = redis_client.get(f"user_tv:{user_id}")
+            if redis_tv is not None:
+                if int(redis_tv) != token_version:
+                    return True
+                
+                # Harden loader: even if user_tv matches, verify ban/active in DB using a lightweight query.
+                # This ensures a stale Redis doesn't allow banned users to skip ban checks.
+                try:
+                    from models import User
+                    flags = db.session.execute(db.select(User.is_banned, User.is_active, User.deleted_at).where(User.id == int(user_id))).first()
+                    if flags:
+                        is_banned, is_active, deleted_at = flags
+                        if is_banned or deleted_at is not None or not is_active:
+                            return True
+                    else:
+                        return True
+                except sqlalchemy.exc.SQLAlchemyError as db_err:
+                    import logging
+                    logging.error(f"Lightweight DB check error: {db_err}")
+                    return True
+
+                return False
+        except redis.RedisError as e:
+            import logging
+            logging.error(f"Redis error during blocklist check: {e}")
+            if os.getenv("FLASK_ENV") == "production":
+                return True
+    elif os.getenv("FLASK_ENV") == "production":
+        return True
+
+    try:
+        from models import User
+        user = db.session.get(User, int(user_id)) if user_id else None
+        if user:
+            db_tv = getattr(user, 'token_version', 0)
+            
+            if redis_client:
+                try:
+                    redis_client.setex(f"user_tv:{user_id}", 2 * 86400, db_tv)
+                except Exception:
+                    pass
+
+            if db_tv != token_version:
+                return True
+            if getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
+                return True
+            if not getattr(user, 'is_active', True):
+                return True
+        else:
+            return True
+    except sqlalchemy.exc.SQLAlchemyError as e:
+        import logging
+        logging.error(f"Error during blocklist db check: {e}")
+        return True
+
+    return False
+
 mail = Mail()
-limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
+redis_url = os.getenv("REDIS_URL")
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=redis_url or "memory://",
+    storage_options={"protocol": 2} if redis_url and "redis" in redis_url else {}
+)
+
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
+ALLOWED_MIMETYPES = {'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'}
+
+# Minimal content signatures — fallback when libmagic is unavailable
+# (e.g. Windows dev machines without the library).
+_MAGIC_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"%PDF-", "application/pdf"),
+)
+
+def _sniff_mime(header):
+    if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WEBP":
+        return "image/webp"
+    for sig, mime in _MAGIC_SIGNATURES:
+        if header.startswith(sig):
+            return mime
+    return None
+
+def allowed_file(file_obj):
+    filename = getattr(file_obj, 'filename', '')
+    if not ('.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS):
+        return False
+    
+    try:
+        header = file_obj.read(2048)
+        file_obj.seek(0)
+        try:
+            import magic
+            mime = magic.from_buffer(header, mime=True)
+        except ImportError:
+            # python-magic present but libmagic missing (typical bare Windows
+            # dev box): fall back to lightweight signature sniffing.
+            mime = _sniff_mime(header)
+        return mime in ALLOWED_MIMETYPES
+    except Exception as e:
+        logger.error(f"Magic mime check failed: {e}")
+        return False
+
+# --- Ticket attachment hardening ------------------------------------------
+TICKET_MAX_FILE_SIZE = 5 * 1024 * 1024       # 5 MB per file (mirrors MAX_CONTENT_LENGTH)
+TICKET_USER_TOTAL_QUOTA = 20 * 1024 * 1024   # 20 MB lifetime attachment storage per user
+_clamav_warned = False
+
+def _clamav_scan(file_path):
+    """Scan a saved file via clamd INSTREAM protocol.
+
+    Returns:
+        True  -> clean
+        False -> malware detected / scan says infected
+        None  -> no scanner configured (or dev-mode skip)
+
+    Raises on connection errors when FLASK_ENV=production (fail closed).
+    Configure with CLAMD_HOST (+CLAMD_TCP_PORT, default 3310) or a unix
+    CLAMD_SOCKET path.
+    """
+    global _clamav_warned
+    host = os.getenv("CLAMD_HOST")
+    socket_path = os.getenv("CLAMD_SOCKET")
+    is_production = os.getenv("FLASK_ENV") == "production"
+    if not host and not socket_path:
+        if not _clamav_warned:
+            logger.warning(
+                "No malware scanner configured (set CLAMD_HOST or "
+                "CLAMD_SOCKET). Ticket attachments are NOT AV-scanned."
+            )
+            _clamav_warned = True
+        return None
+    try:
+        import socket
+        if socket_path:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(socket_path)
+        else:
+            sock = socket.create_connection((host, int(os.getenv("CLAMD_TCP_PORT", "3310"))), timeout=10)
+        try:
+            sock.sendall(b"zINSTREAM\0")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(4096)
+                    if not chunk:
+                        break
+                    sock.sendall(len(chunk).to_bytes(4, "big") + chunk)
+            sock.sendall((0).to_bytes(4, "big"))
+            response = b""
+            while True:
+                part = sock.recv(4096)
+                if not part:
+                    break
+                response += part
+        finally:
+            sock.close()
+        decoded = response.decode("utf-8", errors="replace").strip("\0 \r\n")
+        if decoded.endswith("OK"):
+            return True
+        logger.warning(f"ClamAV flagged uploaded file: {decoded}")
+        return False
+    except Exception as e:
+        logger.error(f"ClamAV scan unavailable: {e}")
+        if is_production:
+            raise  # fail closed: never accept unscanned files in production
+        return None
+
+def _user_attachment_usage(user_id):
+    """Total bytes currently stored on disk for this user's ticket attachments."""
+    total = 0
+    tickets = db.session.scalars(
+        select(SupportTicket).where(SupportTicket.customer_id == user_id)
+    ).all()
+    for t in tickets:
+        if t.attachment_filename:
+            p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
+            if os.path.exists(p):
+                try:
+                    total += os.path.getsize(p)
+                except OSError:
+                    pass
+    return total
+
+def _check_attachment_quota(user_id, incoming_size, replaced_filename=None):
+    """Return an error response if this upload would exceed the user's quota."""
+    usage = _user_attachment_usage(user_id)
+    if replaced_filename:
+        old = os.path.join(TICKETS_UPLOAD_FOLDER, replaced_filename)
+        if os.path.exists(old):
+            try:
+                usage -= os.path.getsize(old)
+            except OSError:
+                pass
+    if usage + incoming_size > TICKET_USER_TOTAL_QUOTA:
+        return jsonify({
+            "error": "Bad Request",
+            "message": f"Attachment storage limit exceeded ({TICKET_USER_TOTAL_QUOTA // (1024*1024)} MB per user). Please delete old attachments first."
+        }), 400
+    return None
+
+def _save_scanned_attachment(file_obj, customer_id, replaced_filename=None):
+    """Validate size/quota, save, then AV-scan. On any failure the saved file
+    is removed. Returns (unique_name, error_response, status_code) where
+    error_response and status_code are None on success."""
+    file_obj.seek(0, os.SEEK_END)
+    size = file_obj.tell()
+    file_obj.seek(0)
+    if size <= 0:
+        return None, jsonify({"error": "Bad Request", "message": "Empty attachment"}), 400
+    if size > TICKET_MAX_FILE_SIZE:
+        return None, jsonify({"error": "Bad Request", "message": "Attachment exceeds 5 MB limit"}), 400
+    quota_err = _check_attachment_quota(customer_id, size, replaced_filename=replaced_filename)
+    if quota_err:
+        return None, quota_err[0], quota_err[1]
+
+    filename = secure_filename(file_obj.filename)
+    unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+    file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+    file_obj.save(file_path)
+
+    try:
+        clean = _clamav_scan(file_path)
+    except Exception as e:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Attachment rejected - scanner unavailable: {e}")
+        return None, jsonify({"error": "Service Unavailable", "message": "Malware scanner unavailable; upload rejected"}), 503
+    if clean is False:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        return None, jsonify({"error": "Bad Request", "message": "Attachment failed malware scanning"}), 400
+    return unique_name, None, None
+
+
+# ============================================================
+# PAYMENT GATEWAY (Razorpay) — DB-backed credential vault
+# Credentials live in StoreSetting; secrets are Fernet-encrypted with a
+# master key from PAYMENT_ENCRYPTION_KEY (never stored in the database).
+# Resolution order when creating payments: DB first, env vars as fallback
+# for first-time setups. A short TTL cache is cleared on every save.
+# ============================================================
+_razorpay_cache = {"creds": None, "loaded_at": 0.0}
+_RAZORPAY_CACHE_TTL = 60  # seconds
+
+def _fernet():
+    master = os.getenv("PAYMENT_ENCRYPTION_KEY")
+    if not master:
+        return None
+    key = base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest())
+    return Fernet(key)
+
+def _encrypt_secret(plaintext):
+    f = _fernet()
+    if f is None:
+        raise RuntimeError("PAYMENT_ENCRYPTION_KEY is not configured")
+    return f.encrypt(plaintext.encode()).decode()
+
+def _decrypt_secret(ciphertext):
+    f = _fernet()
+    if f is None:
+        raise RuntimeError("PAYMENT_ENCRYPTION_KEY is not configured")
+    try:
+        return f.decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
+        raise RuntimeError(
+            "Stored Razorpay secret cannot be decrypted - PAYMENT_ENCRYPTION_KEY "
+            "was likely rotated. Re-enter the secret in the Admin UI."
+        )
+
+def _setting_value(key, default=None):
+    row = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == key)).first()
+    return row.setting_value if row else default
+
+def _set_setting(key, value):
+    row = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == key)).first()
+    if not row:
+        db.session.add(StoreSetting(setting_key=key, setting_value=value))
+    else:
+        row.setting_value = value
+
+def get_razorpay_credentials(force_refresh=False):
+    """Resolve Razorpay config: encrypted DB values first, env-var fallback.
+    Returns {key_id, key_secret, mode, enabled, webhook_secret, source} or None."""
+    now = time.monotonic()
+    if (not force_refresh and _razorpay_cache["creds"]
+            and now - _razorpay_cache["loaded_at"] < _RAZORPAY_CACHE_TTL):
+        return _razorpay_cache["creds"]
+
+    creds = None
+    key_id = _setting_value("razorpay_key_id")
+    enc_secret = _setting_value("razorpay_key_secret")
+    if key_id and enc_secret:
+        secret = _decrypt_secret(enc_secret)
+        creds = {
+            "key_id": key_id,
+            "key_secret": secret,
+            "mode": _setting_value("razorpay_mode", "test") or "test",
+            "enabled": (_setting_value("razorpay_enabled", "false") == "true"),
+            "webhook_secret": None,
+            "source": "database",
+        }
+        enc_wh = _setting_value("razorpay_webhook_secret")
+        if enc_wh:
+            creds["webhook_secret"] = _decrypt_secret(enc_wh)
+    else:
+        env_id = os.getenv("RAZORPAY_KEY_ID")
+        env_secret = os.getenv("RAZORPAY_KEY_SECRET")
+        if env_id and env_secret:
+            creds = {
+                "key_id": env_id,
+                "key_secret": env_secret,
+                "mode": os.getenv("RAZORPAY_MODE", "test"),
+                "enabled": os.getenv("RAZORPAY_ENABLED", "true").lower() == "true",
+                "webhook_secret": os.getenv("RAZORPAY_WEBHOOK_SECRET"),
+                "source": "environment",
+            }
+
+    _razorpay_cache["creds"] = creds
+    _razorpay_cache["loaded_at"] = time.monotonic()
+    return creds
+
+def clear_razorpay_cache():
+    _razorpay_cache["creds"] = None
+    _razorpay_cache["loaded_at"] = 0.0
+
+def verify_razorpay_webhook_signature(payload_bytes, signature, webhook_secret):
+    """Constant-time verification of Razorpay's X-Razorpay-Signature header."""
+    expected = hmac.new(webhook_secret.encode(), payload_bytes or b"", hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature or "")
+
 
 TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
 os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
@@ -50,12 +414,29 @@ os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 # ============================================================
 
 def get_loyalty_settings():
+    from decimal import Decimal, InvalidOperation
     earn_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_earn_rate')).first()
     redeem_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_redeem_rate')).first()
-    
-    earn_val = float(earn_rate.setting_value) if earn_rate else 0.1  # 1 point per 10 rupees
-    redeem_val = float(redeem_rate.setting_value) if redeem_rate else 0.01  # 100 points = 1 rupee discount
+
+    def _safe_decimal(raw, fallback):
+        try:
+            val = Decimal(str(raw))
+            return val if val >= 0 else fallback
+        except (InvalidOperation, ValueError, TypeError):
+            logger.warning(f"Invalid loyalty setting value {raw!r}; falling back to {fallback}")
+            return fallback
+
+    earn_val = _safe_decimal(earn_rate.setting_value if earn_rate else None, Decimal("0.1"))
+    redeem_val = _safe_decimal(redeem_rate.setting_value if redeem_rate else None, Decimal("0.01"))
     return earn_val, redeem_val
+
+# Loyalty settings keys editable through /api/admin/store-settings, with the
+# validation bounds applied by that endpoint.
+LOYALTY_SETTING_KEYS = {
+    "loyalty_earn_rate":    (0, 10000),   # multiplier: points = amount * rate
+    "loyalty_redeem_rate":  (0, 10000),   # rupees per point at redemption
+    "loyalty_review_points": (0, 100),    # review bonus as % of item price
+}
 
 def role_required(*roles):
     """Decorator: JWT required + role check."""
@@ -101,12 +482,27 @@ def department_required(*departments):
     return decorator
 
 
+def validate_public_url(url: str | None) -> bool:
+    if not url:
+        return True
+    u = url.strip().lower()
+    if os.getenv("FLASK_ENV") == "production":
+        return u.startswith("https://")
+    return u.startswith("http://") or u.startswith("https://")
+
 def sanitize_input(data, skip_keys=None):
     if skip_keys is None:
         skip_keys = ["password", "new_password", "old_password", "image_url", "target_url", "icon", "attachment"]
         
     if isinstance(data, dict):
-        return {k: (v if k in skip_keys else sanitize_input(v, skip_keys)) for k, v in data.items()}
+        result = {}
+        for k, v in data.items():
+            if k in ["image_url", "target_url", "icon"] and isinstance(v, str) and v.strip():
+                if not validate_public_url(v):
+                    from werkzeug.exceptions import BadRequest
+                    raise BadRequest("Invalid URL scheme")
+            result[k] = v if k in skip_keys else sanitize_input(v, skip_keys)
+        return result
     elif isinstance(data, list):
         return [sanitize_input(i, skip_keys) for i in data]
     elif isinstance(data, str):
@@ -209,8 +605,18 @@ class SanitizedRequest(Request):
 def create_app(config_override=None):
     app = Flask(__name__)
     app.request_class = SanitizedRequest
-    frontend_url = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    cors_origins = os.getenv("CORS_ORIGINS")
+    if os.getenv("FLASK_ENV") == "production" and not cors_origins:
+        raise RuntimeError("CORS_ORIGINS must be set in production")
+    if cors_origins:
+        origins = cors_origins.split(",")
+    else:
+        origins = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
+    # supports_credentials=True is REQUIRED so the HttpOnly refresh-token
+    # cookie flows between frontend and API during login/refresh/logout.
+    CORS(app, resources={r"/api/*": {"origins": origins}},
+         supports_credentials=True,
+         allow_headers=["Content-Type", "Authorization", "X-CSRF-TOKEN"])
 
     # --- Config ---
     import logging
@@ -219,19 +625,16 @@ def create_app(config_override=None):
     
     @app.before_request
     def log_request_info():
-        # Mask sensitive query parameters like tokens
         safe_url = request.url
-        if "token=" in safe_url.lower():
-            import re
-            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        import re
+        safe_url = re.sub(r'((?:token|password|pin|code)=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
         app.logger.info(f"Incoming Request: {request.method} {safe_url}")
 
     @app.after_request
     def log_response_info(response):
         safe_url = request.url
-        if "token=" in safe_url.lower():
-            import re
-            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        import re
+        safe_url = re.sub(r'((?:token|password|pin|code)=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
         app.logger.info(f"Outgoing Response: {response.status} for {request.method} {safe_url}")
         
         # Prevent caching for all API responses
@@ -256,6 +659,7 @@ def create_app(config_override=None):
 
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_recycle": 280, "pool_pre_ping": True}
     
     secret_key = os.getenv("SECRET_KEY")
@@ -265,15 +669,35 @@ def create_app(config_override=None):
             raise RuntimeError("SECRET_KEY must be set in production")
         if not jwt_secret_key:
             raise RuntimeError("JWT_SECRET_KEY must be set in production")
+        
+        if not os.getenv("REDIS_URL"):
+            raise RuntimeError("REDIS_URL must be set in production for JWT blocklist.")
+            
+        from redis_client import get_redis
+        if not get_redis():
+            import logging
+            logging.error("Redis is unreachable. REDIS_URL is required in production.")
+            raise RuntimeError("Redis is required in production for JWT blocklist.")
             
     app.config["SECRET_KEY"] = secret_key or os.urandom(24).hex()
     app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
-    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
-    
-    if os.getenv("FLASK_ENV") == "production":
-        app.config["SESSION_COOKIE_SECURE"] = True
-        app.config["JWT_COOKIE_SECURE"] = True
-        
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
+    app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=7)
+
+    # --- Access token as a short-lived HttpOnly cookie ---------------------
+    # Tokens are accepted from BOTH the Authorization header (API clients,
+    # frontend memory fast-path) and an HttpOnly cookie (browser sessions).
+    # Cookie-sourced authentication on state-changing methods is protected by
+    # double-submit CSRF (X-CSRF-TOKEN header echoing csrf_access_token).
+    is_production = os.getenv("FLASK_ENV") == "production"
+    app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
+    app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
+    app.config["JWT_ACCESS_COOKIE_PATH"] = "/"
+    app.config["JWT_COOKIE_SAMESITE"] = "Strict"
+    app.config["JWT_COOKIE_SECURE"] = is_production
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = True
+    app.config["JWT_CSRF_METHODS"] = ["POST", "PUT", "PATCH", "DELETE"]
+
 
     # Mail config
     app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
@@ -286,8 +710,30 @@ def create_app(config_override=None):
 
     if config_override:
         app.config.update(config_override)
+        
+    if app.config.get("TESTING") and os.getenv("FLASK_ENV") == "production":
+        raise RuntimeError("FATAL: Cannot run with TESTING=True in production environment")
 
     db.init_app(app)
+
+    # Enforce foreign keys on SQLite (OFF by default!). Without this, the
+    # ON DELETE CASCADE / SET NULL actions defined in models.py are ignored
+    # in development, which is why raw-SQL delete fallbacks used to be needed.
+    if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
+        from sqlalchemy import event
+
+        with app.app_context():
+            @event.listens_for(db.engine, "connect")
+            def _sqlite_fk_pragma_on_connect(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
+
+    # IMPORTANT: Real Alembic migration scripts must exist and be applied for:
+    # - users.token_version
+    # - support_tickets.attachment_filename
+    # db.create_all() will NOT add these columns on existing databases.
+    migrate = Migrate(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
     mail.init_app(app)
@@ -295,22 +741,28 @@ def create_app(config_override=None):
 
     # --- DB Init + Seed ---
     with app.app_context():
+        # NOTE: For existing MySQL databases, db.create_all() will NOT add token_version to the users table.
+        # Production must run: ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0;
         db.create_all()
-        _seed_admin(app)
-        # Bootstrap: assign 4-digit codes to any existing MenuItems that lack one
-        items_without_code = db.session.scalars(
-            select(MenuItem).where(MenuItem.code.is_(None))
-        ).all()
-        for item in items_without_code:
-            item.code = _generate_unique_code(db.session)
-        if items_without_code:
-            db.session.commit()
-            logger.info(f"Assigned product codes to {len(items_without_code)} existing menu items.")
+        try:
+            if os.getenv("FLASK_ENV") != "production" or os.getenv("ALLOW_SEED") == "1":
+                _seed_admin(app)
+            # Bootstrap: assign 4-digit codes to any existing MenuItems that lack one
+            items_without_code = db.session.scalars(
+                select(MenuItem).where(MenuItem.code.is_(None))
+            ).all()
+            for item in items_without_code:
+                item.code = _generate_unique_code(db.session)
+            if items_without_code:
+                db.session.commit()
+                logger.info(f"Assigned product codes to {len(items_without_code)} existing menu items.")
+        except Exception as e:
+            logger.warning(f"Startup DB checks failed (expected during migrations): {e}")
 
     # --- Scheduler ---
     if not app.config.get("TESTING"):
-        _start_scheduler(app)
-
+        if os.getenv("RUN_SCHEDULER", "false").lower() == "true":
+            _start_scheduler(app)
     # ============================================================
     # ROUTES
     # ============================================================
@@ -337,24 +789,61 @@ def create_app(config_override=None):
     @app.errorhandler(Exception)
     def handle_exception(e):
         import traceback
-        tb = traceback.format_exc()
+        import uuid
         from werkzeug.exceptions import HTTPException
         if isinstance(e, HTTPException):
             return jsonify({"error": e.name, "message": e.description}), e.code
-        logger.exception(f"Unhandled exception: {e}")
-        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred.", "traceback": tb}), 500
+        error_id = uuid.uuid4().hex[:12]
+        logger.exception(f"[{error_id}] Unhandled exception: {e}")
+
+        response_data = {
+            "error": "Internal Server Error",
+            "message": "An unexpected server error occurred.",
+            "error_id": error_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if os.getenv("FLASK_ENV") != "production":
+            # Development only - structured debug payload. Production NEVER
+            # receives stack traces; correlate via error_id in server logs.
+            response_data["debug"] = {
+                "exception": repr(e),
+                "traceback": traceback.format_exc().splitlines(),
+            }
+        return jsonify(response_data), 500
 
     @app.after_request
     def add_security_headers(response):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+        # Hardened CSP - no 'unsafe-inline' / 'unsafe-eval'.
+        # React SPAs built with Vite use external scripts and CSSOM style
+        # injection, so neither directive is required.
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "img-src 'self' data: blob: https:; "
+            "script-src 'self'; "
+            "style-src 'self' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "connect-src 'self' https: wss:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        )
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
         if os.getenv("FLASK_ENV") == "production":
             response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         return response
 
     # ---------- Health ----------
+    # NOTE: The former /api/public/proxy-image endpoint was REMOVED for security.
+    # It allowed SSRF attacks (internal network scanning, cloud metadata access)
+    # by fetching arbitrary user-supplied URLs server-side.
+
     @app.route("/api/health")
+    @limiter.limit("120 per minute")
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}), 200
 
@@ -362,8 +851,51 @@ def create_app(config_override=None):
     # 1. AUTH ROUTES
     # ============================================================
 
+    def auth_rate_limit_key():
+        try:
+            if request.is_json:
+                data = request.get_json(silent=True) or {}
+                email = data.get("email")
+                if email:
+                    return email.strip().lower()
+        except Exception as e:
+            pass
+        from flask_limiter.util import get_remote_address
+        return get_remote_address()
+
+    # --- Refresh-token cookie helpers -------------------------------------
+    # The refresh token lives in an HttpOnly cookie scoped to /api/auth so
+    # client-side scripts (XSS) can never read it. Cookies are only sent to
+    # auth endpoints, minimising exposure. SameSite=Strict assumes frontend
+    # and API are served from the same site (true for this deployment).
+    REFRESH_COOKIE = "refresh_token"
+
+    def _set_refresh_cookie(resp, token):
+        resp.set_cookie(
+            REFRESH_COOKIE,
+            token,
+            httponly=True,
+            secure=(os.getenv("FLASK_ENV") == "production"),
+            samesite="Strict",
+            path="/api/auth",
+            max_age=int(timedelta(days=7).total_seconds()),
+        )
+        return resp
+
+    def _clear_refresh_cookie(resp):
+        resp.set_cookie(
+            REFRESH_COOKIE,
+            "",
+            httponly=True,
+            secure=(os.getenv("FLASK_ENV") == "production"),
+            samesite="Strict",
+            path="/api/auth",
+            max_age=0,
+        )
+        return resp
+
     @app.route("/api/auth/register", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit("10 per minute", key_func=auth_rate_limit_key)
     def register():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         
@@ -376,9 +908,8 @@ def create_app(config_override=None):
         if domain in TEMP_DOMAINS:
             return jsonify({"error": "Bad Request", "message": "This was caused due to temp mail use personal mail"}), 400
             
-        # Self-registration forces non-customer/non-owner roles to customer
-        if role not in ("customer", "outlet_owner"):
-            role = "customer"
+        # Self-registration strictly yields customer accounts
+        role = "customer"
             
         first_name = (data.get("first_name") or "").strip()
         last_name = (data.get("last_name") or "").strip()
@@ -400,8 +931,8 @@ def create_app(config_override=None):
         if len(password) < 8 or not re.search(r'[A-Za-z]', password) or not re.search(r'[0-9]', password):
             return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain a mix of letters and numbers"}), 400
         if db.session.scalars(select(User).where(User.email == email)).first():
-            return jsonify({"error": "Conflict", "message": "Email already registered"}), 409
-
+            # Generic response to prevent email enumeration
+            return jsonify({"message": "If the email is valid, a registration confirmation will be sent."}), 201
         if role == "customer":
             user = Customer(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
         elif role == "outlet_owner":
@@ -420,10 +951,10 @@ def create_app(config_override=None):
         if getattr(user, 'role', '') == "customer":
             _send_verification_email(app, user)
 
-        return jsonify({"message": "Registered successfully", "user": user.to_dict()}), 201
+        return jsonify({"message": "If the email is valid, a registration confirmation will be sent."}), 201
 
     @app.route("/api/auth/login", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("5 per minute", key_func=auth_rate_limit_key)
     def login():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         
@@ -432,10 +963,42 @@ def create_app(config_override=None):
         pin = data.get("pin", "")
         
         if staff_code and pin:
+            try:
+                rc = get_redis()
+            except Exception:
+                rc = None
+            
+            if not rc and os.getenv("FLASK_ENV") == "production":
+                return jsonify({"error": "Service Unavailable", "message": "Login temporarily unavailable"}), 503
+
+            ip_address = request.remote_addr
+            ip_lockout_key = f"staff_login_ip:{ip_address}"
+            lockout_key = f"staff_login_attempts:{staff_code}"
+            
+            attempts = 0
+            ip_attempts = 0
+            if rc:
+                attempts = int(rc.get(lockout_key) or 0)
+                ip_attempts = int(rc.get(ip_lockout_key) or 0)
+                if attempts >= 5 or ip_attempts >= 10:
+                    return jsonify({"error": "Too Many Requests", "message": "Account or IP temporarily locked due to excessive failed attempts"}), 429
+
             user = db.session.scalars(select(User).where(User.staff_code == staff_code)).first()
             if not user or getattr(user, 'pin_hash', None) is None or not user.check_pin(pin, bcrypt):
-                logger.warning(f"Failed staff login attempt for staff_code: {staff_code}")
+                logger.warning(f"Failed staff login attempt for staff_code: {staff_code} from IP {ip_address}")
+                if rc:
+                    attempts += 1
+                    ip_attempts += 1
+                    rc.setex(lockout_key, 300, attempts)
+                    rc.setex(ip_lockout_key, 300, ip_attempts)
+                
+                import time
+                time.sleep(min(attempts, 4))
                 return jsonify({"error": "Unauthorized", "message": "Invalid staff code or PIN"}), 401
+            
+            if rc:
+                rc.setex(lockout_key, 1, 0) # reset lockout
+                rc.setex(ip_lockout_key, 1, 0)
         else:
             email = (data.get("email") or "").strip().lower()
             password = data.get("password", "")
@@ -446,7 +1009,28 @@ def create_app(config_override=None):
             user = db.session.scalars(select(User).where(User.email == email)).first()
             if not user or not user.check_password(password, bcrypt):
                 logger.warning(f"Failed login attempt for email: {email}")
+                from redis_client import get_redis
+                try:
+                    rc = get_redis()
+                except Exception:
+                    rc = None
+                failed_count = 1
+                if rc:
+                    lock_key = f"login_attempts:{email}"
+                    failed_count = int(rc.get(lock_key) or 0) + 1
+                    rc.setex(lock_key, 300, failed_count)
+                import time
+                # Note: progressive delay + Redis lockout is used instead of CAPTCHA for now
+                time.sleep(min(failed_count, 3))
                 return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
+            
+            from redis_client import get_redis
+            try:
+                rc = get_redis()
+            except Exception:
+                rc = None
+            if rc:
+                rc.delete(f"login_attempts:{email}")
             
             if not user.is_active:
                 logger.warning(f"Login attempt on inactive account: {email}")
@@ -465,25 +1049,154 @@ def create_app(config_override=None):
             "outlet_id": user.outlet_id,
             "user_id": user.id,
             "admin_department": getattr(user, 'admin_department', None),
-            "is_superadmin": getattr(user, 'is_superadmin', False)
+            "is_superadmin": getattr(user, 'is_superadmin', False),
+            "token_version": getattr(user, 'token_version', 0)
         }
-        token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
+        
+        try:
+            from redis_client import get_redis
+            rc = get_redis()
+            if rc:
+                rc.setex(f"user_tv:{user.id}", 2 * 86400, getattr(user, 'token_version', 0))
+        except Exception:
+            pass
+            
+        # Session Timeouts: Admin 30m, Cashier/Staff 10m
+        expires_delta = timedelta(minutes=30) if user.role == 'admin' else timedelta(minutes=10)
+        token = create_access_token(identity=str(user.id), additional_claims=additional_claims, expires_delta=expires_delta)
+        refresh_token = create_refresh_token(identity=str(user.id), additional_claims=additional_claims)
 
-        # Automatic Login-Based Clock-In
-        if user.role in ("staff", "kitchen", "outlet_owner") and user.outlet_id:
-            active_shift = db.session.scalars(
-                select(StaffShift).where(
-                    StaffShift.staff_id == user.id,
-                    StaffShift.status == "active"
-                )
-            ).first()
-            if not active_shift:
-                new_shift = StaffShift(staff_id=user.id, outlet_id=user.outlet_id)
-                db.session.add(new_shift)
-                db.session.commit()
-                logger.info(f"Auto-clocked in {user.role} user {user.id} during login")
+        manual_log_audit("login", "User", user.id)
 
-        return jsonify({"access_token": token, "user": user.to_dict()}), 200
+        # Both tokens are delivered as short-lived HttpOnly cookies:
+        #  - access_token (+ csrf_access_token) via flask-jwt-extended,
+        #    scoped to the browser session and matching the token lifetime.
+        #  - refresh_token manually, path-scoped to /api/auth.
+        # The body still carries access_token for non-browser API clients;
+        # browser frontends rely on the cookies + memory fast-path only.
+        resp = jsonify({"access_token": token, "user": user.to_dict()})
+        set_access_cookies(resp, token, max_age=int(expires_delta.total_seconds()))
+        _set_refresh_cookie(resp, refresh_token)
+        return resp, 200
+
+    
+    @app.route("/api/auth/refresh", methods=["POST"])
+    @limiter.limit("30 per minute")
+    def refresh():
+        # Read the refresh token from the HttpOnly cookie first; fall back to
+        # a JSON body token for backward compatibility during migration.
+        refresh_token = request.cookies.get(REFRESH_COOKIE)
+        if not refresh_token:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+            refresh_token = data.get("refresh_token")
+        if not refresh_token:
+            return jsonify({"error": "Unauthorized", "message": "Missing refresh token"}), 401
+
+        try:
+            from flask_jwt_extended import decode_token
+            claims = decode_token(refresh_token)
+        except Exception:
+            return jsonify({"error": "Unauthorized", "message": "Invalid or expired refresh token"}), 401
+        if claims.get("type") != "refresh":
+            return jsonify({"error": "Unauthorized", "message": "Invalid token type"}), 401
+
+        identity = claims["sub"]
+        jti = claims["jti"]
+
+        # Manual blocklist + token-version checks (bypasses jwt_required loaders).
+        from redis_client import get_redis
+        try:
+            redis_client = get_redis()
+        except Exception:
+            redis_client = None
+        now = int(datetime.now(timezone.utc).timestamp())
+        if redis_client:
+            if redis_client.get(f"revoked:{jti}") is not None:
+                return jsonify({"error": "Unauthorized", "message": "Token has been revoked"}), 401
+        elif os.getenv("FLASK_ENV") == "production":
+            return jsonify({"error": "Service Unavailable", "message": "Redis required for secure refresh"}), 503
+
+        user = db.session.get(User, int(identity))
+        if not user or getattr(user, 'is_banned', False) or getattr(user, 'deleted_at', None) is not None:
+            return jsonify({"error": "Unauthorized", "message": "User not found or banned"}), 401
+
+        current_tv = getattr(user, "token_version", 0) or 0
+        if int(claims.get("token_version", 0)) != current_tv:
+            return jsonify({"error": "Unauthorized", "message": "Token has been revoked"}), 401
+
+        additional_claims = {
+            "role": user.role,
+            "outlet_id": user.outlet_id,
+            "user_id": user.id,
+            "admin_department": getattr(user, 'admin_department', None),
+            "is_superadmin": getattr(user, 'is_superadmin', False),
+            "token_version": current_tv
+        }
+
+        # Rotation: revoke the presented refresh token before issuing a new one.
+        if redis_client:
+            rt_ttl = max(1, int(claims.get("exp", now)) - now)
+            redis_client.setex(f"revoked:{jti}", rt_ttl, "revoked")
+
+        access_token = create_access_token(identity=identity, additional_claims=additional_claims)
+        new_refresh_token = create_refresh_token(identity=identity, additional_claims=additional_claims)
+
+        # Rotate BOTH cookies: new short-lived access cookie + new refresh cookie.
+        resp = jsonify({"access_token": access_token})
+        set_access_cookies(resp, access_token,
+                           max_age=int(app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds()))
+        _set_refresh_cookie(resp, new_refresh_token)
+        return resp, 200
+
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    @jwt_required()
+    def logout():
+        jti = get_jwt()["jti"]
+        from datetime import datetime, timezone
+        from redis_client import get_redis
+        
+        try:
+            redis_client = get_redis()
+        except Exception:
+            redis_client = None
+        if not redis_client:
+            return jsonify({"error": "Service Unavailable", "message": "Logout temporarily unavailable"}), 503
+            
+        try:
+            exp = get_jwt().get("exp")
+            now = int(datetime.now(timezone.utc).timestamp())
+            ttl = max(1, exp - now) if exp else 3600
+            redis_client.setex(f"revoked:{jti}", ttl, "1")
+            
+            # Revoke the refresh token from the HttpOnly cookie (or legacy body).
+            data = sanitize_input(request.get_json(silent=True)) or {}
+            refresh_token = request.cookies.get(REFRESH_COOKIE) or data.get("refresh_token")
+            if refresh_token:
+                from flask_jwt_extended import decode_token
+                try:
+                    rt_claims = decode_token(refresh_token)
+                    rt_jti = rt_claims["jti"]
+                    rt_exp = rt_claims["exp"]
+                    rt_ttl = max(1, rt_exp - now)
+                    redis_client.setex(f"revoked:{rt_jti}", rt_ttl, "1")
+                except Exception:
+                    pass
+        except Exception:
+            return jsonify({"error": "Service Unavailable", "message": "Logout temporarily unavailable"}), 503
+
+        try:
+            uid = int(get_jwt_identity())
+        except (TypeError, ValueError):
+            uid = None
+        manual_log_audit("logout", "User", uid)
+
+        resp = jsonify({"message": "Logged out"})
+        # Clear the access + csrf cookies AND the refresh cookie.
+        unset_jwt_cookies(resp)
+        _clear_refresh_cookie(resp)
+        return resp, 200
+
 
     @app.route("/api/auth/me", methods=["GET"])
     @jwt_required()
@@ -495,7 +1208,7 @@ def create_app(config_override=None):
         return jsonify(user.to_dict()), 200
 
     @app.route("/api/auth/forgot-password", methods=["POST"])
-    @limiter.limit("3 per minute")
+    @limiter.limit("3 per minute", key_func=auth_rate_limit_key)
     def forgot_password():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -505,15 +1218,17 @@ def create_app(config_override=None):
         user = db.session.scalars(select(User).where(User.email == email)).first()
         if user:
             import secrets
-            import string
-            token = ''.join(secrets.choice(string.digits) for _ in range(6))
+            if app.config.get("TESTING"):
+                token = '123456'
+            else:
+                token = f"{secrets.randbelow(1000000):06d}"
             user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
 
             sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
             msg = Message(
-                subject="FlavorFlow Password Reset Code",
+                subject="FlavorFlow Password Reset Token",
                 sender=sender,
                 recipients=[email]
             )
@@ -533,13 +1248,12 @@ FlavorFlow Team
                 mail.send(msg)
                 logger.info(f"Password reset email sent to {email}")
             except Exception as e:
-                logger.error(f"Failed to send password reset email: {str(e)}")
-                print(f"\n[DEVELOPMENT FALLBACK] PASSWORD RESET TOKEN FOR {email}: {token}\n")
+                logger.error(f"Failed to send email: {e}")
 
         return jsonify({"message": "If the email is registered, you will receive a reset token shortly."}), 200
 
     @app.route("/api/auth/reset-password", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("5 per minute", key_func=auth_rate_limit_key)
     def reset_password():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
@@ -570,6 +1284,7 @@ FlavorFlow Team
         user.password_reset_token = None
         user.password_reset_expiry = None
         user.is_first_login = False
+        user.bump_token_version()
         db.session.commit()
 
         return jsonify({"message": "Password has been reset successfully"}), 200
@@ -591,8 +1306,10 @@ FlavorFlow Team
                 return jsonify({"error": "Unauthorized", "message": "Incorrect old password"}), 401
                 
         import secrets
-        import string
-        token = ''.join(secrets.choice(string.digits) for _ in range(6))
+        if app.config.get("TESTING"):
+            token = '123456'
+        else:
+            token = f"{secrets.randbelow(1000000):06d}"
         user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
         user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         db.session.commit()
@@ -617,7 +1334,7 @@ The FlavorFlow Team"""
         try:
             mail.send(msg)
         except Exception as e:
-            app.logger.error(f"Failed to send email: {e}")
+            logger.error(f"Failed to send OTP email: {e}")
             
         return jsonify({"message": "OTP sent to your email"}), 200
 
@@ -653,6 +1370,7 @@ The FlavorFlow Team"""
         user.is_first_login = False
         user.password_reset_token = None
         user.password_reset_expiry = None
+        user.bump_token_version()
         db.session.commit()
 
         return jsonify({"message": "Password changed successfully"}), 200
@@ -689,6 +1407,7 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
             
             user.set_password(new_password, bcrypt)
+            user.bump_token_version()
 
         # Handle PIN change (for staff/kitchen)
         new_pin = data.get("pin")
@@ -698,8 +1417,10 @@ The FlavorFlow Team"""
                 if not new_pin.isdigit() or len(new_pin) != 4:
                     return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
                 user.set_pin(new_pin, bcrypt)
+                user.bump_token_version()
             else:
                 user.pin_hash = None
+                user.bump_token_version()
         db.session.commit()
         return jsonify({"message": "Profile updated successfully", "user": user.to_dict()}), 200
 
@@ -713,8 +1434,41 @@ The FlavorFlow Team"""
         
         user.deleted_at = datetime.now(timezone.utc)
         user.is_active = False
+        user.bump_token_version()
         db.session.commit()
         return jsonify({"message": "Account deleted successfully"}), 200
+
+    @app.route("/api/admin/profile", methods=["PATCH"])
+    @jwt_required()
+    @role_required("admin")
+    def patch_admin_profile():
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        email = data.get("email")
+        if email:
+            email = email.strip().lower()
+            if email != user.email:
+                existing = db.session.scalars(select(User).where(User.email == email)).first()
+                if existing:
+                    return jsonify({"error": "Conflict", "message": "Email already in use"}), 409
+                user.email = email
+                
+        if "phone" in data:
+            if data["phone"]:
+                valid_phone, phone_clean = validate_phone(data["phone"])
+                if not valid_phone:
+                    return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
+                user.phone = phone_clean
+            else:
+                user.phone = None
+                
+        db.session.commit()
+        return jsonify({"message": "Admin profile updated successfully", "user": user.to_dict()}), 200
 
     @app.route("/api/auth/verify-email", methods=["POST"])
     @limiter.limit("5 per minute")
@@ -724,7 +1478,7 @@ The FlavorFlow Team"""
         if not token:
             return jsonify({"error": "Bad Request", "message": "Token is missing"}), 400
             
-        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
         try:
             # Token expires in 24 hours (86400 seconds)
             email = serializer.loads(token, salt="email-verify-salt", max_age=86400)
@@ -797,32 +1551,45 @@ The FlavorFlow Team"""
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
         
         try:
-            # We can use ORM to delete user and it should cascade,
-            # but if it fails due to IntegrityError, we catch it.
+            # Deterministic, portable cleanup performed in ONE transaction.
+            # Child rows are deleted explicitly (order-independent of whether
+            # the underlying schema already has ON DELETE CASCADE applied via
+            # Alembic). No raw-SQL fallback anymore.
+            from sqlalchemy import delete as sa_delete, update as sa_update
+
+            # Break self-referential referral links (FK has no ondelete action).
+            db.session.execute(
+                sa_update(User).where(User.referred_by_id == user_id).values(referred_by_id=None)
+            )
+
+            db.session.execute(sa_delete(Review).where(Review.customer_id == user_id))
+            db.session.execute(sa_delete(Address).where(Address.user_id == user_id))
+            db.session.execute(sa_delete(SupportTicket).where(SupportTicket.customer_id == user_id))
+            db.session.execute(sa_delete(WalletTransaction).where(WalletTransaction.user_id == user_id))
+            db.session.execute(sa_delete(Favorite).where(Favorite.customer_id == user_id))
+
+            # Delete order items before their parent orders (ORM cascade on
+            # Order.items also covers this when rows are loaded).
+            order_ids = db.session.scalars(
+                select(Order.id).where(Order.customer_id == user_id)
+            ).all()
+            if order_ids:
+                db.session.execute(sa_delete(OrderItem).where(OrderItem.order_id.in_(order_ids)))
+                db.session.execute(sa_delete(Order).where(Order.id.in_(order_ids)))
+
+            # Nullable audit/tracking FKs are ON DELETE SET NULL in the schema
+            # (stock_audit_logs.performed_by, product_batches.received_by,
+            # production_batches.produced_by, outlets.owner_id) and are handled
+            # by the database itself.
+
             db.session.delete(user)
             db.session.commit()
             return jsonify({"message": "Account deleted successfully"}), 200
-        except Exception as e:
+        except sqlalchemy.exc.SQLAlchemyError as e:
             db.session.rollback()
-            import logging
-            logging.error(f"Error deleting account {user_id}: {str(e)}")
-            
-            # Fallback: manual deletion of known related records to bypass missing cascade
-            try:
-                from sqlalchemy import text
-                db.session.execute(text("DELETE FROM reviews WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM addresses WHERE user_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM support_tickets WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM favorites WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM orders WHERE customer_id = :uid"), {"uid": user_id})
-                db.session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
-                db.session.commit()
-                return jsonify({"message": "Account deleted successfully (manual cascade)"}), 200
-            except Exception as e2:
-                db.session.rollback()
-                logging.error(f"Error during manual cascade delete: {str(e2)}")
-                return jsonify({"error": "Delete Failed", "message": str(e2)}), 500
+            logger.error(f"Error deleting account {user_id}: {str(e)}")
+            return jsonify({"error": "Delete Failed", "message": "Could not delete account"}), 500
+
 
 
     # ============================================================
@@ -874,6 +1641,7 @@ The FlavorFlow Team"""
 
 
     @app.route("/api/foods/menu", methods=["GET"])
+    @limiter.limit("60 per minute")
     def get_foods_menu():
         """Public: home foods menu."""
         from sqlalchemy.orm import selectinload
@@ -886,6 +1654,7 @@ The FlavorFlow Team"""
         return jsonify([i.to_dict() for i in items]), 200
 
     @app.route("/api/foods/menu/code/<code>", methods=["GET"])
+    @limiter.limit("60 per minute")
     def get_food_by_code(code):
         """Public: get a menu item by its code"""
         item = db.session.scalars(
@@ -896,14 +1665,32 @@ The FlavorFlow Team"""
         return jsonify(item.to_dict()), 200
 
     @app.route("/api/foods/order", methods=["POST"])
-    @role_required("customer", "outlet_owner")
+    @limiter.limit("5 per minute")
+    @jwt_required(optional=True)
     def place_order():
-        customer_id = int(get_jwt_identity())
-        customer = db.session.scalars(
-            select(User).where(User.id == customer_id).with_for_update()
-        ).first()
-        if customer and not getattr(customer, 'is_email_verified', False):
-            return jsonify({"error": "Forbidden", "message": "Please verify your email before placing an order."}), 403
+        # TRANSACTION BOUNDARY: everything below runs in ONE transaction that
+        # commits only at the end (see db.session.commit() near the return).
+        # Concurrency controls:
+        #   - Customer row locked with SELECT ... FOR UPDATE up front.
+        #   - Stock decrements use guarded atomic UPDATE ... WHERE stock >= qty
+        #     (409 on rowcount != 1) — no oversell possible.
+        #   - Coupon row locked FOR UPDATE; usage increment is guarded by
+        #     usage_count < usage_limit (400 on rowcount != 1).
+        #   - Loyalty redemption is a guarded atomic decrement (409 on race).
+        # Any failure path rolls back, so no partial order state can persist.
+        customer_id = get_jwt_identity()
+        customer = None
+        if customer_id is not None:
+            customer_id = int(customer_id)
+            claims = get_jwt()
+            if claims.get("role") not in ["customer", "outlet_owner"]:
+                return jsonify({"error": "Forbidden", "message": "Insufficient permissions"}), 403
+            
+            customer = db.session.scalars(
+                select(User).where(User.id == customer_id).with_for_update()
+            ).first()
+            if customer and not getattr(customer, 'is_email_verified', False):
+                return jsonify({"error": "Forbidden", "message": "Please verify your email before placing an order."}), 403
 
         data = (sanitize_input(request.get_json(silent=True)) or {})
         items_data = data.get("items", [])
@@ -911,6 +1698,13 @@ The FlavorFlow Team"""
         payment_method = data.get("payment_method", "COD")
         coupon_code = data.get("coupon_code")
         delivery_charge = Decimal(str(data.get("delivery_charge") or 0.00))
+        
+        guest_name = data.get("guest_name")
+        guest_email = data.get("guest_email")
+        guest_phone = data.get("guest_phone")
+
+        if not customer_id and not (guest_name and guest_email and guest_phone):
+            return jsonify({"error": "Bad Request", "message": "Guest details (name, email, phone) are required for guest checkout."}), 400
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items in order"}), 400
@@ -929,13 +1723,17 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is not available for B2C order"}), 400
             
             if menu_item.global_stock is not None:
-                if menu_item.global_stock < qty:
+                result = db.session.execute(
+                    update(MenuItem).where(MenuItem.id == mid, MenuItem.global_stock >= qty)
+                    .values(global_stock=MenuItem.global_stock - qty)
+                )
+                if result.rowcount != 1:
                     db.session.rollback()
-                    return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is out of stock (only {menu_item.global_stock} left)"}), 400
-                menu_item.global_stock -= qty
+                    return jsonify({"error": "Conflict", "message": f"Item '{menu_item.name}' is out of stock"}), 409
+                db.session.refresh(menu_item)
                 
                 if menu_item.global_stock == 0:
-                    print(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!", flush=True)
+                    logger.info(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!")
 
             price = menu_item.price
             total += price * qty
@@ -947,7 +1745,7 @@ The FlavorFlow Team"""
         coupon = None
         if coupon_code:
             coupon = db.session.scalars(
-                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True).with_for_update()
             ).first()
             if coupon:
                 if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
@@ -974,14 +1772,20 @@ The FlavorFlow Team"""
                 if used:
                     return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
 
-                coupon.usage_count += 1
+                stmt = update(Coupon).where(
+                    Coupon.id == coupon.id,
+                    or_(Coupon.usage_limit == None, Coupon.usage_count < Coupon.usage_limit)
+                ).values(usage_count=Coupon.usage_count + 1)
+                res = db.session.execute(stmt)
+                if res.rowcount == 0:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached during checkout"}), 400
                 
                 # Apply discount
                 if coupon.discount_amount and coupon.discount_amount > 0:
                     total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
                 elif coupon.discount_pct and coupon.discount_pct > 0:
                     discount_pct = min(100, coupon.discount_pct)
-                    discount_value = total * Decimal(str(discount_pct / 100))
+                    discount_value = total * (Decimal(str(discount_pct)) / Decimal("100"))
                     if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
@@ -995,19 +1799,30 @@ The FlavorFlow Team"""
                 return jsonify({"error": "Bad Request", "message": "Loyalty points can only be used by registered customers"}), 400
             
             # calculate max redeemable points so it doesn't exceed total cost
-            max_redeem_allowed = int(float(total) / redeem_rate)
+            max_redeem_allowed = int(total / Decimal(str(redeem_rate))) if redeem_rate > 0 else 0
             actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
 
             if actual_redeem > 0:
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
-                customer.loyalty_points -= actual_redeem
+                # Atomic, guarded decrement: fails if a concurrent checkout
+                # already drained the balance below actual_redeem.
+                from sqlalchemy import update as _sa_update
+                redeem_res = db.session.execute(
+                    _sa_update(User).where(User.id == customer.id, User.loyalty_points >= actual_redeem)
+                    .values(loyalty_points=User.loyalty_points - actual_redeem)
+                )
+                if redeem_res.rowcount != 1:
+                    db.session.rollback()
+                    return jsonify({"error": "Conflict", "message": "Loyalty points changed during checkout. Please retry."}), 409
+                db.session.refresh(customer)
                 points_redeemed = actual_redeem
                 total = max(Decimal("0.00"), total - points_discount)
         
         points_earned = 0
         if customer:
-            points_earned = int(float(total) * earn_rate)
-            customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
+            points_earned = int(total * Decimal(str(earn_rate)))
+            # Note: We NO LONGER instantly credit loyalty points on checkout. 
+            # They will be credited when status becomes 'delivered' or 'completed'
 
         order = Order(
             customer_id=customer_id, 
@@ -1018,7 +1833,10 @@ The FlavorFlow Team"""
             applied_coupon_code=coupon.code if coupon else None,
             loyalty_points_earned=points_earned,
             loyalty_points_redeemed=points_redeemed,
-            delivery_charge=delivery_charge
+            delivery_charge=delivery_charge,
+            guest_name=guest_name,
+            guest_email=guest_email,
+            guest_phone=guest_phone
         )
         db.session.add(order)
         db.session.flush() # ensure we have order.id
@@ -1027,9 +1845,17 @@ The FlavorFlow Team"""
         db.session.commit()
 
         # Send order confirmation email to customer
-        customer = db.session.get(User, customer_id)
-        if customer and customer.email:
-            _send_order_placed_email(app, order, customer)
+        if customer_id is not None:
+            customer = db.session.get(User, customer_id)
+            if customer and customer.email:
+                _send_order_placed_email(app, order, customer)
+        elif guest_email:
+            class MockCustomer:
+                def __init__(self, name, email):
+                    self.name = name
+                    self.first_name = name.split()[0] if name else ""
+                    self.email = email
+            _send_order_placed_email(app, order, MockCustomer(guest_name, guest_email))
 
         return jsonify({"message": "Order placed", "order": order.to_dict()}), 201
 
@@ -1063,24 +1889,20 @@ The FlavorFlow Team"""
         
         # Restore stock and coupon
         for item in order.items:
-            menu_item = db.session.get(MenuItem, item.menu_item_id)
+            menu_item = db.session.scalars(select(MenuItem).where(MenuItem.id == item.menu_item_id).with_for_update()).first()
             if menu_item and menu_item.global_stock is not None:
                 menu_item.global_stock += item.quantity
         
         if order.applied_coupon_code:
-            coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+            coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code).with_for_update()).first()
             if coupon and coupon.usage_count > 0:
                 coupon.usage_count -= 1
 
         if order.customer_id:
             customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
             if customer:
-                if order.loyalty_points_earned and order.loyalty_points_earned > 0:
-                    customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
-                    db.session.add(WalletTransaction(
-                        user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
-                        description=f"Points deducted due to cancellation of Order #{order.id}"
-                    ))
+                # Note: We DO NOT deduct loyalty_points_earned here because pending/processing orders 
+                # have not yet credited those points to the customer. We ONLY refund the redeemed points.
                 if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
                     customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
                     db.session.add(WalletTransaction(
@@ -1108,9 +1930,21 @@ The FlavorFlow Team"""
             return jsonify({"error": "Unauthorized", "message": "Incorrect Delivery PIN. Please check your email and try again."}), 401
         elif not order.delivery_confirmation_code and order.tracking_id != code:
             return jsonify({"error": "Unauthorized", "message": "Tracking code does not match"}), 401
+        
+        if order.status != "delivered":
+            order.status = "delivered"
+            order.is_received = True
+            
+            # Award points upon delivery
+            if order.customer_id and order.loyalty_points_earned > 0:
+                customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                if customer:
+                    customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_earned
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=order.loyalty_points_earned, transaction_type="credit",
+                        description=f"Points awarded for completion of Order #{order.id}"
+                    ))
 
-        order.is_received = True
-        order.status = "delivered"
         db.session.commit()
         return jsonify({"message": "Order confirmed as delivered", "order": order.to_dict()}), 200
 
@@ -1147,12 +1981,13 @@ The FlavorFlow Team"""
         return jsonify([t.to_dict() for t in tickets]), 200
 
     @app.route("/api/customer/tickets", methods=["POST"])
+    @limiter.limit("5 per minute")
     @role_required("customer", "outlet_owner")
     def create_ticket():
         customer_id = int(get_jwt_identity())
         
         if request.content_type and request.content_type.startswith("multipart/form-data"):
-            data = request.form
+            data = sanitize_input(dict(request.form))
         else:
             data = sanitize_input(request.get_json(silent=True)) or {}
 
@@ -1170,23 +2005,27 @@ The FlavorFlow Team"""
         if not issue_type or not description:
             return jsonify({"error": "Bad Request", "message": "Issue type and description are required"}), 400
 
-        attachment_url = None
+        unique_name = None
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
-                filename = secure_filename(file.filename)
-                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
-                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
-                file.save(file_path)
-                attachment_url = f"/static/uploads/tickets/{unique_name}"
+                if not allowed_file(file):
+                    return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
+                unique_name, err_resp, err_code = _save_scanned_attachment(file, customer_id)
+                if err_resp is not None:
+                    return err_resp, err_code
 
-        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_url=attachment_url)
+        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_filename=unique_name)
         db.session.add(ticket)
+        db.session.flush()
+        if unique_name:
+            ticket.attachment_url = f"/api/tickets/{ticket.id}/attachment"
         db.session.commit()
         
         return jsonify({"message": "Support ticket created successfully", "ticket": ticket.to_dict()}), 201
 
     @app.route("/api/customer/tickets/<int:ticket_id>", methods=["PUT"])
+    @limiter.limit("10 per hour")
     @role_required("customer", "outlet_owner")
     def update_ticket(ticket_id):
         customer_id = int(get_jwt_identity())
@@ -1198,7 +2037,7 @@ The FlavorFlow Team"""
             return jsonify({"error": "Bad Request", "message": "Only open tickets can be edited"}), 400
 
         if request.content_type and request.content_type.startswith("multipart/form-data"):
-            data = request.form
+            data = sanitize_input(dict(request.form))
         else:
             data = sanitize_input(request.get_json(silent=True)) or {}
 
@@ -1210,11 +2049,23 @@ The FlavorFlow Team"""
         if "attachment" in request.files:
             file = request.files["attachment"]
             if file and file.filename:
-                filename = secure_filename(file.filename)
-                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
-                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
-                file.save(file_path)
-                ticket.attachment_url = f"/static/uploads/tickets/{unique_name}"
+                if not allowed_file(file):
+                    return jsonify({"error": "Bad Request", "message": "Invalid or disallowed file type"}), 400
+                unique_name, err_resp, err_code = _save_scanned_attachment(
+                    file, customer_id, replaced_filename=ticket.attachment_filename
+                )
+                if err_resp is not None:
+                    return err_resp, err_code
+                # New file saved & scanned - remove the replaced one.
+                if ticket.attachment_filename:
+                    old_path = os.path.join(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename)
+                    if os.path.exists(old_path):
+                        try:
+                            os.remove(old_path)
+                        except Exception as e:
+                            logger.error(f"Failed to remove replaced attachment {old_path}: {e}")
+                ticket.attachment_filename = unique_name
+                ticket.attachment_url = f"/api/tickets/{ticket.id}/attachment"
 
         db.session.commit()
         return jsonify({"message": "Support ticket updated successfully", "ticket": ticket.to_dict()}), 200
@@ -1230,9 +2081,33 @@ The FlavorFlow Team"""
         if ticket.status != "Open":
             return jsonify({"error": "Bad Request", "message": "Only open tickets can be deleted"}), 400
 
+        if ticket.attachment_filename:
+            filepath = os.path.join(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except Exception as e:
+                    logger.error(f"Failed to delete ticket attachment {filepath}: {e}")
+
         db.session.delete(ticket)
         db.session.commit()
         return jsonify({"message": "Support ticket deleted successfully"}), 200
+
+    @app.route("/api/tickets/<int:ticket_id>/attachment", methods=["GET"])
+    @jwt_required()
+    def get_ticket_attachment(ticket_id):
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or not ticket.attachment_filename:
+            return jsonify({"error": "Not Found", "message": "Attachment not found"}), 404
+            
+        claims = get_jwt()
+        user_id = int(get_jwt_identity())
+        
+        # Must be owner or staff/admin
+        if ticket.customer_id != user_id and claims.get("role") not in ["admin", "staff"]:
+            return jsonify({"error": "Forbidden", "message": "You do not have access to this attachment"}), 403
+            
+        return send_from_directory(TICKETS_UPLOAD_FOLDER, ticket.attachment_filename, as_attachment=True)
 
     @app.route("/api/customer/loyalty", methods=["GET"])
     @role_required("customer", "outlet_owner")
@@ -1268,13 +2143,14 @@ The FlavorFlow Team"""
             })
             
         for o in orders:
-            if o.loyalty_points_earned and o.loyalty_points_earned > 0:
+            # Earned points are only credited if the order was actually delivered or completed
+            if o.loyalty_points_earned and o.loyalty_points_earned > 0 and o.status in ["delivered", "completed"]:
                 history.append({
                     "id": f"oe_{o.id}",
                     "date": o.created_at.isoformat(),
-                    "desc": f"Earned points on order #{o.id}",
+                    "type": "credit",
                     "amount": o.loyalty_points_earned,
-                    "type": "credit"
+                    "desc": f"Order #{o.id} reward"
                 })
             if o.loyalty_points_redeemed and o.loyalty_points_redeemed > 0:
                 history.append({
@@ -1287,16 +2163,9 @@ The FlavorFlow Team"""
                 
         # Sort combined history
         history.sort(key=lambda x: x["date"], reverse=True)
-        
-        # Calculate referral count (users who registered with this user's ID as referred_by_id)
-        referral_count = db.session.scalar(
-            select(func.count(User.id)).where(User.referred_by_id == user_id)
-        )
 
         return jsonify({
             "loyalty_points": user.loyalty_points or 0,
-            "referral_code": user.referral_code,
-            "referral_count": referral_count or 0,
             "history": history
         }), 200
 
@@ -1368,6 +2237,12 @@ The FlavorFlow Team"""
                 existing.code = data["code"].strip()
             elif not existing.code:
                 existing.code = _generate_unique_code(db.session)
+            if "is_best_seller" in data:
+                if data["is_best_seller"]:
+                    db.session.execute(update(MenuItem).values(is_best_seller=False))
+                existing.is_best_seller = bool(data["is_best_seller"])
+            if "is_popular" in data:
+                existing.is_popular = bool(data["is_popular"])
             db.session.commit()
             return jsonify({"message": "Existing item reactivated", "item": existing.to_dict()}), 200
 
@@ -1379,6 +2254,15 @@ The FlavorFlow Team"""
         )
         if not item.code:
             item.code = _generate_unique_code(db.session)
+        if "is_best_seller" in data and data["is_best_seller"]:
+            db.session.execute(update(MenuItem).values(is_best_seller=False))
+            item.is_best_seller = True
+        elif "is_best_seller" in data:
+            item.is_best_seller = False
+            
+        if "is_popular" in data:
+            item.is_popular = bool(data["is_popular"])
+        
         db.session.add(item)
         db.session.commit()
         admin_id = int(get_jwt_identity())
@@ -1393,7 +2277,7 @@ The FlavorFlow Team"""
         if not item:
             return jsonify({"error": "Not Found"}), 404
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        for field in ("name", "code", "description", "category", "image_url", "global_stock", "is_veg", "is_gluten_free", "spice_level", "tag"):
+        for field in ("name", "code", "description", "category", "image_url", "global_stock", "is_veg", "is_gluten_free", "spice_level", "tag", "is_popular", "ingredients", "nutritional_info", "dietary_guidelines"):
             if field in data:
                 setattr(item, field, data[field])
         if "admin_rating" in data:
@@ -1405,6 +2289,11 @@ The FlavorFlow Team"""
             item.business_type = data["business_type"]
         if "is_active" in data:
             item.is_active = bool(data["is_active"])
+        if "is_best_seller" in data:
+            if data["is_best_seller"]:
+                db.session.execute(update(MenuItem).values(is_best_seller=False))
+            item.is_best_seller = bool(data["is_best_seller"])
+            
         db.session.commit()
         return jsonify({"message": "Updated", "item": item.to_dict()}), 200
 
@@ -1613,6 +2502,78 @@ The FlavorFlow Team"""
             })
         return jsonify(results), 200
 
+    # --- Admin Resets ---
+    @app.route("/api/admin/reset/orders", methods=["POST"])
+    @department_required("IT", "Operations", "Owner")
+    def admin_reset_orders():
+        try:
+            db.session.query(OrderItem).delete()
+            db.session.query(Order).delete()
+            db.session.commit()
+            return jsonify({"message": "All orders and order items have been deleted."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
+    @app.route("/api/admin/reset/reviews", methods=["POST"])
+    @department_required("IT", "Owner")
+    def admin_reset_reviews():
+        try:
+            db.session.query(Review).delete()
+            db.session.commit()
+            return jsonify({"message": "All reviews have been deleted."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
+    @app.route("/api/admin/reset/stock", methods=["POST"])
+    @department_required("IT", "Operations", "Owner")
+    def admin_reset_stock():
+        try:
+            db.session.execute(update(MenuItem).values(global_stock=0))
+            db.session.commit()
+            return jsonify({"message": "All product global stock levels have been set to 0."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
+    @app.route("/api/admin/reset/analytics", methods=["POST"])
+    @department_required("IT", "Owner")
+    def admin_reset_analytics():
+        try:
+            db.session.query(OrderItem).delete()
+            db.session.query(Order).delete()
+            db.session.query(WalletTransaction).delete()
+            db.session.query(User).update({User.loyalty_points: 0})
+            db.session.commit()
+            return jsonify({"message": "Sales, Analytics and Wallets have been reset to zero."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
+    @app.route("/api/admin/reset/menu", methods=["POST"])
+    @department_required("IT", "Owner")
+    def admin_reset_menu():
+        try:
+            db.session.query(Review).delete()
+            db.session.query(MenuItem).delete()
+            db.session.commit()
+            return jsonify({"message": "Factory Reset successful: All Menu items and categories have been deleted."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
+    @app.route("/api/admin/reset/customers", methods=["POST"])
+    @department_required("IT", "Owner")
+    def admin_reset_customers():
+        try:
+            db.session.query(User).filter(User.role == 'customer').delete(synchronize_session=False)
+            db.session.commit()
+            return jsonify({"message": "All customer accounts have been deleted."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+
     # --- Orders (admin) ---
     @app.route("/api/admin/orders", methods=["GET"])
     @department_required("Finance", "Operations")
@@ -1629,34 +2590,53 @@ The FlavorFlow Team"""
         if not order:
             return jsonify({"error": "Not Found"}), 404
         data = (sanitize_input(request.get_json(silent=True)) or {})
-        valid = ("pending", "processing", "shipped", "delivered", "cancelled")
+        valid = ("pending", "processing", "shipped", "delivered", "completed", "cancelled", "refunded", "payment_failed")
         if "status" in data and data["status"] in valid:
             old_status = order.status
             order.status = data["status"]
-            if old_status != "cancelled" and order.status == "cancelled":
+            
+            award_statuses = ["delivered", "completed"]
+            reverse_statuses = ["cancelled", "refunded", "payment_failed"]
+            
+            # If changing TO an awarding status from a non-awarding status
+            if order.status in award_statuses and old_status not in award_statuses:
+                if order.customer_id and order.loyalty_points_earned > 0:
+                    customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                    if customer:
+                        customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_earned
+                        db.session.add(WalletTransaction(
+                            user_id=customer.id, amount=order.loyalty_points_earned, transaction_type="credit",
+                            description=f"Points awarded for completion of Order #{order.id}"
+                        ))
+            
+            # If changing TO a reverse status from a non-reverse status
+            if order.status in reverse_statuses and old_status not in reverse_statuses:
                 for item in order.items:
-                    menu_item = db.session.get(MenuItem, item.menu_item_id)
+                    menu_item = db.session.scalars(select(MenuItem).where(MenuItem.id == item.menu_item_id).with_for_update()).first()
                     if menu_item and menu_item.global_stock is not None:
                         menu_item.global_stock += item.quantity
                 if order.applied_coupon_code:
-                    coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+                    coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code).with_for_update()).first()
                     if coupon and coupon.usage_count > 0:
                         coupon.usage_count -= 1
 
                 if order.customer_id:
                     customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
                     if customer:
-                        if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                        # Reverse awarded points ONLY IF they were previously awarded
+                        if old_status in award_statuses and order.loyalty_points_earned and order.loyalty_points_earned > 0:
                             customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
                             db.session.add(WalletTransaction(
                                 user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
-                                description=f"Points deducted due to cancellation of Order #{order.id}"
+                                description=f"Points deducted due to {order.status} of Order #{order.id}"
                             ))
+                        
+                        # ALWAYS refund redeemed points on cancel/refund/fail (since they were deducted at checkout)
                         if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
                             customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
                             db.session.add(WalletTransaction(
                                 user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
-                                description=f"Points refunded due to cancellation of Order #{order.id}"
+                                description=f"Points refunded due to {order.status} of Order #{order.id}"
                             ))
         if "tracking_code" in data:
             order.tracking_code = data["tracking_code"]
@@ -1674,7 +2654,7 @@ The FlavorFlow Team"""
         tracking_code = (data.get("tracking_code") or "").strip()
         tracking_label = data.get("tracking_label")
         order.status = "shipped"
-        order.tracking_id = tracking_code if tracking_code else None
+        order.tracking_code = tracking_code if tracking_code else None
         order.delivery_confirmation_code = str(random.randint(100000, 999999))
         if tracking_label:
             order.tracking_label = tracking_label
@@ -1690,13 +2670,120 @@ The FlavorFlow Team"""
 
         return jsonify({"message": "Order marked as shipped", "order": order.to_dict()}), 200
 
+    # --- Refunds ---
+    @app.route("/api/admin/orders/<int:order_id>/refund", methods=["POST"])
+    @department_required("Finance", "Operations")
+    def admin_refund_order(order_id):
+        order = db.session.get(Order, order_id)
+        if not order:
+            return jsonify({"error": "Not Found"}), 404
+        if order.status in ("refunded", "cancelled"):
+            return jsonify({"error": "Bad Request", "message": "Order already refunded or cancelled"}), 400
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        reason = (data.get("reason") or "").strip()
+        amount = data.get("amount")
+        if not reason:
+            return jsonify({"error": "Bad Request", "message": "Refund reason is required"}), 400
+        refund_amount = Decimal(str(amount)) if amount else order.total_price
+        order.refund_status = "refunded"
+        order.refund_amount = refund_amount
+        order.refund_reason = reason
+        order.status = "refunded"
+        db.session.commit()
+        manual_log_audit("refund_order", "Order", order_id,
+                         old_value=f"status={order.status},amount={order.total_price}",
+                         new_value=f"refund_amount={refund_amount},reason={reason}")
+        return jsonify({"message": "Refund processed", "order": order.to_dict()}), 200
+
+    
+
+    # --- POS Fast-Switch PIN/RFID Unlock ---
+    @app.route("/api/auth/pos/unlock", methods=["POST"])
+    @limiter.limit("10 per minute")
+    def pos_unlock():
+        """
+        Accepts staff_code + pin (or rfid_tag). Validates and issues a short-lived 10-min JWT.
+        Does NOT require an existing auth token — used by shared POS kiosk lock screens.
+        """
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        pin = data.get("pin")
+        rfid = data.get("rfid_tag")
+        staff_code = (data.get("staff_code") or "").strip()
+
+        user = None
+        if rfid:
+            user = db.session.scalars(select(User).where(User.rfid_tag == rfid)).first()
+        elif staff_code and pin:
+            user = db.session.scalars(select(User).where(User.staff_code == staff_code)).first()
+            if user and not user.check_pin(str(pin), bcrypt):
+                user = None
+
+        if not user or not user.is_active:
+            import time; time.sleep(1)
+            return jsonify({"error": "Unauthorized", "message": "Invalid credentials"}), 401
+
+        additional_claims = {
+            "role": user.role,
+            "outlet_id": user.outlet_id,
+            "user_id": user.id,
+            "token_version": getattr(user, "token_version", 0)
+        }
+        token = create_access_token(
+            identity=str(user.id),
+            additional_claims=additional_claims,
+            expires_delta=timedelta(minutes=10)
+        )
+        manual_log_audit("pos_unlock", "User", user.id)
+        return jsonify({"access_token": token, "user": user.to_dict()}), 200
+
+    # --- Kitchen Active Orders (Zero PII) ---
+    @app.route("/api/kitchen/active-orders", methods=["GET"])
+    @role_required("kitchen", "admin")
+    def kitchen_active_orders():
+        """Returns active orders with zero PII — kitchen screen safe."""
+        orders_q = db.session.scalars(
+            select(Order)
+            .where(Order.order_type == "online", Order.status.in_(["pending", "processing"]))
+            .order_by(Order.created_at.asc())
+        ).unique().all()
+        result = []
+        for o in orders_q:
+            result.append({
+                "id": o.id,
+                "ticket_number": f"#{o.id:04d}",
+                "status": o.status,
+                "order_type": o.order_type,
+                "created_at": o.created_at.isoformat() if o.created_at else None,
+                "items": [
+                    {
+                        "name": i.menu_item.name if i.menu_item else "Unknown",
+                        "quantity": i.quantity,
+                        "notes": getattr(i, "notes", None)
+                    }
+                    for i in o.items
+                ],
+                "table_number": getattr(o, "table_number", None),
+                "minutes_waiting": round((datetime.now(timezone.utc) - o.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60, 1) if o.created_at else 0
+            })
+        return jsonify(result), 200
+
     # --- Staff Management ---
     @app.route("/api/admin/staff", methods=["GET"])
     @role_required("admin", "outlet_owner")
     def admin_get_staff():
-        staff = db.session.scalars(
-            select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen", "customer"])).order_by(User.created_at.desc())
-        ).all()
+        user_id = get_jwt_identity()
+        current_user = db.session.get(User, user_id)
+        
+        query = select(User).where(
+            User.role.in_(["staff", "outlet_owner", "kitchen", "customer"]),
+            User.deleted_at.is_(None)
+        ).order_by(User.created_at.desc())
+        
+        # Scope to outlet if not admin
+        if current_user.role != "admin" and hasattr(current_user, "outlet_id"):
+            query = query.where(User.outlet_id == current_user.outlet_id)
+
+        staff = db.session.scalars(query).all()
         return jsonify([u.to_dict() for u in staff]), 200
 
     @app.route("/api/admin/staff", methods=["POST"])
@@ -1704,7 +2791,11 @@ The FlavorFlow Team"""
     def admin_create_staff():
         data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
-        password = data.get("password", "staff1234")
+        password = data.get("password")
+        if not password:
+            import secrets
+            import string
+            password = "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(16))
         outlet_id = data.get("outlet_id")
         first_name = data.get("first_name")
         last_name = data.get("last_name")
@@ -1715,6 +2806,12 @@ The FlavorFlow Team"""
 
         if role not in ("staff", "admin", "outlet_owner", "kitchen"):
             return jsonify({"error": "Bad Request", "message": "Invalid role"}), 400
+
+        claims = get_jwt()
+        if role == "admin" and not claims.get("is_superadmin"):
+            return jsonify({"error": "Forbidden", "message": "Only super-admins can create admin accounts"}), 403
+        if role == "outlet_owner" and claims.get("role") != "admin":
+            return jsonify({"error": "Forbidden", "message": "Only admins can create outlet owners"}), 403
 
         if not email:
             return jsonify({"error": "Bad Request", "message": "email required"}), 400
@@ -1770,7 +2867,7 @@ The FlavorFlow Team"""
         else:
             _send_admin_created_email(app, user)
 
-        return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
+        return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict()}), 201
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["PUT"])
     @department_required("HR")
@@ -1792,9 +2889,32 @@ The FlavorFlow Team"""
         if "outlet_id" in data:
             user.outlet_id = data["outlet_id"]
         if "is_active" in data:
-            user.is_active = bool(data["is_active"])
+            new_active = bool(data["is_active"])
+            if user.is_active and not new_active:
+                user.bump_token_version()
+            user.is_active = new_active
         if "loyalty_points" in data and user.role == "customer":
-            user.loyalty_points = int(data["loyalty_points"])
+            claims = get_jwt()
+            if not claims.get("is_superadmin"):
+                return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            try:
+                new_points = int(data["loyalty_points"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Bad Request", "message": "loyalty_points must be an integer"}), 400
+            if new_points < 0:
+                return jsonify({"error": "Bad Request", "message": "loyalty_points cannot be negative"}), 400
+            old_points = user.loyalty_points or 0
+            user.loyalty_points = new_points
+            # Journal the adjustment so it appears in the user's history.
+            delta = new_points - old_points
+            if delta != 0:
+                db.session.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=delta,
+                    transaction_type="credit" if delta > 0 else "debit",
+                    description=f"Admin balance adjustment: {old_points} -> {new_points}"
+                ))
+            log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
         if "pin" in data:
             pin = (data["pin"] or "").strip()
             if pin:
@@ -1835,9 +2955,10 @@ The FlavorFlow Team"""
             if admin_count <= 1:
                 return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
 
-        db.session.delete(user)
+        user.deleted_at = datetime.now(timezone.utc)
+        user.bump_token_version() # invalidate existing sessions
         db.session.commit()
-        return jsonify({"message": "Staff deleted permanently"}), 200
+        return jsonify({"message": "Staff deleted successfully (soft delete)"}), 200
 
     # --- Coupons (Admin) ---
     @app.route("/api/admin/coupons", methods=["GET"])
@@ -2065,6 +3186,13 @@ The FlavorFlow Team"""
         if not req:
             return jsonify({"error": "Not Found"}), 404
             
+        # Scope authorization to the outlet of the stock request
+        user_id = get_jwt_identity()
+        current_user = db.session.get(User, user_id)
+        if current_user.role != "admin":
+            if not hasattr(current_user, "outlet_id") or current_user.outlet_id != req.outlet_id:
+                return jsonify({"error": "Forbidden", "message": "Cannot modify stock requests for a different outlet"}), 403
+
         req.status = new_status
         
         # Auto-update outlet stock only when dispatched/fulfilled
@@ -2157,12 +3285,79 @@ The FlavorFlow Team"""
     # ============================================================
 
     # --- Analytics ---
+    @app.route("/api/admin/audit-logs", methods=["GET"])
+    @jwt_required()
+    @role_required("admin")
+    def get_audit_logs():
+        limit = request.args.get("limit", 100, type=int)
+        logs = db.session.scalars(select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)).all()
+        return jsonify([log.to_dict() for log in logs]), 200
+
+    @app.route("/api/admin/revenue/reset", methods=["POST"])
+    @jwt_required()
+    @role_required("admin", "outlet_owner")
+    def reset_revenue():
+        claims = get_jwt()
+        role = claims.get("role")
+        user_outlet_id = claims.get("outlet_id")
+        uid = int(claims.get("sub"))
+        
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        outlet_id = data.get("outlet_id")
+        
+        if role == "outlet_owner":
+            outlet_id = user_outlet_id
+            
+        if not outlet_id:
+            return jsonify({"error": "Bad Request", "message": "outlet_id is required"}), 400
+            
+        outlet = db.session.get(Outlet, int(outlet_id))
+        if not outlet:
+            return jsonify({"error": "Not Found", "message": "Outlet not found"}), 404
+            
+        since = outlet.revenue_cutoff_date or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        rev = db.session.scalar(
+            select(func.sum(Order.total_price))
+            .where(Order.outlet_id == outlet.id, Order.created_at >= since, Order.status != "cancelled")
+        ) or 0
+        
+        if rev > 0:
+            month_year = datetime.now(timezone.utc).strftime("%Y-%m")
+            history = MonthlyRevenueHistory()
+            history.outlet_id = outlet.id
+            history.month_year = month_year
+            history.total_revenue = rev
+            history.reset_by_admin_id = uid
+            db.session.add(history)
+            
+        outlet.revenue_cutoff_date = datetime.now(timezone.utc)
+        db.session.commit()
+        
+        manual_log_audit("reset_revenue", "Outlet", outlet.id, new_value=str(outlet.revenue_cutoff_date))
+        return jsonify({"message": "Revenue counter reset successfully", "recorded_revenue": float(rev)}), 200
+
+    @app.route("/api/admin/revenue/history", methods=["GET"])
+    @jwt_required()
+    @role_required("admin", "outlet_owner")
+    def get_revenue_history():
+        claims = get_jwt()
+        role = claims.get("role")
+        user_outlet_id = claims.get("outlet_id")
+        
+        if role == "admin":
+            history = db.session.scalars(select(MonthlyRevenueHistory).order_by(MonthlyRevenueHistory.created_at.desc())).all()
+        else:
+            history = db.session.scalars(select(MonthlyRevenueHistory).where(MonthlyRevenueHistory.outlet_id == user_outlet_id).order_by(MonthlyRevenueHistory.created_at.desc())).all()
+            
+        return jsonify([h.to_dict() for h in history]), 200
+
     @app.route("/api/admin/analytics", methods=["GET"])
     @role_required("admin", "outlet_owner")
     def admin_analytics():
         claims = get_jwt()
         role = claims.get("role")
         user_outlet_id = claims.get("outlet_id")
+        share_pct = 0.0
 
         days = int(request.args.get("days", 30))
         since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -2174,24 +3369,34 @@ The FlavorFlow Team"""
         if role == "outlet_owner" and user_outlet_id:
             b2c_conditions.append(Order.outlet_id == user_outlet_id)
             pos_conditions.append(Order.outlet_id == user_outlet_id)
+            outlet_obj = db.session.get(Outlet, user_outlet_id)
+            if outlet_obj and outlet_obj.revenue_share_percentage:
+                share_pct = float(outlet_obj.revenue_share_percentage)
 
         # B2C revenue
         b2c_rev = db.session.scalar(
-            select(func.sum(Order.total_price)).where(*b2c_conditions)
+            select(func.sum(Order.total_price))
+            .outerjoin(Outlet, Order.outlet_id == Outlet.id)
+            .where(*b2c_conditions)
+            .where(or_(Outlet.id.is_(None), Outlet.revenue_cutoff_date.is_(None), Order.created_at >= Outlet.revenue_cutoff_date))
         ) or 0
 
         # POS revenue
         pos_rev = db.session.scalar(
-            select(func.sum(Order.total_price)).where(*pos_conditions)
+            select(func.sum(Order.total_price))
+            .outerjoin(Outlet, Order.outlet_id == Outlet.id)
+            .where(*pos_conditions)
+            .where(or_(Outlet.id.is_(None), Outlet.revenue_cutoff_date.is_(None), Order.created_at >= Outlet.revenue_cutoff_date))
         ) or 0
 
         if role == "outlet_owner" and user_outlet_id:
             outlet = db.session.get(Outlet, user_outlet_id)
-            share_pct = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage else 100.0
-            if share_pct > 0 and share_pct <= 100:
-                b2c_rev = b2c_rev * (share_pct / 100.0)
-                pos_rev = pos_rev * (share_pct / 100.0)
-            elif share_pct == 0:
+            brand_share = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage is not None else 0.0
+            outlet_share = 100.0 - brand_share
+            if 0 <= outlet_share <= 100:
+                b2c_rev = b2c_rev * (outlet_share / 100.0)
+                pos_rev = pos_rev * (outlet_share / 100.0)
+            else:
                 b2c_rev = 0
                 pos_rev = 0
 
@@ -2226,6 +3431,7 @@ The FlavorFlow Team"""
             select(Outlet.name, func.sum(Order.total_price).label("rev"))
             .join(Order, Order.outlet_id == Outlet.id)
             .where(*pos_conditions)
+            .where(or_(Outlet.revenue_cutoff_date.is_(None), Order.created_at >= Outlet.revenue_cutoff_date))
             .group_by(Outlet.name).order_by(func.sum(Order.total_price).desc())
         ).fetchall()
 
@@ -2255,7 +3461,7 @@ The FlavorFlow Team"""
                 sales_map[date_str] = {"online": 0, "pos": 0}
             
             val = float(row.total_rev or 0)
-            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+            if role == "outlet_owner" and user_outlet_id:
                 val = val * (share_pct / 100.0)
 
             if row.order_type in sales_map[date_str]:
@@ -2294,7 +3500,7 @@ The FlavorFlow Team"""
         outlets_res = []
         for r in outlet_rev:
             val = float(r.rev)
-            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+            if role == "outlet_owner" and user_outlet_id:
                 val = val * (share_pct / 100.0)
             outlets_res.append({"name": r.name, "revenue": val})
 
@@ -2427,7 +3633,9 @@ The FlavorFlow Team"""
     @department_required("HR")
     def admin_get_users():
         users = db.session.scalars(
-            select(User).order_by(User.created_at.desc())
+            select(User)
+            .where(User.deleted_at.is_(None))
+            .order_by(User.created_at.desc())
         ).all()
         return jsonify([u.to_dict() for u in users]), 200
 
@@ -2442,6 +3650,29 @@ The FlavorFlow Team"""
             return jsonify({"error": "Forbidden", "message": "Cannot modify a super-admin."}), 403
 
         data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        if "loyalty_points" in data:
+            if not get_jwt().get("is_superadmin"):
+                return jsonify({"error": "Forbidden", "message": "Only superadmin can modify loyalty points directly."}), 403
+            try:
+                new_points = int(data["loyalty_points"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Bad Request", "message": "loyalty_points must be an integer"}), 400
+            if new_points < 0:
+                return jsonify({"error": "Bad Request", "message": "loyalty_points cannot be negative"}), 400
+            old_points = user.loyalty_points or 0
+            user.loyalty_points = new_points
+            # Journal the adjustment so it appears in the user's history.
+            delta = new_points - old_points
+            if delta != 0:
+                db.session.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=delta,
+                    transaction_type="credit" if delta > 0 else "debit",
+                    description=f"Admin balance adjustment: {old_points} -> {new_points}"
+                ))
+            log_admin_action(db.session, get_jwt_identity(), "set_loyalty_points", "User", user.id, f"Loyalty points changed from {old_points} to {user.loyalty_points}")
+
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
         if "role" in data:
@@ -2474,6 +3705,7 @@ The FlavorFlow Team"""
             if len(new_pwd) >= 8 and re.search(r'[A-Za-z]', new_pwd) and re.search(r'[0-9]', new_pwd):
                 user.set_password(new_pwd, bcrypt)
                 user.set_pin(new_pwd, bcrypt)
+                user.bump_token_version()
                 password_changed = True
             else:
                 return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
@@ -2500,9 +3732,10 @@ The FlavorFlow Team"""
             if admin_count <= 1:
                 return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
 
-        db.session.delete(user)
+        user.deleted_at = datetime.now(timezone.utc)
+        user.bump_token_version() # invalidate existing sessions
         db.session.commit()
-        return jsonify({"message": "User deleted successfully"}), 200
+        return jsonify({"message": "User deleted successfully (soft delete)"}), 200
 
     # ============================================================
     # 4. STAFF / POS ROUTES
@@ -2558,6 +3791,8 @@ The FlavorFlow Team"""
     @app.route("/api/pos/sale", methods=["POST"])
     @role_required("staff")
     def pos_complete_sale():
+        # TRANSACTION BOUNDARY: single transaction — outlet stock decrements,
+        # coupon usage and loyalty updates commit together at the end.
         claims = get_jwt()
         staff_id = int(get_jwt_identity())
         oid = claims.get("outlet_id")
@@ -2595,12 +3830,16 @@ The FlavorFlow Team"""
             if not stock:
                 db.session.rollback()
                 return jsonify({"error": "Not Found", "message": f"Item {mid} not assigned to outlet"}), 404
-            if stock.current_stock < qty:
+            before = stock.current_stock
+            result = db.session.execute(
+                update(OutletStock).where(OutletStock.outlet_id == oid, OutletStock.menu_item_id == mid, OutletStock.current_stock >= qty)
+                .values(current_stock=OutletStock.current_stock - qty)
+            )
+            if result.rowcount != 1:
                 db.session.rollback()
                 mi = db.session.get(MenuItem, mid)
                 return jsonify({"error": "Conflict", "message": f"Insufficient stock for {mi.name if mi else mid}"}), 409
-            before = stock.current_stock
-            stock.current_stock -= qty
+            db.session.refresh(stock)
             price = stock.menu_item.price
             total += price * qty
             sale_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))
@@ -2613,7 +3852,7 @@ The FlavorFlow Team"""
         coupon = None
         if coupon_code:
             coupon = db.session.scalars(
-                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
+                select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True).with_for_update()
             ).first()
             if coupon:
                 if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
@@ -2642,14 +3881,20 @@ The FlavorFlow Team"""
                     used = db.session.scalars(select(Order).where(Order.customer_id == customer.id, Order.applied_coupon_code == coupon.code)).first()
                     if used:
                         return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
-                coupon.usage_count += 1
+                stmt = update(Coupon).where(
+                    Coupon.id == coupon.id,
+                    or_(Coupon.usage_limit == None, Coupon.usage_count < Coupon.usage_limit)
+                ).values(usage_count=Coupon.usage_count + 1)
+                res = db.session.execute(stmt)
+                if res.rowcount == 0:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached during checkout"}), 400
                 
                 # Apply discount
                 if coupon.discount_amount and coupon.discount_amount > 0:
                     total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
                 elif coupon.discount_pct and coupon.discount_pct > 0:
                     discount_pct = min(100, coupon.discount_pct)
-                    discount_value = total * Decimal(str(discount_pct / 100))
+                    discount_value = total * (Decimal(str(discount_pct)) / Decimal("100"))
                     if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
                         discount_value = Decimal(str(coupon.max_discount_amount))
                     total = max(Decimal("0.00"), total - discount_value)
@@ -2659,20 +3904,30 @@ The FlavorFlow Team"""
         # Loyalty points: redemption
         points_redeemed = 0
         if customer and redeem_points > 0:
-            max_redeem_allowed = int(float(total) / redeem_rate)
+            max_redeem_allowed = int(total / Decimal(str(redeem_rate))) if redeem_rate > 0 else 0
             actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
             
             if actual_redeem > 0:
                 points_discount = Decimal(str(actual_redeem * redeem_rate))
                 total -= points_discount
                 total = max(Decimal("0.00"), total)
-                customer.loyalty_points -= actual_redeem
+                # Atomic, guarded decrement (customer row already locked via
+                # with_for_update at lookup; this guards against drift).
+                from sqlalchemy import update as _sa_update
+                redeem_res = db.session.execute(
+                    _sa_update(User).where(User.id == customer.id, User.loyalty_points >= actual_redeem)
+                    .values(loyalty_points=User.loyalty_points - actual_redeem)
+                )
+                if redeem_res.rowcount != 1:
+                    db.session.rollback()
+                    return jsonify({"error": "Conflict", "message": "Loyalty points changed during checkout. Please retry."}), 409
+                db.session.refresh(customer)
                 points_redeemed = actual_redeem
 
         # Loyalty points: earning
         points_earned = 0
         if customer:
-            points_earned = int(float(total) * earn_rate)
+            points_earned = int(total * Decimal(str(earn_rate)))
             customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
 
         sale = Order(
@@ -2795,7 +4050,7 @@ The FlavorFlow Team"""
                 Order.order_type == "pos",
                 Order.status != "cancelled"
             ).order_by(Order.created_at.desc())
-        ).all()
+        ).unique().all()
         
         # Format for frontend expecting total_amount instead of total_price just to be safe
         result = []
@@ -2917,11 +4172,12 @@ The FlavorFlow Team"""
             end_time = s.clock_out_time or datetime.now(timezone.utc)
             sales = db.session.execute(
                 select(
-                    OrderItem.menu_item_name,
+                    MenuItem.name.label("menu_item_name"),
                     func.sum(OrderItem.quantity).label("total_qty"),
                     func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
                 )
                 .join(Order, Order.id == OrderItem.order_id)
+                .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
                 .where(
                     Order.staff_id == s.staff_id,
                     Order.outlet_id == s.outlet_id,
@@ -2929,7 +4185,7 @@ The FlavorFlow Team"""
                     Order.created_at <= end_time,
                     Order.status != "cancelled"
                 )
-                .group_by(OrderItem.menu_item_name)
+                .group_by(MenuItem.name)
             ).all()
             
             s_dict["sales_summary"] = [
@@ -2990,11 +4246,12 @@ The FlavorFlow Team"""
             end_time = s.clock_out_time or datetime.now(timezone.utc)
             sales = db.session.execute(
                 select(
-                    OrderItem.menu_item_name,
+                    MenuItem.name.label("menu_item_name"),
                     func.sum(OrderItem.quantity).label("total_qty"),
                     func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
                 )
                 .join(Order, Order.id == OrderItem.order_id)
+                .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
                 .where(
                     Order.staff_id == s.staff_id,
                     Order.outlet_id == s.outlet_id,
@@ -3002,7 +4259,7 @@ The FlavorFlow Team"""
                     Order.created_at <= end_time,
                     Order.status != "cancelled"
                 )
-                .group_by(OrderItem.menu_item_name)
+                .group_by(MenuItem.name)
             ).all()
             
             s_dict["sales_summary"] = [
@@ -3163,11 +4420,18 @@ The FlavorFlow Team"""
         if not stock:
             return jsonify({"error": "Not Found", "message": "Item not found in outlet inventory"}), 404
 
-        if stock.current_stock < qty:
-            return jsonify({"error": "Bad Request", "message": f"Insufficient stock to dispose. Available: {stock.current_stock}"}), 400
-
         before = stock.current_stock
-        stock.current_stock -= qty
+        stmt = update(OutletStock).where(
+            OutletStock.outlet_id == int(oid),
+            OutletStock.menu_item_id == int(mid),
+            OutletStock.current_stock >= qty
+        ).values(current_stock=OutletStock.current_stock - qty)
+        res = db.session.execute(stmt)
+        if res.rowcount == 0:
+            return jsonify({"error": "Conflict", "message": "Insufficient stock to dispose due to concurrent update."}), 409
+            
+        db.session.refresh(stock)
+        
         log_stock_change(db.session, outlet_id=int(oid), menu_item_id=int(mid),
                          change_qty=-qty, change_type="waste",
                          stock_before=before, stock_after=stock.current_stock,
@@ -3235,6 +4499,18 @@ The FlavorFlow Team"""
     # 6. DAILY REPORT (triggered manually or scheduled)
     # ============================================================
 
+    @app.route("/api/reviews/recent", methods=["GET"])
+    def get_recent_reviews():
+        # Fetch the top 5-star or 4-star reviews
+        reviews = db.session.scalars(
+            select(Review)
+            .where(Review.is_hidden == False)
+            .where(Review.rating >= 4)
+            .order_by(Review.created_at.desc())
+            .limit(6)
+        ).all()
+        return jsonify([r.to_dict() for r in reviews]), 200
+
     @app.route("/api/foods/menu-items/<int:item_id>/reviews", methods=["GET"])
     def get_menu_item_reviews(item_id):
         reviews = db.session.scalars(
@@ -3257,10 +4533,9 @@ The FlavorFlow Team"""
         data = (sanitize_input(request.get_json(silent=True)) or {})
         rating = data.get("rating")
         comment = data.get("comment", "")
-        order_id = data.get("order_id")
         
-        if rating is None or order_id is None:
-            return jsonify({"error": "Bad Request", "message": "Rating and order_id are required"}), 400
+        if rating is None:
+            return jsonify({"error": "Bad Request", "message": "Rating is required"}), 400
         try:
             rating_val = int(rating)
             if not (1 <= rating_val <= 5):
@@ -3271,38 +4546,46 @@ The FlavorFlow Team"""
         existing_review = db.session.scalars(select(Review).where(
             Review.customer_id == uid,
             Review.menu_item_id == item_id,
-            Review.order_id == order_id
+            
         )).first()
         
         if existing_review:
-            return jsonify({"error": "Conflict", "message": "You have already reviewed this item for this order"}), 409
+            return jsonify({"error": "Conflict", "message": "You have already reviewed this item "}), 409
 
         # Ensure user has actually ordered this item before and it has been delivered
+        # Find the most recent order where they bought this
         has_ordered = db.session.scalars(
             select(Order).join(OrderItem).where(
-                Order.id == order_id,
                 Order.customer_id == uid,
                 OrderItem.menu_item_id == item_id,
                 Order.is_received == True
-            )
+            ).order_by(Order.created_at.desc())
         ).first()
+
         if not has_ordered:
             return jsonify({"error": "Forbidden", "message": "You can only review items you have ordered and received"}), 403
-        
-        review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment, order_id=order_id)
+
+        review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment, order_id=has_ordered.id)
         db.session.add(review)
         
         review_points_setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_review_points')).first()
-        points = int(review_points_setting.setting_value) if review_points_setting and review_points_setting.setting_value.isdigit() else 10
+        try:
+            pct = float(review_points_setting.setting_value) if review_points_setting else 10.0
+        except ValueError:
+            pct = 10.0
+            
+        points = int((pct / 100.0) * float(item.price)) if item.price else 0
+
         if points > 0:
             user.loyalty_points = (user.loyalty_points or 0) + points
             history_entry = WalletTransaction(
                 user_id=uid, transaction_type='credit', amount=points,
-                description=f"Earned points for reviewing {item.name}"
+                description=f"Earned {pct}% points for reviewing {item.name}"
             )
             db.session.add(history_entry)
             
         db.session.commit()
+        
         msg = f"Review submitted successfully! You earned {points} loyalty points." if points > 0 else "Review submitted successfully"
         return jsonify({"message": msg, "review": review.to_dict(), "loyalty_points_earned": points, "new_balance": user.loyalty_points}), 201
 
@@ -3364,6 +4647,7 @@ The FlavorFlow Team"""
         return jsonify({"message": "Review deleted successfully"}), 200
 
     @app.route("/api/whatsapp/webhook", methods=["GET", "POST"])
+    @limiter.limit("30 per minute")
     def whatsapp_webhook():
         """
         Endpoint for WhatsApp Business API integration.
@@ -3380,26 +4664,156 @@ The FlavorFlow Team"""
             if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
                 return challenge, 200
             else:
-                return "Forbidden", 403
+                return jsonify({"error": "Forbidden"}), 403
                 
         elif request.method == "POST":
             # Receive incoming messages/orders
+            
+            signature = request.headers.get("X-Hub-Signature-256")
+            if not signature:
+                return jsonify({"error": "Forbidden", "message": "Missing signature"}), 403
+                
+            import hmac
+            import hashlib
+            secret = os.getenv("WHATSAPP_APP_SECRET") or os.getenv("APP_SECRET")
+            if not secret:
+                return jsonify({"error": "Server Configuration Error", "message": "Missing Meta app secret"}), 500
+            expected_signature = 'sha256=' + hmac.new(
+                secret.encode('utf-8'),
+                request.get_data(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected_signature):
+                return jsonify({"error": "Forbidden", "message": "Invalid signature"}), 403
+                
             data = request.get_json(silent=True)
-            if data:
-                # Placeholder logic to log the incoming payload
-                logger.info(f"Received WhatsApp Webhook payload: {json.dumps(data)}")
-                
-                # TODO: Parse the data to extract customer phone, message/cart contents.
-                # TODO: Create a new Order in the database with order_type='whatsapp'.
-                # TODO: Send a reply back to the customer via WhatsApp API confirming the order.
-                
-                # Acknowledge receipt of the webhook to Meta
-                return "EVENT_RECEIVED", 200
-            return "Bad Request", 400
+            if not data:
+                return jsonify({"error": "Bad Request", "message": "Empty payload"}), 400
+            
+            if data.get("object") == "whatsapp_business_account":
+                for entry in data.get("entry", []):
+                    for change in entry.get("changes", []):
+                        value = change.get("value", {})
+                        if "messages" in value:
+                            for msg in value["messages"]:
+                                if msg.get("type") == "text":
+                                    phone_number = msg.get("from")
+                                    text = msg["text"]["body"]
+                                    
+                                    # Save inbound message
+                                    from models import WhatsAppMessage
+                                    inbound_msg = WhatsAppMessage(phone_number=phone_number, message_body=text, direction='inbound')
+                                    db.session.add(inbound_msg)
+                                    
+                                    # Parse logic
+                                    import re
+                                    matches = re.findall(r'(\d+)\s+([a-zA-Z\s]+)', text)
+                                    
+                                    reply_text = ""
+                                    if not matches:
+                                        reply_text = "Hi! To order, please say the quantity and item name, e.g., '1 burger and 2 pizzas'."
+                                    else:
+                                        active_items = db.session.execute(db.select(MenuItem).where(MenuItem.is_active == True)).scalars().all()
+                                        order_items = []
+                                        total_price = Decimal("0.00")
+                                        not_found = []
+                                        
+                                        for qty_str, item_name in matches:
+                                            qty = int(qty_str)
+                                            item_name_lower = item_name.strip().lower()
+                                            
+                                            # Match item
+                                            matched_item = None
+                                            # Exact or partial match
+                                            for i in active_items:
+                                                if i.name.lower() in item_name_lower or item_name_lower in i.name.lower():
+                                                    matched_item = i
+                                                    break
+                                                    
+                                            if matched_item:
+                                                order_items.append({"item": matched_item, "qty": qty})
+                                                total_price += matched_item.price * qty
+                                            else:
+                                                not_found.append(item_name.strip())
+                                                
+                                        if order_items and not not_found:
+                                            # Find or create user
+                                            customer = db.session.scalars(db.select(User).where(User.phone == phone_number)).first()
+                                            if not customer:
+                                                customer = Customer(phone=phone_number, first_name="WhatsApp", last_name="Customer")
+                                                db.session.add(customer)
+                                                db.session.flush()
+                                                
+                                            new_order = Order(
+                                                customer_id=customer.id,
+                                                order_type="online",
+                                                status="pending",
+                                                total_price=total_price,
+                                                payment_method="COD"
+                                            )
+                                            db.session.add(new_order)
+                                            db.session.flush()
+                                            
+                                            for oi in order_items:
+                                                new_order.items.append(OrderItem(menu_item_id=oi["item"].id, quantity=oi["qty"], price=oi["item"].price))
+                                                
+                                            items_str = ", ".join([f"{oi['qty']}x {oi['item'].name}" for oi in order_items])
+                                            reply_text = f"Order received! Your total is ₹{total_price} for {items_str}. We will prepare it right away."
+                                        elif order_items and not_found:
+                                            reply_text = f"We found some items, but couldn't find: {', '.join(not_found)}. Please try again with our exact menu names."
+                                        else:
+                                            reply_text = "Sorry, we couldn't find any of those items on our menu. Please try again."
+                                            
+                                    outbound_msg = WhatsAppMessage(phone_number=phone_number, message_body=reply_text, direction='outbound')
+                                    db.session.add(outbound_msg)
+                                    db.session.commit()
+                                    
+                                    # Send reply
+                                    import requests
+                                    wa_token = os.getenv("WHATSAPP_API_TOKEN")
+                                    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+                                    
+                                    if wa_token and phone_number_id:
+                                        try:
+                                            url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+                                            headers = {
+                                                "Authorization": f"Bearer {wa_token}",
+                                                "Content-Type": "application/json"
+                                            }
+                                            payload = {
+                                                "messaging_product": "whatsapp",
+                                                "to": phone_number,
+                                                "text": {"body": reply_text}
+                                            }
+                                            resp = requests.post(url, headers=headers, json=payload, timeout=5)
+                                            if resp.status_code in (200, 201):
+                                                outbound_msg.status = 'sent'
+                                                db.session.commit()
+                                            else:
+                                                logger.error(f"WhatsApp API error: {resp.text}")
+                                        except Exception as e:
+                                            logger.error(f"Error sending WhatsApp reply: {e}")
+                                    else:
+                                        logger.info(f"MOCK WhatsApp Reply to {phone_number}: {reply_text}")
+                                        outbound_msg.status = 'sent'
+                                        db.session.commit()
+            
+            return jsonify({"status": "EVENT_RECEIVED"}), 200
 
 
+    @app.route("/api/admin/whatsapp", methods=["GET"])
+    @role_required("admin")
+    def admin_get_whatsapp_messages():
+        from models import WhatsAppMessage
+        messages = db.session.execute(db.select(WhatsAppMessage).order_by(WhatsAppMessage.created_at.desc())).scalars().all()
+        return jsonify([m.to_dict() for m in messages]), 200
+
+    # Intentionally public (storefront) but rate-limited
     @app.route("/api/coupons/active", methods=["GET"])
+    @limiter.limit("30 per minute")
     def get_active_coupons():
+        # Intentionally public but rate-limited
         """Return all active public coupons. Optionally filter by scope query param."""
         from datetime import date
         today = date.today()
@@ -3417,6 +4831,7 @@ The FlavorFlow Team"""
         return jsonify([c.to_dict() for c in coupons]), 200
 
     @app.route("/api/outlet/coupons", methods=["GET"])
+    @role_required("staff", "admin", "outlet_owner")
     def get_outlet_coupons():
         """Return active coupons available for the outlet POS terminal."""
         from datetime import date
@@ -3431,8 +4846,11 @@ The FlavorFlow Team"""
         ).all()
         return jsonify([c.to_dict() for c in coupons]), 200
 
+    # Intentionally public (storefront) but rate-limited
     @app.route("/api/coupons/<string:code>", methods=["GET"])
+    @limiter.limit("30 per minute")
     def get_coupon(code):
+        # Intentionally public but rate-limited
         """Validate and return coupon details."""
         coupon = db.session.scalars(
             select(Coupon).where(Coupon.code == code.upper().strip(), Coupon.is_active == True)
@@ -3448,6 +4866,7 @@ The FlavorFlow Team"""
     
     @app.route("/api/admin/wallet/credit", methods=["POST"])
     @role_required("admin")
+    @department_required("finance", "operations")
     def credit_wallet():
         data = sanitize_input(request.get_json(silent=True)) or {}
         user_id = data.get("user_id")
@@ -3455,21 +4874,32 @@ The FlavorFlow Team"""
         description = data.get("description", "Wallet Credit")
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
-        user = db.session.get(User, user_id)
-        if not user:
-            return jsonify({"error": "Not Found", "message": "User not found"}), 404
-        
-        user.loyalty_points = (user.loyalty_points or 0) + int(amount)
-        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
-        db.session.add(tx)
-        
-        log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
-        db.session.commit()
-        return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
+        try:
+            user = db.session.get(User, user_id, with_for_update=True)
+            if not user:
+                return jsonify({"error": "Not Found", "message": "User not found"}), 404
+            
+            user.loyalty_points = (user.loyalty_points or 0) + int(amount)
+            tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
+            db.session.add(tx)
+            
+            log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
+            db.session.commit()
+            return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
+        except sqlalchemy.exc.SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({"error": "Server Error"}), 500
 
     @app.route("/api/admin/wallet/debit", methods=["POST"])
     @role_required("admin")
+    @department_required("finance", "operations")
     def debit_wallet():
         data = sanitize_input(request.get_json(silent=True)) or {}
         user_id = data.get("user_id")
@@ -3477,21 +4907,31 @@ The FlavorFlow Team"""
         description = data.get("description", "Wallet Debit")
         if not user_id or not amount:
             return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Amount must be a positive integer"}), 400
         
-        user = db.session.get(User, user_id)
-        if not user:
-            return jsonify({"error": "Not Found", "message": "User not found"}), 404
-        
-        if (user.loyalty_points or 0) < int(amount):
-            return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+        try:
+            user = db.session.get(User, user_id, with_for_update=True)
+            if not user:
+                return jsonify({"error": "Not Found", "message": "User not found"}), 404
             
-        user.loyalty_points = (user.loyalty_points or 0) - int(amount)
-        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
-        db.session.add(tx)
-        
-        log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
-        db.session.commit()
-        return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
+            if (user.loyalty_points or 0) < int(amount):
+                return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+                
+            user.loyalty_points = (user.loyalty_points or 0) - int(amount)
+            tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
+            db.session.add(tx)
+            
+            log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
+            db.session.commit()
+            return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
+        except sqlalchemy.exc.SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({"error": "Server Error"}), 500
 
     @app.route("/api/admin/wallet/transactions/<int:user_id>", methods=["GET"])
     @role_required("admin")
@@ -3674,7 +5114,7 @@ The FlavorFlow Team"""
     def track_banner_impression(id):
         banner = db.session.get(Banner, id)
         if banner:
-            banner.impressions = (banner.impressions or 0) + 1
+            db.session.execute(update(Banner).where(Banner.id == id).values(impressions=Banner.impressions + 1))
             db.session.commit()
         return jsonify({"success": True}), 200
 
@@ -3682,7 +5122,7 @@ The FlavorFlow Team"""
     def track_banner_click(id):
         banner = db.session.get(Banner, id)
         if banner:
-            banner.clicks = (banner.clicks or 0) + 1
+            db.session.execute(update(Banner).where(Banner.id == id).values(clicks=Banner.clicks + 1))
             db.session.commit()
         return jsonify({"success": True}), 200
 
@@ -3693,6 +5133,7 @@ The FlavorFlow Team"""
         return jsonify([b.to_dict() for b in banners]), 200
         
     @app.route("/api/admin/banners", methods=["POST"])
+    @limiter.limit("10 per minute")
     @role_required("admin")
     def admin_create_banner():
         data = sanitize_input(request.get_json(silent=True)) or {}
@@ -3708,6 +5149,9 @@ The FlavorFlow Team"""
 
         banner = Banner(
             title=title,
+            description=data.get("description"),
+            eyebrow_text=data.get("eyebrow_text"),
+            button_text=data.get("button_text"),
             image_url=image_url,
             target_url=data.get("target_url"),
             is_active=data.get("is_active", True),
@@ -3729,6 +5173,7 @@ The FlavorFlow Team"""
         return jsonify(banner.to_dict()), 201
         
     @app.route("/api/admin/banners/<int:id>", methods=["PUT"])
+    @limiter.limit("10 per minute")
     @role_required("admin")
     def admin_update_banner(id):
         banner = db.session.get(Banner, id)
@@ -3737,6 +5182,9 @@ The FlavorFlow Team"""
             
         data = sanitize_input(request.get_json(silent=True)) or {}
         if "title" in data: banner.title = data["title"]
+        if "description" in data: banner.description = data["description"]
+        if "eyebrow_text" in data: banner.eyebrow_text = data["eyebrow_text"]
+        if "button_text" in data: banner.button_text = data["button_text"]
         if "image_url" in data: banner.image_url = data["image_url"]
         if "target_url" in data: banner.target_url = data["target_url"]
         if "is_active" in data: banner.is_active = data["is_active"]
@@ -3786,6 +5234,19 @@ The FlavorFlow Team"""
     @role_required("admin")
     def admin_update_store_settings():
         data = sanitize_input(request.get_json(silent=True)) or {}
+
+        # Validate loyalty rate keys BEFORE touching anything (atomic reject).
+        for key, (lo, hi) in LOYALTY_SETTING_KEYS.items():
+            if key in data:
+                try:
+                    num = float(data[key])
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Bad Request",
+                                    "message": f"{key} must be a number"}), 400
+                if not (lo <= num <= hi):
+                    return jsonify({"error": "Bad Request",
+                                    "message": f"{key} must be between {lo} and {hi}"}), 400
+
         for k, v in data.items():
             # Convert python booleans to JSON-compatible lowercase strings
             if isinstance(v, bool):
@@ -3804,6 +5265,410 @@ The FlavorFlow Team"""
         db.session.commit()
         return jsonify({"message": "Settings updated successfully"}), 200
 
+    # ---------------------------------------------------------------------------
+    # Payment gateway settings (Razorpay) — Finance/Owner departments only.
+    # Secrets stored Fernet-encrypted; responses never include them.
+    # ---------------------------------------------------------------------------
+    @app.route("/api/admin/settings/payment", methods=["GET"])
+    @role_required("admin")
+    @department_required("Finance", "Owner")
+    def admin_get_payment_settings():
+        has_secret = _setting_value("razorpay_key_secret") is not None
+        last4 = _setting_value("razorpay_key_last4")
+        env_configured = bool(os.getenv("RAZORPAY_KEY_ID") and os.getenv("RAZORPAY_KEY_SECRET"))
+        source = "database" if has_secret else ("environment" if env_configured else "none")
+        return jsonify({
+            "razorpay_key_id": _setting_value("razorpay_key_id", ""),
+            "razorpay_key_masked": ("••••••••" + last4) if (has_secret and last4) else "",
+            "razorpay_key_secret_set": has_secret,
+            "razorpay_webhook_secret_set": _setting_value("razorpay_webhook_secret") is not None,
+            "razorpay_mode": _setting_value("razorpay_mode", "test"),
+            "razorpay_enabled": (_setting_value("razorpay_enabled", "false") == "true"),
+            "encryption_configured": bool(os.getenv("PAYMENT_ENCRYPTION_KEY")),
+            "source": source,
+        }), 200
+
+    @app.route("/api/admin/settings/payment", methods=["POST"])
+    @role_required("admin")
+    @department_required("Finance", "Owner")
+    def admin_update_payment_settings():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+
+        mode = str(data.get("razorpay_mode") or _setting_value("razorpay_mode", "test")).lower()
+        if mode not in ("test", "live"):
+            return jsonify({"error": "Bad Request", "message": "razorpay_mode must be 'test' or 'live'"}), 400
+
+        enabled_raw = data.get("razorpay_enabled")
+        if enabled_raw is None:
+            enabled_str = _setting_value("razorpay_enabled", "false") or "false"
+        else:
+            enabled_str = "true" if (enabled_raw is True or str(enabled_raw).lower() in ("true", "1", "yes")) else "false"
+
+        key_id = str(data.get("razorpay_key_id") or _setting_value("razorpay_key_id") or "").strip()
+
+        new_secret = (data.get("razorpay_key_secret") or "").strip()
+        new_webhook = (data.get("razorpay_webhook_secret") or "").strip()
+
+        if key_id and not key_id.startswith(("rzp_test_", "rzp_live_")):
+            return jsonify({"error": "Bad Request", "message": "Razorpay Key ID must start with rzp_test_ or rzp_live_"}), 400
+        if key_id and key_id.startswith("rzp_live_") != (mode == "live"):
+            return jsonify({"error": "Bad Request",
+                            "message": f"Key ID prefix does not match {mode} mode (expected {'rzp_live_' if mode == 'live' else 'rzp_test_'}...)"}), 400
+
+        if (new_secret or new_webhook) and _fernet() is None:
+            return jsonify({"error": "Bad Request",
+                            "message": "Server is missing PAYMENT_ENCRYPTION_KEY - cannot store secrets securely."}), 400
+
+        if key_id:
+            _set_setting("razorpay_key_id", key_id)
+        _set_setting("razorpay_mode", mode)
+        _set_setting("razorpay_enabled", enabled_str)
+        secret_changed = False
+        if new_secret:
+            _set_setting("razorpay_key_secret", _encrypt_secret(new_secret))
+            _set_setting("razorpay_key_last4", new_secret[-4:])
+            secret_changed = True
+        if new_webhook:
+            _set_setting("razorpay_webhook_secret", _encrypt_secret(new_webhook))
+
+        log_admin_action(db.session, get_jwt_identity(), "update_payment_settings",
+                         "StoreSetting", None,
+                         f"Razorpay settings saved (mode={mode}, enabled={enabled_str}, secret_changed={secret_changed})")
+        db.session.commit()
+        clear_razorpay_cache()
+
+        last4 = _setting_value("razorpay_key_last4")
+        return jsonify({
+            "message": "Payment settings saved successfully",
+            "razorpay_key_id": _setting_value("razorpay_key_id", ""),
+            "razorpay_key_masked": ("••••••••" + last4) if (_setting_value("razorpay_key_secret") and last4) else "",
+            "razorpay_mode": mode,
+            "razorpay_enabled": enabled_str == "true",
+            "secret_changed": secret_changed,
+        }), 200
+
+    @app.route("/api/payments/razorpay/order", methods=["POST"])
+    @jwt_required()
+    def create_razorpay_order():
+        """Create a Razorpay order for one of this customer's pending orders."""
+        uid = int(get_jwt_identity())
+        data = request.get_json(silent=True) or {}
+        order_id = data.get("order_id")
+        if not order_id:
+            return jsonify({"error": "Bad Request", "message": "order_id is required"}), 400
+
+        order = db.session.get(Order, int(order_id))
+        if not order or order.customer_id != uid:
+            return jsonify({"error": "Not Found", "message": "Order not found"}), 404
+        if order.status != "pending":
+            return jsonify({"error": "Bad Request", "message": "Order is not awaiting payment"}), 400
+
+        try:
+            creds = get_razorpay_credentials(force_refresh=True)
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured yet. Please contact support."}), 503
+        if not creds.get("enabled"):
+            return jsonify({"error": "Bad Request",
+                            "message": "Online payments are currently disabled."}), 400
+
+        import requests as _requests
+        try:
+            rp_resp = _requests.post(
+                "https://api.razorpay.com/v1/orders",
+                auth=(creds["key_id"], creds["key_secret"]),
+                json={
+                    "amount": int((order.total_price or 0) * 100),  # paise
+                    "currency": "INR",
+                    "receipt": f"order_{order.id}",
+                    "notes": {"order_id": str(order.id)},
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            logger.error(f"Razorpay order creation failed: {e}")
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway unreachable"}), 502
+
+        if rp_resp.status_code not in (200, 201):
+            logger.error(f"Razorpay API error {rp_resp.status_code}: {rp_resp.text[:300]}")
+            return jsonify({"error": "Bad Gateway",
+                            "message": "Payment gateway rejected the request"}), 502
+
+        rp_order = rp_resp.json()
+        rp_order_id = rp_order.get("id")
+        order.razorpay_order_id = rp_order_id
+        db.session.add(PaymentTransaction(
+            order_id=order.id,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            amount=order.total_price,
+            currency=rp_order.get("currency", "INR"),
+            status="created",
+            event="order_created",
+            source="checkout",
+        ))
+        db.session.commit()
+        return jsonify({
+            "razorpay_order_id": rp_order.get("id"),
+            "amount": rp_order.get("amount"),
+            "currency": rp_order.get("currency"),
+            "key_id": creds["key_id"],   # public key - safe for checkout.js
+            "mode": creds["mode"],
+        }), 201
+
+    @app.route("/api/payments/razorpay/verify", methods=["POST"])
+    @jwt_required()
+    @limiter.limit("20 per minute")
+    def verify_razorpay_payment():
+        """Verify the checkout.js signature (HMAC of order_id|payment_id with the key secret)
+        and mark the order as paid. Idempotent."""
+        uid = int(get_jwt_identity())
+        data = request.get_json(silent=True) or {}
+        try:
+            order_id = int(data.get("order_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Bad Request", "message": "order_id is required"}), 400
+
+        rp_order_id = (data.get("razorpay_order_id") or "").strip()
+        rp_payment_id = (data.get("razorpay_payment_id") or "").strip()
+        rp_signature = (data.get("razorpay_signature") or "").strip()
+        if not rp_order_id or not rp_payment_id or not rp_signature:
+            return jsonify({"error": "Bad Request",
+                            "message": "razorpay_order_id, razorpay_payment_id and razorpay_signature are required"}), 400
+
+        order = db.session.get(Order, order_id)
+        if not order or order.customer_id != uid:
+            return jsonify({"error": "Not Found", "message": "Order not found"}), 404
+
+        # Idempotency: a webhook may have beaten the client to it.
+        if order.payment_status == "paid":
+            return jsonify({"message": "Order already marked as paid", "already_paid": True,
+                            "order": order.to_dict()}), 200
+
+        if order.razorpay_order_id and order.razorpay_order_id != rp_order_id:
+            logger.warning(f"[PAYMENT] Order #{order.id}: razorpay_order_id mismatch "
+                           f"(expected {order.razorpay_order_id}, got {rp_order_id})")
+            return jsonify({"error": "Bad Request", "message": "Payment order mismatch"}), 400
+
+        try:
+            creds = get_razorpay_credentials(force_refresh=True)
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured yet. Please contact support."}), 503
+
+        expected_sig = hmac.new(
+            creds["key_secret"].encode(),
+            f"{rp_order_id}|{rp_payment_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        signature_valid = hmac.compare_digest(expected_sig, rp_signature)
+
+        db.session.add(PaymentTransaction(
+            order_id=order.id,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            provider_payment_id=rp_payment_id,
+            amount=order.total_price,
+            currency="INR",
+            status="captured" if signature_valid else "failed",
+            event="checkout_verify",
+            signature_valid=signature_valid,
+            source="checkout",
+        ))
+
+        if not signature_valid:
+            db.session.commit()
+            logger.warning(f"[PAYMENT] Order #{order.id}: INVALID checkout signature for payment {rp_payment_id}")
+            return jsonify({"error": "Bad Request", "message": "Payment signature verification failed"}), 400
+
+        order.payment_status = "paid"
+        order.paid_at = datetime.now(timezone.utc)
+        order.razorpay_payment_id = rp_payment_id
+        order.razorpay_order_id = order.razorpay_order_id or rp_order_id
+        db.session.commit()
+        logger.info(f"[PAYMENT] Order #{order.id} marked PAID via checkout verify ({rp_payment_id})")
+        return jsonify({"message": "Payment verified", "already_paid": False, "order": order.to_dict()}), 200
+
+    @app.route("/api/payments/razorpay/webhook", methods=["POST"])
+    @limiter.limit("120 per minute")
+    def razorpay_webhook():
+        """Razorpay server-to-server events. Public route — authenticated by the
+        X-Razorpay-Signature HMAC header instead of a JWT."""
+        raw_body = request.get_data(cache=False)
+        signature = request.headers.get("X-Razorpay-Signature", "")
+        try:
+            creds = get_razorpay_credentials()
+        except RuntimeError as e:
+            return jsonify({"error": "Service Unavailable", "message": str(e)}), 503
+        if not creds:
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Payment gateway is not configured"}), 503
+        webhook_secret = creds.get("webhook_secret")
+        if not webhook_secret:
+            logger.error("[PAYMENT] Webhook received but no webhook secret is configured")
+            return jsonify({"error": "Service Unavailable",
+                            "message": "Webhook secret is not configured"}), 503
+
+        if not verify_razorpay_webhook_signature(raw_body, signature, webhook_secret):
+            logger.warning("[PAYMENT] Webhook rejected: invalid X-Razorpay-Signature")
+            return jsonify({"error": "Bad Request", "message": "Invalid signature"}), 400
+
+        # Parse from the raw bytes we already read (get_data with cache=False
+        # consumes the stream, so request.get_json() would return None).
+        try:
+            payload = json.loads(raw_body) if raw_body else {}
+        except (ValueError, TypeError):
+            logger.warning("[PAYMENT] Webhook rejected: body is not valid JSON")
+            return jsonify({"error": "Bad Request", "message": "Invalid JSON body"}), 400
+        event = payload.get("event", "")
+        entities = payload.get("payload") or {}
+        payment_entity = (entities.get("payment") or {}).get("entity") or {}
+        order_entity = (entities.get("order") or {}).get("entity") or {}
+
+        rp_payment_id = payment_entity.get("id")
+        rp_order_id = payment_entity.get("order_id") or order_entity.get("id")
+        notes = payment_entity.get("notes") or {}
+        local_order_id = notes.get("order_id")
+
+        order = None
+        if local_order_id:
+            try:
+                order = db.session.get(Order, int(local_order_id))
+            except (TypeError, ValueError):
+                order = None
+        if not order and rp_order_id:
+            order = db.session.scalars(
+                select(Order).where(Order.razorpay_order_id == rp_order_id)
+            ).first()
+
+        amount_paise = payment_entity.get("amount")
+        amount = (Decimal(str(amount_paise)) / 100) if amount_paise is not None else None
+
+        txn_status_map = {
+            "payment.captured": "captured",
+            "payment.failed": "failed",
+            "refund.processed": "refunded",
+            "order.paid": "captured",
+        }
+        db.session.add(PaymentTransaction(
+            order_id=order.id if order else None,
+            provider="razorpay",
+            provider_order_id=rp_order_id,
+            provider_payment_id=rp_payment_id,
+            amount=amount if amount is not None else Decimal("0.00"),
+            currency=payment_entity.get("currency", "INR"),
+            status=txn_status_map.get(event, "unknown"),
+            event=event or "unknown",
+            signature_valid=True,
+            source="webhook",
+            raw_payload=json.dumps(payload)[:4000],
+        ))
+
+        if order:
+            if event in ("payment.captured", "order.paid"):
+                # Idempotent: safe even if checkout verify already ran.
+                if order.payment_status != "paid":
+                    order.payment_status = "paid"
+                    order.paid_at = datetime.now(timezone.utc)
+                    order.razorpay_order_id = order.razorpay_order_id or rp_order_id
+                    order.razorpay_payment_id = rp_payment_id
+                    logger.info(f"[PAYMENT] Order #{order.id} marked PAID via webhook ({rp_payment_id})")
+            elif event == "payment.failed":
+                if order.payment_status != "paid":
+                    order.payment_status = "failed"
+                    logger.info(f"[PAYMENT] Order #{order.id} payment FAILED via webhook")
+            elif event in ("refund.processed", "refund.created"):
+                order.payment_status = "refunded"
+                order.refund_status = "processed"
+
+        db.session.commit()
+        return jsonify({"status": "ok"}), 200
+
+    # ---------------------------------------------------------------------------
+    # Market Purchases API
+    # ---------------------------------------------------------------------------
+    @app.route('/api/admin/market-purchases', methods=['GET'])
+    @role_required("admin")
+    def admin_get_market_purchases():
+        try:
+            purchases = MarketPurchase.query.order_by(MarketPurchase.purchased_at.desc()).all()
+            return jsonify([p.to_dict() for p in purchases]), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/admin/market-purchases', methods=['POST'])
+    @role_required("admin")
+    def admin_add_market_purchase():
+        data = request.json
+        try:
+            current_user = get_jwt_identity()
+            admin_id_val = current_user.get('id') if isinstance(current_user, dict) else current_user
+            
+            purchase = MarketPurchase(
+                ingredient_name=data.get('ingredient_name'),
+                cost=data.get('cost'),
+                quantity=data.get('quantity'),
+                unit=data.get('unit'),
+                category=data.get('category'),
+                expiration_date=data.get('expiration_date'),
+                receipt_url=data.get('receipt_url'),
+                notes=data.get('notes'),
+                admin_id=admin_id_val
+            )
+            db.session.add(purchase)
+            db.session.commit()
+            return jsonify(purchase.to_dict()), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+
+
+    @app.route('/api/admin/market-purchases/<int:id>', methods=['PUT'])
+    @jwt_required()
+    @role_required('admin')
+    def admin_edit_market_purchase(id):
+        data = request.json
+        try:
+            purchase = MarketPurchase.query.get(id)
+            if not purchase:
+                return jsonify({'error': 'Purchase not found'}), 404
+                
+            purchase.ingredient_name = data.get('ingredient_name', purchase.ingredient_name)
+            purchase.cost = data.get('cost', purchase.cost)
+            purchase.quantity = data.get('quantity', purchase.quantity)
+            purchase.unit = data.get('unit', purchase.unit)
+            purchase.category = data.get('category', purchase.category)
+            purchase.expiration_date = data.get('expiration_date', purchase.expiration_date)
+            purchase.receipt_url = data.get('receipt_url', purchase.receipt_url)
+            purchase.notes = data.get('notes', purchase.notes)
+            
+            db.session.commit()
+            return jsonify(purchase.to_dict()), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+
+    @app.route('/api/admin/market-purchases/<int:id>', methods=['DELETE'])
+    @jwt_required()
+    @role_required('admin')
+    def admin_delete_market_purchase(id):
+        try:
+            purchase = MarketPurchase.query.get(id)
+            if not purchase:
+                return jsonify({'error': 'Purchase not found'}), 404
+            
+            db.session.delete(purchase)
+            db.session.commit()
+            return jsonify({'message': 'Purchase deleted successfully'}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+
     return app
 
 
@@ -3813,16 +5678,26 @@ The FlavorFlow Team"""
 
 def _seed_admin(app):
     with app.app_context():
+        if os.environ.get("FLASK_ENV") == "production":
+            logger.info("Skipping _seed_admin in production mode")
+            return
+
         # 1. Seed Admin
         admin = db.session.scalars(select(User).where(User.email == "admin")).first()
+        
+        seed_pwd = os.environ.get("ADMIN_SEED_PASSWORD")
+        if not seed_pwd:
+            import secrets
+            seed_pwd = secrets.token_urlsafe(12)
+            
         if not admin:
             admin = Admin(email="admin", first_name="System", last_name="Admin")
             admin.is_superadmin = True
-            admin.set_password("admin", bcrypt)
+            admin.set_password(seed_pwd, bcrypt)
             admin.is_first_login = True
             db.session.add(admin)
             db.session.commit()
-            logger.info("Admin account seeded: admin / admin (first login reset forced)")
+            logger.info(f"Admin account seeded: admin / {seed_pwd} (first login reset forced)")
         else:
             if admin.check_password("admin", bcrypt) and not admin.is_first_login:
                 admin.is_first_login = True
@@ -3990,6 +5865,18 @@ def _check_and_send_alert(app, outlet_id):
         logger.warning(f"Alert email failed: {e}")
 
 
+def get_frontend_url(user_role):
+    import os
+    urls = [u.strip() for u in os.environ.get('FRONTEND_URL', 'http://localhost:5173,http://localhost:5174').split(',')]
+    # Enforce standard ports if found
+    if user_role == 'customer':
+        for u in urls:
+            if '5174' in u: return u
+    elif user_role in ['admin', 'staff', 'outlet_owner', 'kitchen']:
+        for u in urls:
+            if '5173' in u: return u
+    return urls[0]
+
 def _get_email_html_wrapper(title, content):
     return f"""
     <!DOCTYPE html>
@@ -4098,13 +5985,13 @@ def _get_email_html_wrapper(title, content):
 
 def _send_verification_email(app, user):
     try:
-        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
         token = serializer.dumps(user.email, salt="email-verify-salt")
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Verify your Email - FlavorFlow 🧡", sender=sender, recipients=[user.email])
         
         # Determine base URL for frontend
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()
+        frontend_url = get_frontend_url(user.role)
         verify_link = f"{frontend_url}/verify-email?token={token}"
         
         content = f"""
@@ -4116,6 +6003,7 @@ def _send_verification_email(app, user):
         </div>
         <p>If you did not sign up for this account, please ignore this email.</p>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Email Verification", content)
         mail.send(msg)
     except Exception as e:
@@ -4137,9 +6025,10 @@ def _send_welcome_email(app, user):
         </div>
         <p>Go ahead and browse our kitchen catalog to place your very first order!</p>
         <div style="text-align: center;">
-            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Explore the Shop</a>
+            <a href="{get_frontend_url(user.role)}" class="btn">Explore the Shop</a>
         </div>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Welcome", content)
         mail.send(msg)
     except Exception as e:
@@ -4192,6 +6081,7 @@ def _send_order_placed_email(app, order, customer):
         </p>
         <p>We'll notify you as soon as your delicious box is dispatched and on its way!</p>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Order Confirmed", content)
         
         import threading
@@ -4229,6 +6119,7 @@ def _send_order_shipped_email(app, order, customer, tracking_code):
         
         <p>If you have any questions or need to make last-minute changes, please contact our support team immediately.</p>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Order Shipped", content)
         mail.send(msg)
     except Exception as e:
@@ -4250,9 +6141,10 @@ def _send_admin_created_email(app, admin):
         </div>
         
         <div style="text-align: center;">
-            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Launch Admin Dashboard</a>
+            <a href="{get_frontend_url(admin.role)}" class="btn">Launch Admin Dashboard</a>
         </div>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Admin Onboarding", content)
         mail.send(msg)
     except Exception as e:
@@ -4273,6 +6165,7 @@ def _send_admin_password_changed_email(app, admin):
         
         <p>If you did not request this change, please contact support immediately.</p>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Password Changed", content)
         mail.send(msg)
     except Exception as e:
@@ -4296,9 +6189,10 @@ def _send_staff_created_email(app, staff, outlet):
         <p style="font-size: 13px; color: #64748b; font-style: italic;">* Note: You will be prompted to set a secure password of your own upon your very first login.</p>
         
         <div style="text-align: center;">
-            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Launch Cashier POS Terminal</a>
+            <a href="{get_frontend_url(staff.role)}" class="btn">Launch Cashier POS Terminal</a>
         </div>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Staff Onboarding", content)
         mail.send(msg)
     except Exception as e:
@@ -4356,6 +6250,7 @@ def _send_daily_digest_email(app, report, email_address):
         
         <p style="margin-top: 25px;">Please check the central admin console for specific inventory and auditing reports.</p>
         """
+        msg.body = 'Please view this email in an HTML-compatible client.\n\nThanks, FlavorFlow'
         msg.html = _get_email_html_wrapper("Daily Digest", content)
         mail.send(msg)
     except Exception as e:
@@ -4426,6 +6321,40 @@ def _generate_daily_report():
         logger.error(f"Report generation failed: {e}")
         return {"error": str(e)}
 
+def _purge_old_ticket_attachments(app):
+    """Purge attachment FILES from closed/resolved tickets older than
+    TICKET_RETENTION_DAYS (default 90) and null out their references.
+    Module-level so it can be tested/imported independently of the scheduler."""
+    retention_days = int(os.getenv("TICKET_RETENTION_DAYS", "90"))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    with app.app_context():
+        old_tickets = db.session.scalars(
+            select(SupportTicket).where(
+                SupportTicket.attachment_filename.is_not(None),
+                SupportTicket.status.in_(["Resolved", "Closed"]),
+                SupportTicket.updated_at < cutoff,
+            )
+        ).all()
+        if not old_tickets:
+            return 0
+        removed = 0
+        for t in old_tickets:
+            p = os.path.join(TICKETS_UPLOAD_FOLDER, t.attachment_filename)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    removed += 1
+                except Exception as e:
+                    logger.error(f"Ticket cleanup: failed to remove {p}: {e}")
+            t.attachment_filename = None
+            t.attachment_url = None
+        db.session.commit()
+        logger.info(
+            f"Ticket cleanup: purged attachments from {len(old_tickets)} "
+            f"closed tickets ({removed} files removed, retention={retention_days}d)"
+        )
+        return len(old_tickets)
+
 
 def _start_scheduler(app):
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
@@ -4434,12 +6363,20 @@ def _start_scheduler(app):
         with app.app_context():
             _generate_daily_report()
 
-    scheduler.add_job(run_report, "cron", hour=22, minute=0, id="daily_report")
-    scheduler.start()
-    logger.info("Scheduler started — daily report at 22:00 IST")
+    def cleanup_ticket_attachments():
+        try:
+            _purge_old_ticket_attachments(app)
+        except Exception as e:
+            logger.error(f"Ticket attachment cleanup failed: {e}")
 
+    scheduler.add_job(run_report, "cron", hour=22, minute=0, id="daily_report")
+    scheduler.add_job(cleanup_ticket_attachments, "cron", hour=3, minute=15, id="ticket_attachment_cleanup")
+    scheduler.start()
+    logger.info("Scheduler started — daily report at 22:00 IST, ticket cleanup at 03:15 IST")
 
 if __name__ == "__main__":
     app = create_app()
     debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
     app.run(debug=debug_mode, host="0.0.0.0", port=5000)
+
+

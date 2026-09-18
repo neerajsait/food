@@ -39,7 +39,7 @@ class TestIDORVulnerabilities(unittest.TestCase):
         # Generate token for Attacker
         attacker_token = create_access_token(
             identity=str(self.attacker.id), 
-            additional_claims={"role": "customer"}
+            additional_claims={"role": "customer", "token_version": getattr(self.attacker, "token_version", 0)}
         )
         self.attacker_headers = {
             "Authorization": f"Bearer {attacker_token}",
