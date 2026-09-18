@@ -17,5 +17,5 @@ redis==5.0.1
 #   Debian/Ubuntu: apt-get install libmagic1 | Alpine: apk add file-dev | macOS: brew install libmagic
 # (python-magic-bin is Windows-only and must NOT be used on Linux servers)
 python-magic==0.4.27
-Flask-Migrate==4.0.5
+Flask-Migrate==4.1.0
 requests>=2.31.0
