@@ -2,12 +2,14 @@ import os
 import io
 import json
 import base64
+import random
 import logging
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from decimal import Decimal
-from sqlalchemy import select, func, and_
-from flask import Flask, request, jsonify
+from sqlalchemy import select, func
+from sqlalchemy.orm import joinedload
+from flask import Flask, request, jsonify, Request
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, get_jwt, get_jwt_identity
@@ -15,18 +17,20 @@ from flask_jwt_extended import (
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 import qrcode
-from flask import Flask
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from models import (
-    db, User, Outlet, MenuItem, OutletStock,
+    db, User, Admin, Customer, Staff, OutletOwner, Outlet, MenuItem, OutletStock,
     Supplier, SupplierItem, StockAuditLog, ProductBatch,
-    Order, OrderItem, Feedback, POSSale, POSSaleItem, MenuItemReview, Coupon
+    Order, OrderItem, Review, Coupon, StaffShift, Address, Favorite, AdminAuditLog,
+    KitchenStaff, ProductionBatch, WalletTransaction, BroadcastMessage, Banner, StoreSetting, SupportTicket, StockRequest
 )
-from flask_cors import CORS
+import bleach
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,10 +42,20 @@ jwt = JWTManager()
 mail = Mail()
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 
+TICKETS_UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads', 'tickets')
+os.makedirs(TICKETS_UPLOAD_FOLDER, exist_ok=True)
 
 # ============================================================
 # HELPERS
 # ============================================================
+
+def get_loyalty_settings():
+    earn_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_earn_rate')).first()
+    redeem_rate = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_redeem_rate')).first()
+    
+    earn_val = float(earn_rate.setting_value) if earn_rate else 0.1  # 1 point per 10 rupees
+    redeem_val = float(redeem_rate.setting_value) if redeem_rate else 0.01  # 100 points = 1 rupee discount
+    return earn_val, redeem_val
 
 def role_required(*roles):
     """Decorator: JWT required + role check."""
@@ -55,6 +69,61 @@ def role_required(*roles):
             return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
+def department_required(*departments):
+    """Decorator: JWT required + admin role + department check."""
+    def decorator(fn):
+        @wraps(fn)
+        @jwt_required()
+        def wrapper(*args, **kwargs):
+            claims = get_jwt()
+            if claims.get("role") != "admin":
+                return jsonify({"error": "Forbidden", "message": "Admin access required"}), 403
+            
+            # Superadmin or unspecified department has full access
+            if claims.get("is_superadmin"):
+                return fn(*args, **kwargs)
+                
+            user_dept = claims.get("admin_department")
+            if user_dept == "SuperAdmin":
+                return fn(*args, **kwargs)
+            if not user_dept:
+                if departments:
+                    return jsonify({"error": "Forbidden", "message": "No department assigned. Please contact SuperAdmin."}), 403
+                return fn(*args, **kwargs)
+                
+            if departments and user_dept not in departments:
+                return jsonify({"error": "Forbidden", "message": f"Access restricted to departments: {', '.join(departments)}"}), 403
+                
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def sanitize_input(data, skip_keys=None):
+    if skip_keys is None:
+        skip_keys = ["password", "new_password", "old_password", "image_url", "target_url", "icon", "attachment"]
+        
+    if isinstance(data, dict):
+        return {k: (v if k in skip_keys else sanitize_input(v, skip_keys)) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_input(i, skip_keys) for i in data]
+    elif isinstance(data, str):
+        return bleach.clean(data)
+    return data
+
+
+def validate_phone(phone_str):
+    """Sanitize and validate phone number to be exactly 10 digits."""
+    if not phone_str:
+        return True, None
+    phone_str = str(phone_str).strip()
+    if not phone_str:
+        return True, None
+    if not phone_str.isdigit() or len(phone_str) != 10:
+        return False, None
+    return True, phone_str
 
 
 def log_stock_change(db_session, outlet_id, menu_item_id, change_qty, change_type,
@@ -74,30 +143,137 @@ def log_stock_change(db_session, outlet_id, menu_item_id, change_qty, change_typ
     )
     db_session.add(entry)
 
+def log_admin_action(db_session, admin_id, action, target_entity=None, target_id=None, details=None):
+    """Helper to write an AdminAuditLog entry."""
+    entry = AdminAuditLog(
+        admin_id=admin_id,
+        action=action,
+        target_entity=target_entity,
+        target_id=target_id,
+        details=details
+    )
+    db_session.add(entry)
+
+
+def _generate_unique_code(db_session):
+    """Generate a unique 4-digit numeric product code."""
+    for _ in range(1000):
+        code = f"{random.randint(1000, 9999)}"
+        existing = db_session.scalars(
+            select(MenuItem).where(MenuItem.code == code)
+        ).first()
+        if not existing:
+            return code
+    raise RuntimeError("Unable to generate a unique 4-digit product code after 1000 attempts")
+
+
+def _generate_order_qr(app, order):
+    """Generate a securely signed QR code for an order and save it as base64."""
+    import hashlib, hmac
+    try:
+        qr_payload = {
+            "action": "view_order",
+            "order_id": order.id,
+            "order_type": order.order_type
+        }
+        serialized = json.dumps(qr_payload, sort_keys=True)
+        signature = hmac.new(app.config["SECRET_KEY"].encode(), serialized.encode(), hashlib.sha256).hexdigest()
+        qr_payload["signature"] = signature
+        
+        payload_str = json.dumps(qr_payload)
+        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
+        qr.add_data(payload_str)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        # pyrefly: ignore [unexpected-keyword]
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        b64 = base64.b64encode(buf.read()).decode("utf-8")
+        order.qr_code_base64 = f"data:image/png;base64,{b64}"
+    except Exception as e:
+        logger.error(f"QR generation failed for order {order.id}: {e}")
+
 
 # ============================================================
 # APP FACTORY
 # ============================================================
 
+class SanitizedRequest(Request):
+    def get_json(self, *args, **kwargs):
+        data = super().get_json(*args, **kwargs)
+        if data:
+            return sanitize_input(data)
+        return data
+
 def create_app(config_override=None):
     app = Flask(__name__)
+    app.request_class = SanitizedRequest
+    frontend_url = os.getenv("FRONTEND_URL", "https://flavorflow.local,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174").split(",")
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # --- Config ---
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("werkzeug")
+    
+    @app.before_request
+    def log_request_info():
+        # Mask sensitive query parameters like tokens
+        safe_url = request.url
+        if "token=" in safe_url.lower():
+            import re
+            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        app.logger.info(f"Incoming Request: {request.method} {safe_url}")
+
+    @app.after_request
+    def log_response_info(response):
+        safe_url = request.url
+        if "token=" in safe_url.lower():
+            import re
+            safe_url = re.sub(r'(token=)[^&]+', r'\1[REDACTED]', safe_url, flags=re.IGNORECASE)
+        app.logger.info(f"Outgoing Response: {response.status} for {request.method} {safe_url}")
+        
+        # Prevent caching for all API responses
+        if request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            
+        # Security headers handled by add_security_headers
+        return response
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         h = os.getenv("MYSQL_HOST")
         u = os.getenv("MYSQL_USER")
         p = os.getenv("MYSQL_PASSWORD")
         d = os.getenv("MYSQL_DB")
-        db_url = f"mysql+pymysql://{u}:{p}@{h}/{d}" if all([h, u, p, d]) else "sqlite:///food.db"
+        db_url = f"mysql+pymysql://{u}:{p}@{h}/{d}" if all([h, u, p, d]) else None
+        if not db_url:
+            if os.getenv("FLASK_ENV") == "production":
+                raise RuntimeError("MySQL database credentials must be provided in production.")
+            db_url = "sqlite:///food.db"
 
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_recycle": 280, "pool_pre_ping": True}
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "change-me-in-prod-secret-key-xyz")
-    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "change-me-in-prod-jwt-key-abc")
+    
+    secret_key = os.getenv("SECRET_KEY")
+    jwt_secret_key = os.getenv("JWT_SECRET_KEY")
+    if os.getenv("FLASK_ENV") == "production":
+        if not secret_key:
+            raise RuntimeError("SECRET_KEY must be set in production")
+        if not jwt_secret_key:
+            raise RuntimeError("JWT_SECRET_KEY must be set in production")
+            
+    app.config["SECRET_KEY"] = secret_key or os.urandom(24).hex()
+    app.config["JWT_SECRET_KEY"] = jwt_secret_key or os.urandom(24).hex()
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+    
+    if os.getenv("FLASK_ENV") == "production":
+        app.config["SESSION_COOKIE_SECURE"] = True
+        app.config["JWT_COOKIE_SECURE"] = True
+        
 
     # Mail config
     app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
@@ -121,6 +297,15 @@ def create_app(config_override=None):
     with app.app_context():
         db.create_all()
         _seed_admin(app)
+        # Bootstrap: assign 4-digit codes to any existing MenuItems that lack one
+        items_without_code = db.session.scalars(
+            select(MenuItem).where(MenuItem.code.is_(None))
+        ).all()
+        for item in items_without_code:
+            item.code = _generate_unique_code(db.session)
+        if items_without_code:
+            db.session.commit()
+            logger.info(f"Assigned product codes to {len(items_without_code)} existing menu items.")
 
     # --- Scheduler ---
     if not app.config.get("TESTING"):
@@ -129,6 +314,44 @@ def create_app(config_override=None):
     # ============================================================
     # ROUTES
     # ============================================================
+
+    # --- Global Error Handlers (always return JSON) ---
+    from flask_limiter.errors import RateLimitExceeded
+
+    @app.errorhandler(RateLimitExceeded)
+    def handle_rate_limit(e):
+        return jsonify({"error": "Too Many Requests", "message": str(e.description)}), 429
+
+    @app.errorhandler(429)
+    def handle_429(e):
+        return jsonify({"error": "Too Many Requests", "message": "Rate limit exceeded. Please slow down."}), 429
+
+    @app.errorhandler(404)
+    def handle_404(e):
+        return jsonify({"error": "Not Found", "message": str(e)}), 404
+
+    @app.errorhandler(405)
+    def handle_405(e):
+        return jsonify({"error": "Method Not Allowed", "message": str(e)}), 405
+
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        import traceback
+        tb = traceback.format_exc()
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return jsonify({"error": e.name, "message": e.description}), e.code
+        logger.exception(f"Unhandled exception: {e}")
+        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred.", "traceback": tb}), 500
+
+    @app.after_request
+    def add_security_headers(response):
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        if os.getenv("FLASK_ENV") == "production":
+            response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        return response
 
     # ---------- Health ----------
     @app.route("/api/health")
@@ -142,58 +365,124 @@ def create_app(config_override=None):
     @app.route("/api/auth/register", methods=["POST"])
     @limiter.limit("10 per minute")
     def register():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
         email = (data.get("email") or "").strip().lower()
         password = data.get("password", "")
         role = data.get("role", "customer")
+        
+        TEMP_DOMAINS = ["temp-mail.org", "10minutemail.com", "guerrillamail.com", "mailinator.com"]
+        domain = email.split("@")[-1] if "@" in email else ""
+        if domain in TEMP_DOMAINS:
+            return jsonify({"error": "Bad Request", "message": "This was caused due to temp mail use personal mail"}), 400
+            
         # Self-registration forces non-customer/non-owner roles to customer
         if role not in ("customer", "outlet_owner"):
             role = "customer"
+            
         first_name = (data.get("first_name") or "").strip()
         last_name = (data.get("last_name") or "").strip()
-        phone = (data.get("phone") or "").strip()
+        phone_raw = data.get("phone")
+        valid_phone, phone = validate_phone(phone_raw)
+        if not valid_phone:
+            return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
+        
+        import re
+        if first_name and not re.match(r"^[a-zA-Z\s\-']+$", first_name):
+            return jsonify({"error": "Bad Request", "message": "First name contains invalid characters"}), 400
+        if last_name and not re.match(r"^[a-zA-Z\s\-']+$", last_name):
+            return jsonify({"error": "Bad Request", "message": "Last name contains invalid characters"}), 400
 
         if not email or not password:
             return jsonify({"error": "Bad Request", "message": "Email and password are required"}), 400
-        if len(password) < 4:
-            return jsonify({"error": "Bad Request", "message": "Password must be at least 4 characters"}), 400
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            return jsonify({"error": "Bad Request", "message": "Invalid email format"}), 400
+        if len(password) < 8 or not re.search(r'[A-Za-z]', password) or not re.search(r'[0-9]', password):
+            return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain a mix of letters and numbers"}), 400
         if db.session.scalars(select(User).where(User.email == email)).first():
             return jsonify({"error": "Conflict", "message": "Email already registered"}), 409
 
-        user = User(email=email, role=role, first_name=first_name or None,
-                    last_name=last_name or None, phone=phone or None)
+        if role == "customer":
+            user = Customer(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
+        elif role == "outlet_owner":
+            user = OutletOwner(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
+        else:
+            user = Customer(email=email, first_name=first_name or None, last_name=last_name or None, phone=phone or None)
+            
         user.set_password(password, bcrypt)
+        
         db.session.add(user)
+        db.session.flush()
+
         db.session.commit()
 
-        # Send welcome email if customer role
-        if user.role == "customer":
-            _send_welcome_email(app, user)
+        # Send verification email if customer role
+        if getattr(user, 'role', '') == "customer":
+            _send_verification_email(app, user)
 
         return jsonify({"message": "Registered successfully", "user": user.to_dict()}), 201
 
     @app.route("/api/auth/login", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit("5 per minute")
     def login():
-        data = request.get_json() or {}
-        email = (data.get("email") or "").strip().lower()
-        password = data.get("password", "")
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        # Check if this is a staff login via staff_code
+        staff_code = (data.get("staff_code") or "").strip()
+        pin = data.get("pin", "")
+        
+        if staff_code and pin:
+            user = db.session.scalars(select(User).where(User.staff_code == staff_code)).first()
+            if not user or getattr(user, 'pin_hash', None) is None or not user.check_pin(pin, bcrypt):
+                logger.warning(f"Failed staff login attempt for staff_code: {staff_code}")
+                return jsonify({"error": "Unauthorized", "message": "Invalid staff code or PIN"}), 401
+        else:
+            email = (data.get("email") or "").strip().lower()
+            password = data.get("password", "")
 
-        if not email or not password:
-            return jsonify({"error": "Bad Request", "message": "Email and password are required"}), 400
+            if not email or not password:
+                return jsonify({"error": "Bad Request", "message": "Email and password are required"}), 400
 
-        user = db.session.scalars(select(User).where(User.email == email)).first()
-        if not user or not user.check_password(password, bcrypt):
-            return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
+            user = db.session.scalars(select(User).where(User.email == email)).first()
+            if not user or not user.check_password(password, bcrypt):
+                logger.warning(f"Failed login attempt for email: {email}")
+                return jsonify({"error": "Unauthorized", "message": "Invalid email or password"}), 401
+            
+            if not user.is_active:
+                logger.warning(f"Login attempt on inactive account: {email}")
+                return jsonify({"error": "Forbidden", "message": "Account is disabled. Please contact support."}), 403
+
+        if getattr(user, 'deleted_at', None) is not None:
+            return jsonify({"error": "Unauthorized", "message": "Account has been deleted"}), 401
+        if getattr(user, 'is_banned', False):
+            reason = getattr(user, 'ban_reason', 'No reason provided')
+            return jsonify({"error": "Forbidden", "message": f"Account is banned: {reason}"}), 403
         if not user.is_active:
             return jsonify({"error": "Forbidden", "message": "Account is deactivated"}), 403
 
         additional_claims = {
             "role": user.role,
             "outlet_id": user.outlet_id,
-            "user_id": user.id
+            "user_id": user.id,
+            "admin_department": getattr(user, 'admin_department', None),
+            "is_superadmin": getattr(user, 'is_superadmin', False)
         }
         token = create_access_token(identity=str(user.id), additional_claims=additional_claims)
+
+        # Automatic Login-Based Clock-In
+        if user.role in ("staff", "kitchen", "outlet_owner") and user.outlet_id:
+            active_shift = db.session.scalars(
+                select(StaffShift).where(
+                    StaffShift.staff_id == user.id,
+                    StaffShift.status == "active"
+                )
+            ).first()
+            if not active_shift:
+                new_shift = StaffShift(staff_id=user.id, outlet_id=user.outlet_id)
+                db.session.add(new_shift)
+                db.session.commit()
+                logger.info(f"Auto-clocked in {user.role} user {user.id} during login")
+
         return jsonify({"access_token": token, "user": user.to_dict()}), 200
 
     @app.route("/api/auth/me", methods=["GET"])
@@ -206,35 +495,36 @@ def create_app(config_override=None):
         return jsonify(user.to_dict()), 200
 
     @app.route("/api/auth/forgot-password", methods=["POST"])
-    @limiter.limit("5 per minute")
+    @limiter.limit("3 per minute")
     def forgot_password():
-        import secrets
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
         if not email:
             return jsonify({"error": "Bad Request", "message": "Email is required"}), 400
 
         user = db.session.scalars(select(User).where(User.email == email)).first()
         if user:
-            token = secrets.token_urlsafe(32)
-            user.password_reset_token = token
+            import secrets
+            import string
+            token = ''.join(secrets.choice(string.digits) for _ in range(6))
+            user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
             user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             db.session.commit()
 
             sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
             msg = Message(
-                subject="FlavorFlow Password Reset Request",
+                subject="FlavorFlow Password Reset Code",
                 sender=sender,
                 recipients=[email]
             )
             msg.body = f"""Hi {user.first_name or 'User'},
 
 You have requested to reset your password for your FlavorFlow account.
-Please copy and use the following token in the password reset form:
+Please use the following 6-digit code in the password reset form:
 
-Reset Token: {token}
+Reset Code: {token}
 
-This token is valid for 1 hour. If you did not request this, please ignore this email.
+This code is valid for 1 hour. If you did not request this, please ignore this email.
 
 Best regards,
 FlavorFlow Team
@@ -251,18 +541,19 @@ FlavorFlow Team
     @app.route("/api/auth/reset-password", methods=["POST"])
     @limiter.limit("5 per minute")
     def reset_password():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
         token = (data.get("token") or "").strip()
         new_password = data.get("new_password", "")
 
         if not email or not token or not new_password:
             return jsonify({"error": "Bad Request", "message": "Email, token, and new password are required"}), 400
-        if len(new_password) < 4:
-            return jsonify({"error": "Bad Request", "message": "Password must be at least 4 characters"}), 400
+        import re
+        if len(new_password) < 8 or not re.search(r'[A-Za-z]', new_password) or not re.search(r'[0-9]', new_password):
+            return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain a mix of letters and numbers"}), 400
 
         user = db.session.scalars(select(User).where(User.email == email)).first()
-        if not user or user.password_reset_token != token:
+        if not user or not user.password_reset_token or not bcrypt.check_password_hash(user.password_reset_token, token):
             return jsonify({"error": "Unauthorized", "message": "Invalid or expired token"}), 401
 
         if not user.password_reset_expiry:
@@ -283,6 +574,53 @@ FlavorFlow Team
 
         return jsonify({"message": "Password has been reset successfully"}), 200
 
+    @app.route("/api/auth/request-password-change-otp", methods=["POST"])
+    @jwt_required()
+    @limiter.limit("3 per minute")
+    def request_password_change_otp():
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        if not user.is_first_login:
+            old_password = data.get("old_password", "")
+            if not old_password or not user.check_password(old_password, bcrypt):
+                return jsonify({"error": "Unauthorized", "message": "Incorrect old password"}), 401
+                
+        import secrets
+        import string
+        token = ''.join(secrets.choice(string.digits) for _ in range(6))
+        user.password_reset_token = bcrypt.generate_password_hash(token).decode('utf-8')
+        user.password_reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.session.commit()
+
+        sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
+        msg = Message(
+            subject="FlavorFlow Password Change Code",
+            sender=sender,
+            recipients=[user.email]
+        )
+        msg.body = f"""Hi {user.first_name or 'User'},
+
+You have requested to change your password for your FlavorFlow account.
+Please use the following 6-digit code in the password change form:
+
+Change Code: {token}
+
+This code is valid for 1 hour. If you did not request this, please ignore this email.
+
+Best regards,
+The FlavorFlow Team"""
+        try:
+            mail.send(msg)
+        except Exception as e:
+            app.logger.error(f"Failed to send email: {e}")
+            
+        return jsonify({"message": "OTP sent to your email"}), 200
+
     @app.route("/api/auth/change-password", methods=["POST"])
     @jwt_required()
     def change_password():
@@ -291,42 +629,288 @@ FlavorFlow Team
         if not user:
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
 
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        # Check old password if not first login
+        if not user.is_first_login:
+            old_password = data.get("old_password", "")
+            if not old_password or not user.check_password(old_password, bcrypt):
+                return jsonify({"error": "Unauthorized", "message": "Incorrect old password"}), 401
+
+        otp = data.get("otp", "")
+        if not otp or not user.password_reset_token or not bcrypt.check_password_hash(user.password_reset_token, otp):
+            return jsonify({"error": "Unauthorized", "message": "Invalid or expired OTP"}), 401
+            
+        if not user.password_reset_expiry or datetime.now(timezone.utc) > user.password_reset_expiry.replace(tzinfo=timezone.utc):
+            return jsonify({"error": "Unauthorized", "message": "OTP expired"}), 401
+
         new_password = data.get("new_password", "")
-        if not new_password or len(new_password) < 4:
-            return jsonify({"error": "Bad Request", "message": "New password must be at least 4 characters"}), 400
+        import re
+        if not new_password or len(new_password) < 8 or not re.search(r'[A-Za-z]', new_password) or not re.search(r'[0-9]', new_password):
+            return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain a mix of letters and numbers"}), 400
 
         user.set_password(new_password, bcrypt)
         user.is_first_login = False
+        user.password_reset_token = None
+        user.password_reset_expiry = None
         db.session.commit()
 
         return jsonify({"message": "Password changed successfully"}), 200
+
+    @app.route("/api/auth/profile", methods=["PUT"])
+    @jwt_required()
+    def update_profile():
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+            
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        user.first_name = data.get("first_name", user.first_name)
+        user.last_name = data.get("last_name", user.last_name)
+        if "phone" in data:
+            valid_phone, phone_clean = validate_phone(data["phone"])
+            if not valid_phone:
+                return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
+            user.phone = phone_clean
+        
+        if "address" in data:
+            user.address = data["address"]
+            
+        # Handle password change
+        new_password = data.get("password")
+        if new_password:
+            old_password = data.get("old_password", "")
+            if not old_password or not user.check_password(old_password, bcrypt):
+                return jsonify({"error": "Unauthorized", "message": "Incorrect old password"}), 401
+                
+            import re
+            if len(new_password) < 8 or not re.search(r'[A-Za-z]', new_password) or not re.search(r'[0-9]', new_password):
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
+            
+            user.set_password(new_password, bcrypt)
+
+        # Handle PIN change (for staff/kitchen)
+        new_pin = data.get("pin")
+        if new_pin is not None:
+            new_pin = str(new_pin).strip()
+            if new_pin:
+                if not new_pin.isdigit() or len(new_pin) != 4:
+                    return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
+                user.set_pin(new_pin, bcrypt)
+            else:
+                user.pin_hash = None
+        db.session.commit()
+        return jsonify({"message": "Profile updated successfully", "user": user.to_dict()}), 200
+
+    @app.route("/api/auth/profile", methods=["DELETE"])
+    @jwt_required()
+    def delete_profile():
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        user.deleted_at = datetime.now(timezone.utc)
+        user.is_active = False
+        db.session.commit()
+        return jsonify({"message": "Account deleted successfully"}), 200
+
+    @app.route("/api/auth/verify-email", methods=["POST"])
+    @limiter.limit("5 per minute")
+    def verify_email():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        token = data.get("token")
+        if not token:
+            return jsonify({"error": "Bad Request", "message": "Token is missing"}), 400
+            
+        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        try:
+            # Token expires in 24 hours (86400 seconds)
+            email = serializer.loads(token, salt="email-verify-salt", max_age=86400)
+        except SignatureExpired:
+            return jsonify({"error": "Unauthorized", "message": "Verification token has expired"}), 401
+        except BadSignature:
+            return jsonify({"error": "Unauthorized", "message": "Invalid verification token"}), 401
+            
+        user = db.session.scalars(select(User).where(User.email == email)).first()
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+            
+        if user.is_email_verified:
+            return jsonify({"message": "Email is already verified", "already_verified": True}), 200
+            
+        user.is_email_verified = True
+        db.session.commit()
+        return jsonify({"message": "Email verified successfully"}), 200
+
+    # --- Address Book ---
+    @app.route("/api/auth/addresses", methods=["GET"])
+    @jwt_required()
+    def get_addresses():
+        uid = int(get_jwt_identity())
+        addresses = db.session.scalars(select(Address).where(Address.user_id == uid)).all()
+        return jsonify([addr.to_dict() for addr in addresses]), 200
+
+    @app.route("/api/auth/addresses", methods=["POST"])
+    @jwt_required()
+    def add_address():
+        uid = int(get_jwt_identity())
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        
+        title = data.get("title", "").strip()
+        address_line = data.get("address_line", "").strip()
+        is_default = data.get("is_default", False)
+        
+        if not title or not address_line:
+            return jsonify({"error": "Bad Request", "message": "Title and address line are required"}), 400
+            
+        if is_default:
+            # Remove default from old addresses
+            db.session.execute(
+                db.update(Address).where(Address.user_id == uid).values(is_default=False)
+            )
+            
+        new_addr = Address(user_id=uid, title=title, address_line=address_line, is_default=is_default)
+        db.session.add(new_addr)
+        db.session.commit()
+        return jsonify({"message": "Address added", "address": new_addr.to_dict()}), 201
+
+    @app.route("/api/auth/addresses/<int:address_id>", methods=["DELETE"])
+    @jwt_required()
+    def delete_address(address_id):
+        uid = int(get_jwt_identity())
+        addr = db.session.get(Address, address_id)
+        if not addr or addr.user_id != uid:
+            return jsonify({"error": "Not Found"}), 404
+            
+        db.session.delete(addr)
+        db.session.commit()
+        return jsonify({"message": "Address deleted"}), 200
+
+    @app.route("/api/customer/account", methods=["DELETE"])
+    @role_required("customer")
+    def delete_customer_account():
+        user_id = int(get_jwt_identity())
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        try:
+            # We can use ORM to delete user and it should cascade,
+            # but if it fails due to IntegrityError, we catch it.
+            db.session.delete(user)
+            db.session.commit()
+            return jsonify({"message": "Account deleted successfully"}), 200
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.error(f"Error deleting account {user_id}: {str(e)}")
+            
+            # Fallback: manual deletion of known related records to bypass missing cascade
+            try:
+                from sqlalchemy import text
+                db.session.execute(text("DELETE FROM reviews WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM addresses WHERE user_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM support_tickets WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM favorites WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM orders WHERE customer_id = :uid"), {"uid": user_id})
+                db.session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
+                db.session.commit()
+                return jsonify({"message": "Account deleted successfully (manual cascade)"}), 200
+            except Exception as e2:
+                db.session.rollback()
+                logging.error(f"Error during manual cascade delete: {str(e2)}")
+                return jsonify({"error": "Delete Failed", "message": str(e2)}), 500
 
 
     # ============================================================
     # 2. CUSTOMER ROUTES (role: customer)
     # ============================================================
+    
+    # --- Favorites ---
+    @app.route("/api/foods/favorites", methods=["GET"])
+    @jwt_required()
+    def get_favorites():
+        uid = int(get_jwt_identity())
+        favs = db.session.scalars(select(Favorite).where(Favorite.customer_id == uid)).all()
+        return jsonify([f.to_dict() for f in favs]), 200
+
+    @app.route("/api/foods/favorites", methods=["POST"])
+    @jwt_required()
+    def add_favorite():
+        uid = int(get_jwt_identity())
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        menu_item_id = data.get("menu_item_id")
+        
+        if not menu_item_id:
+            return jsonify({"error": "Bad Request", "message": "menu_item_id is required"}), 400
+            
+        existing = db.session.scalar(
+            select(Favorite).where(Favorite.customer_id == uid, Favorite.menu_item_id == menu_item_id)
+        )
+        if existing:
+            return jsonify({"message": "Already in favorites", "favorite": existing.to_dict()}), 200
+            
+        fav = Favorite(customer_id=uid, menu_item_id=menu_item_id)
+        db.session.add(fav)
+        db.session.commit()
+        return jsonify({"message": "Added to favorites", "favorite": fav.to_dict()}), 201
+
+    @app.route("/api/foods/favorites/<int:menu_item_id>", methods=["DELETE"])
+    @jwt_required()
+    def remove_favorite(menu_item_id):
+        uid = int(get_jwt_identity())
+        fav = db.session.scalar(
+            select(Favorite).where(Favorite.customer_id == uid, Favorite.menu_item_id == menu_item_id)
+        )
+        if not fav:
+            return jsonify({"error": "Not Found", "message": "Not in favorites"}), 404
+            
+        db.session.delete(fav)
+        db.session.commit()
+        return jsonify({"message": "Removed from favorites"}), 200
+
 
     @app.route("/api/foods/menu", methods=["GET"])
     def get_foods_menu():
         """Public: home foods menu."""
+        from sqlalchemy.orm import selectinload
         items = db.session.scalars(
             select(MenuItem).where(
                 MenuItem.is_active == True,
                 MenuItem.business_type.in_(["home_foods", "both"])
-            ).order_by(MenuItem.category, MenuItem.name)
+            ).options(selectinload(MenuItem.reviews)).order_by(MenuItem.category, MenuItem.name)
         ).all()
         return jsonify([i.to_dict() for i in items]), 200
+
+    @app.route("/api/foods/menu/code/<code>", methods=["GET"])
+    def get_food_by_code(code):
+        """Public: get a menu item by its code"""
+        item = db.session.scalars(
+            select(MenuItem).where(MenuItem.code == code)
+        ).first()
+        if not item:
+            return jsonify({"error": "Not Found", "message": "Item not found with this code"}), 404
+        return jsonify(item.to_dict()), 200
 
     @app.route("/api/foods/order", methods=["POST"])
     @role_required("customer", "outlet_owner")
     def place_order():
         customer_id = int(get_jwt_identity())
-        data = request.get_json() or {}
+        customer = db.session.scalars(
+            select(User).where(User.id == customer_id).with_for_update()
+        ).first()
+        if customer and not getattr(customer, 'is_email_verified', False):
+            return jsonify({"error": "Forbidden", "message": "Please verify your email before placing an order."}), 403
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         items_data = data.get("items", [])
         delivery_address = data.get("delivery_address")
         payment_method = data.get("payment_method", "COD")
         coupon_code = data.get("coupon_code")
+        delivery_charge = Decimal(str(data.get("delivery_charge") or 0.00))
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items in order"}), 400
@@ -343,23 +927,103 @@ FlavorFlow Team
                 return jsonify({"error": "Bad Request", "message": f"Item ID {mid} not found"}), 404
             if menu_item.business_type not in ("home_foods", "both"):
                 return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is not available for B2C order"}), 400
+            
+            if menu_item.global_stock is not None:
+                if menu_item.global_stock < qty:
+                    db.session.rollback()
+                    return jsonify({"error": "Bad Request", "message": f"Item '{menu_item.name}' is out of stock (only {menu_item.global_stock} left)"}), 400
+                menu_item.global_stock -= qty
+                
+                if menu_item.global_stock == 0:
+                    print(f"[NOTIFICATION] KITCHEN/ADMIN: Item '{menu_item.name}' is now SOLD OUT!", flush=True)
+
             price = menu_item.price
             total += price * qty
             order_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))
+        
+        total += delivery_charge
 
         discount_pct = 0
+        coupon = None
         if coupon_code:
             coupon = db.session.scalars(
                 select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
             ).first()
             if coupon:
-                discount_pct = coupon.discount_pct
+                if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
+                    return jsonify({"error": "Bad Request", "message": "Coupon has expired"}), 400
+                if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached"}), 400
 
-        if discount_pct > 0:
-            total = total * Decimal(str((100 - discount_pct) / 100))
+                # Check scope
+                if coupon.scope == 'outlet':
+                    return jsonify({"error": "Bad Request", "message": "This coupon is only valid for in-store purchases"}), 400
 
-        order = Order(customer_id=customer_id, total_price=total, items=order_items, delivery_address=delivery_address, payment_method=payment_method)
+                # Check min order value
+                if coupon.min_order_value and total < Decimal(str(coupon.min_order_value)):
+                    return jsonify({"error": "Bad Request", "message": f"Minimum order value of ₹{coupon.min_order_value} required"}), 400
+
+                # Check if first order only
+                if coupon.is_first_order_only:
+                    has_orders = db.session.scalars(select(Order).where(Order.customer_id == customer_id)).first()
+                    if has_orders:
+                        return jsonify({"error": "Bad Request", "message": "This coupon is only valid for your first order"}), 400
+
+                # Check if this user already used this coupon
+                used = db.session.scalars(select(Order).where(Order.customer_id == customer_id, Order.applied_coupon_code == coupon.code)).first()
+                if used:
+                    return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
+
+                coupon.usage_count += 1
+                
+                # Apply discount
+                if coupon.discount_amount and coupon.discount_amount > 0:
+                    total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
+                elif coupon.discount_pct and coupon.discount_pct > 0:
+                    discount_pct = min(100, coupon.discount_pct)
+                    discount_value = total * Decimal(str(discount_pct / 100))
+                    if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
+                        discount_value = Decimal(str(coupon.max_discount_amount))
+                    total = max(Decimal("0.00"), total - discount_value)
+
+        earn_rate, redeem_rate = get_loyalty_settings()
+        
+        redeem_points = int(data.get("redeem_loyalty_points") or 0)
+        points_redeemed = 0
+        if redeem_points > 0:
+            if not customer:
+                return jsonify({"error": "Bad Request", "message": "Loyalty points can only be used by registered customers"}), 400
+            
+            # calculate max redeemable points so it doesn't exceed total cost
+            max_redeem_allowed = int(float(total) / redeem_rate)
+            actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
+
+            if actual_redeem > 0:
+                points_discount = Decimal(str(actual_redeem * redeem_rate))
+                customer.loyalty_points -= actual_redeem
+                points_redeemed = actual_redeem
+                total = max(Decimal("0.00"), total - points_discount)
+        
+        points_earned = 0
+        if customer:
+            points_earned = int(float(total) * earn_rate)
+            customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
+
+        order = Order(
+            customer_id=customer_id, 
+            total_price=total, 
+            items=order_items, 
+            delivery_address=delivery_address, 
+            payment_method=payment_method,
+            applied_coupon_code=coupon.code if coupon else None,
+            loyalty_points_earned=points_earned,
+            loyalty_points_redeemed=points_redeemed,
+            delivery_charge=delivery_charge
+        )
         db.session.add(order)
+        db.session.flush() # ensure we have order.id
+        
+        _generate_order_qr(app, order)
         db.session.commit()
 
         # Send order confirmation email to customer
@@ -383,7 +1047,7 @@ FlavorFlow Team
     @role_required("customer", "outlet_owner")
     def cancel_order(order_id):
         customer_id = int(get_jwt_identity())
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         reason = data.get("reason", "Cancelled by customer")
 
         order = db.session.get(Order, order_id)
@@ -396,6 +1060,34 @@ FlavorFlow Team
 
         order.status = "cancelled"
         order.cancel_reason = reason
+        
+        # Restore stock and coupon
+        for item in order.items:
+            menu_item = db.session.get(MenuItem, item.menu_item_id)
+            if menu_item and menu_item.global_stock is not None:
+                menu_item.global_stock += item.quantity
+        
+        if order.applied_coupon_code:
+            coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+            if coupon and coupon.usage_count > 0:
+                coupon.usage_count -= 1
+
+        if order.customer_id:
+            customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+            if customer:
+                if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                    customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
+                        description=f"Points deducted due to cancellation of Order #{order.id}"
+                    ))
+                if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
+                    customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
+                    db.session.add(WalletTransaction(
+                        user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
+                        description=f"Points refunded due to cancellation of Order #{order.id}"
+                    ))
+
         db.session.commit()
         return jsonify({"message": "Order cancelled", "order": order.to_dict()}), 200
 
@@ -403,15 +1095,18 @@ FlavorFlow Team
     @role_required("customer", "outlet_owner")
     def confirm_receipt(order_id):
         customer_id = int(get_jwt_identity())
-        data = request.get_json() or {}
-        code = (data.get("tracking_code") or "").strip()
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        code = (data.get("delivery_confirmation_code") or data.get("tracking_code") or "").strip()
 
         order = db.session.get(Order, order_id)
         if not order or order.customer_id != customer_id:
             return jsonify({"error": "Not Found"}), 404
         if order.status != "shipped":
             return jsonify({"error": "Bad Request", "message": "Order is not in shipped status"}), 400
-        if order.tracking_code != code:
+        
+        if order.delivery_confirmation_code and order.delivery_confirmation_code != code:
+            return jsonify({"error": "Unauthorized", "message": "Incorrect Delivery PIN. Please check your email and try again."}), 401
+        elif not order.delivery_confirmation_code and order.tracking_id != code:
             return jsonify({"error": "Unauthorized", "message": "Tracking code does not match"}), 401
 
         order.is_received = True
@@ -423,41 +1118,229 @@ FlavorFlow Team
     @role_required("customer", "outlet_owner")
     def submit_feedback(order_id):
         customer_id = int(get_jwt_identity())
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
 
         order = db.session.get(Order, order_id)
         if not order or order.customer_id != customer_id:
             return jsonify({"error": "Not Found"}), 404
         if not order.is_received:
             return jsonify({"error": "Forbidden", "message": "Feedback form is locked until receipt confirmation"}), 403
-        if order.feedback:
+        if order.review:
             return jsonify({"error": "Conflict", "message": "Feedback already submitted"}), 409
 
         rating = int(data.get("rating", 5))
         if not 1 <= rating <= 5:
             return jsonify({"error": "Bad Request", "message": "Rating must be 1–5"}), 400
 
-        fb = Feedback(order_id=order_id, customer_id=customer_id,
+        fb = Review(order_id=order_id, customer_id=customer_id,
+                      menu_item_id=data.get("menu_item_id"),
                       rating=rating, comment=data.get("comment"))
         db.session.add(fb)
         db.session.commit()
         return jsonify({"message": "Feedback submitted", "feedback": fb.to_dict()}), 201
 
+    @app.route("/api/customer/tickets", methods=["GET"])
+    @role_required("customer", "outlet_owner")
+    def get_my_tickets():
+        customer_id = int(get_jwt_identity())
+        tickets = db.session.scalars(select(SupportTicket).where(SupportTicket.customer_id == customer_id).order_by(SupportTicket.created_at.desc())).all()
+        return jsonify([t.to_dict() for t in tickets]), 200
+
+    @app.route("/api/customer/tickets", methods=["POST"])
+    @role_required("customer", "outlet_owner")
+    def create_ticket():
+        customer_id = int(get_jwt_identity())
+        
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            data = request.form
+        else:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+
+        issue_type = data.get("issue_type")
+        description = data.get("description")
+        order_id = data.get("order_id")
+        if order_id and order_id != "null":
+            try:
+                order_id = int(order_id)
+            except ValueError:
+                order_id = None
+        else:
+            order_id = None
+
+        if not issue_type or not description:
+            return jsonify({"error": "Bad Request", "message": "Issue type and description are required"}), 400
+
+        attachment_url = None
+        if "attachment" in request.files:
+            file = request.files["attachment"]
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+                file.save(file_path)
+                attachment_url = f"/static/uploads/tickets/{unique_name}"
+
+        ticket = SupportTicket(customer_id=customer_id, issue_type=issue_type, description=description, order_id=order_id, attachment_url=attachment_url)
+        db.session.add(ticket)
+        db.session.commit()
+        
+        return jsonify({"message": "Support ticket created successfully", "ticket": ticket.to_dict()}), 201
+
+    @app.route("/api/customer/tickets/<int:ticket_id>", methods=["PUT"])
+    @role_required("customer", "outlet_owner")
+    def update_ticket(ticket_id):
+        customer_id = int(get_jwt_identity())
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or ticket.customer_id != customer_id:
+            return jsonify({"error": "Not Found"}), 404
+            
+        if ticket.status != "Open":
+            return jsonify({"error": "Bad Request", "message": "Only open tickets can be edited"}), 400
+
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            data = request.form
+        else:
+            data = sanitize_input(request.get_json(silent=True)) or {}
+
+        if "issue_type" in data:
+            ticket.issue_type = data["issue_type"]
+        if "description" in data:
+            ticket.description = data["description"]
+
+        if "attachment" in request.files:
+            file = request.files["attachment"]
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+                unique_name = f"{int(datetime.now().timestamp())}_{filename}"
+                file_path = os.path.join(TICKETS_UPLOAD_FOLDER, unique_name)
+                file.save(file_path)
+                ticket.attachment_url = f"/static/uploads/tickets/{unique_name}"
+
+        db.session.commit()
+        return jsonify({"message": "Support ticket updated successfully", "ticket": ticket.to_dict()}), 200
+
+    @app.route("/api/customer/tickets/<int:ticket_id>", methods=["DELETE"])
+    @role_required("customer", "outlet_owner")
+    def delete_ticket(ticket_id):
+        customer_id = int(get_jwt_identity())
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket or ticket.customer_id != customer_id:
+            return jsonify({"error": "Not Found"}), 404
+            
+        if ticket.status != "Open":
+            return jsonify({"error": "Bad Request", "message": "Only open tickets can be deleted"}), 400
+
+        db.session.delete(ticket)
+        db.session.commit()
+        return jsonify({"message": "Support ticket deleted successfully"}), 200
+
+    @app.route("/api/customer/loyalty", methods=["GET"])
+    @role_required("customer", "outlet_owner")
+    def get_loyalty_history():
+        user_id = int(get_jwt_identity())
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found"}), 404
+            
+        # Get wallet transactions
+        txs = db.session.scalars(
+            select(WalletTransaction)
+            .where(WalletTransaction.user_id == user_id)
+            .order_by(WalletTransaction.created_at.desc())
+        ).all()
+        
+        # Get order points earned/redeemed
+        orders = db.session.scalars(
+            select(Order)
+            .where(Order.customer_id == user_id)
+            .where((Order.loyalty_points_earned > 0) | (Order.loyalty_points_redeemed > 0))
+            .order_by(Order.created_at.desc())
+        ).all()
+        
+        history = []
+        for tx in txs:
+            history.append({
+                "id": f"tx_{tx.id}",
+                "date": tx.created_at.isoformat(),
+                "desc": tx.description,
+                "amount": tx.amount if tx.transaction_type == 'credit' else -tx.amount,
+                "type": tx.transaction_type
+            })
+            
+        for o in orders:
+            if o.loyalty_points_earned and o.loyalty_points_earned > 0:
+                history.append({
+                    "id": f"oe_{o.id}",
+                    "date": o.created_at.isoformat(),
+                    "desc": f"Earned points on order #{o.id}",
+                    "amount": o.loyalty_points_earned,
+                    "type": "credit"
+                })
+            if o.loyalty_points_redeemed and o.loyalty_points_redeemed > 0:
+                history.append({
+                    "id": f"or_{o.id}",
+                    "date": o.created_at.isoformat(),
+                    "desc": f"Redeemed points on order #{o.id}",
+                    "amount": -o.loyalty_points_redeemed,
+                    "type": "debit"
+                })
+                
+        # Sort combined history
+        history.sort(key=lambda x: x["date"], reverse=True)
+        
+        # Calculate referral count (users who registered with this user's ID as referred_by_id)
+        referral_count = db.session.scalar(
+            select(func.count(User.id)).where(User.referred_by_id == user_id)
+        )
+
+        return jsonify({
+            "loyalty_points": user.loyalty_points or 0,
+            "referral_code": user.referral_code,
+            "referral_count": referral_count or 0,
+            "history": history
+        }), 200
+
     # ============================================================
     # 3. ADMIN ROUTES
     # ============================================================
 
+    @app.route("/api/admin/tickets", methods=["GET"])
+    @role_required("admin", "superadmin")
+    def admin_get_tickets():
+        tickets = db.session.scalars(select(SupportTicket).order_by(SupportTicket.status.asc(), SupportTicket.created_at.desc())).all()
+        return jsonify([t.to_dict() for t in tickets]), 200
+
+    @app.route("/api/admin/tickets/<int:ticket_id>", methods=["PUT"])
+    @role_required("admin", "superadmin")
+    def admin_reply_ticket(ticket_id):
+        ticket = db.session.get(SupportTicket, ticket_id)
+        if not ticket:
+            return jsonify({"error": "Not Found"}), 404
+        
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        if "status" in data:
+            ticket.status = data["status"]
+        if "admin_reply" in data:
+            ticket.admin_reply = data["admin_reply"]
+            
+        db.session.commit()
+        admin_id = int(get_jwt_identity())
+        log_admin_action(db.session, admin_id, "Reply Ticket", "SupportTicket", ticket.id, f"Replied to ticket {ticket.id}")
+        db.session.commit()
+        
+        return jsonify({"message": "Ticket updated", "ticket": ticket.to_dict()}), 200
+
     # --- Menu Items ---
     @app.route("/api/admin/menu", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_menu():
-        items = db.session.scalars(select(MenuItem).order_by(MenuItem.business_type, MenuItem.name)).all()
+        items = db.session.scalars(select(MenuItem).where(MenuItem.is_active == True).order_by(MenuItem.business_type, MenuItem.name)).all()
         return jsonify([i.to_dict() for i in items]), 200
 
     @app.route("/api/admin/menu", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_menu():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
         price = data.get("price")
         btype = data.get("business_type", "home_foods")
@@ -467,26 +1350,56 @@ FlavorFlow Team
         if btype not in ("home_foods", "snack_supply", "both"):
             return jsonify({"error": "Bad Request", "message": "Invalid business_type"}), 400
 
+        # Check if an item with the same name already exists (case-insensitive)
+        existing = db.session.scalars(
+            select(MenuItem).where(func.lower(MenuItem.name) == name.lower())
+        ).first()
+        if existing:
+            # Reuse existing item — reactivate and update fields
+            existing.price = Decimal(str(price))
+            existing.business_type = btype
+            existing.description = data.get("description") or existing.description
+            existing.category = data.get("category") or existing.category
+            existing.image_url = data.get("image_url") or existing.image_url
+            if "global_stock" in data:
+                existing.global_stock = data.get("global_stock")
+            existing.is_active = True
+            if "code" in data and data["code"]:
+                existing.code = data["code"].strip()
+            elif not existing.code:
+                existing.code = _generate_unique_code(db.session)
+            db.session.commit()
+            return jsonify({"message": "Existing item reactivated", "item": existing.to_dict()}), 200
+
+        code = (data.get("code") or "").strip()
         item = MenuItem(
-            name=name, price=Decimal(str(price)), business_type=btype,
+            name=name, price=Decimal(str(price)), business_type=btype, code=code if code else _generate_unique_code(db.session),
             description=data.get("description"), category=data.get("category"),
-            image_url=data.get("image_url")
+            image_url=data.get("image_url"), global_stock=data.get("global_stock")
         )
+        if not item.code:
+            item.code = _generate_unique_code(db.session)
         db.session.add(item)
+        db.session.commit()
+        admin_id = int(get_jwt_identity())
+        log_admin_action(db.session, admin_id, "Create Menu Item", "MenuItem", item.id, f"Created {item.name}")
         db.session.commit()
         return jsonify({"message": "Item created", "item": item.to_dict()}), 201
 
     @app.route("/api/admin/menu/<int:item_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_menu(item_id):
         item = db.session.get(MenuItem, item_id)
         if not item:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
-        for field in ("name", "description", "category", "image_url"):
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        for field in ("name", "code", "description", "category", "image_url", "global_stock", "is_veg", "is_gluten_free", "spice_level", "tag"):
             if field in data:
                 setattr(item, field, data[field])
-        if "price" in data:
+        if "admin_rating" in data:
+            val = data["admin_rating"]
+            item.admin_rating = float(val) if val else None
+        if "price" in data and data["price"] is not None:
             item.price = Decimal(str(data["price"]))
         if "business_type" in data and data["business_type"] in ("home_foods", "snack_supply", "both"):
             item.business_type = data["business_type"]
@@ -495,27 +1408,30 @@ FlavorFlow Team
         db.session.commit()
         return jsonify({"message": "Updated", "item": item.to_dict()}), 200
 
-    @app.route("/api/admin/menu/<int:item_id>", methods=["DELETE"])
-    @role_required("admin")
+    @app.route("/api/admin/menu/<int:item_id>", methods=["DELETE", "POST"])
+    @department_required("Operations")
     def admin_delete_menu(item_id):
         item = db.session.get(MenuItem, item_id)
         if not item:
             return jsonify({"error": "Not Found"}), 404
         item.is_active = False
         db.session.commit()
+        admin_id = int(get_jwt_identity())
+        log_admin_action(db.session, admin_id, "Deactivate Menu Item", "MenuItem", item.id, f"Deactivated {item.name}")
+        db.session.commit()
         return jsonify({"message": "Item deactivated"}), 200
 
     # --- Outlets ---
     @app.route("/api/admin/outlets", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_outlets():
         outlets = db.session.scalars(select(Outlet).order_by(Outlet.name)).all()
         return jsonify([o.to_dict() for o in outlets]), 200
 
     @app.route("/api/admin/outlets", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
         address = (data.get("address") or "").strip()
         if not name or not address:
@@ -523,6 +1439,7 @@ FlavorFlow Team
         outlet = Outlet(name=name, address=address,
                         latitude=data.get("latitude"), longitude=data.get("longitude"),
                         owner_id=data.get("owner_id"))
+        outlet.revenue_share_percentage = data.get("revenue_share_percentage", 0.00)
         db.session.add(outlet)
         db.session.flush()
 
@@ -543,36 +1460,37 @@ FlavorFlow Team
         return jsonify({"message": "Outlet created", "outlet": outlet.to_dict()}), 201
 
     @app.route("/api/admin/outlets/<int:outlet_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_outlet(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
-        for field in ("name", "address", "latitude", "longitude", "owner_id"):
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        for field in ("name", "address", "latitude", "longitude", "owner_id", "revenue_share_percentage"):
             if field in data:
                 setattr(outlet, field, data[field])
         db.session.commit()
         return jsonify({"message": "Updated", "outlet": outlet.to_dict()}), 200
 
-    @app.route("/api/admin/outlets/<int:outlet_id>", methods=["DELETE"])
-    @role_required("admin")
+    @app.route("/api/admin/outlets/<int:outlet_id>", methods=["DELETE", "POST"])
+    @department_required("Operations")
     def admin_delete_outlet(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
-        db.session.delete(outlet)
+        # Bypass ORM to allow DB-level ON DELETE CASCADE to handle related non-nullable rows
+        db.session.execute(db.delete(Outlet).where(Outlet.id == outlet_id))
         db.session.commit()
         return jsonify({"message": "Outlet deleted"}), 200
 
     # --- Outlet Stock Management ---
     @app.route("/api/admin/outlets/<int:outlet_id>/stock", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet_stock(outlet_id):
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         mid = data.get("menu_item_id")
         if not mid:
             return jsonify({"error": "Bad Request", "message": "menu_item_id required"}), 400
@@ -595,13 +1513,13 @@ FlavorFlow Team
 
     # FIX: Added /items alias route to match frontend call
     @app.route("/api/admin/outlets/<int:outlet_id>/items", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_outlet_item(outlet_id):
         """Alias for /stock endpoint — used by the frontend assign-item-to-outlet flow."""
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         mid = data.get("menu_item_id")
         if not mid:
             return jsonify({"error": "Bad Request", "message": "menu_item_id required"}), 400
@@ -617,6 +1535,10 @@ FlavorFlow Team
             if "restock_limit" in data:
                 exists.restock_limit = int(data["restock_limit"])
             db.session.commit()
+            log_stock_change(db.session, outlet_id=outlet_id, menu_item_id=mid,
+                             change_qty=exists.current_stock - before, change_type="edit",
+                             stock_before=before, stock_after=exists.current_stock,
+                             notes="Admin edited stock via UI")
             return jsonify({"message": "Stock updated", "stock": exists.to_dict()}), 200
 
         stock = OutletStock(outlet_id=outlet_id, menu_item_id=mid,
@@ -633,7 +1555,7 @@ FlavorFlow Team
 
     # FIX: Added DELETE /items/<menu_item_id> route for frontend remove functionality
     @app.route("/api/admin/outlets/<int:outlet_id>/items/<int:menu_item_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_remove_outlet_item(outlet_id, menu_item_id):
         """Remove a specific item from an outlet's stock."""
         stock = db.session.scalars(
@@ -646,11 +1568,11 @@ FlavorFlow Team
         return jsonify({"message": "Item removed from outlet"}), 200
 
     @app.route("/api/admin/outlets/<int:outlet_id>/restock", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_restock_outlet(outlet_id):
         claims = get_jwt()
         admin_id = claims.get("user_id")
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         mid = data.get("menu_item_id")
         qty = int(data.get("qty", 0))
         if qty <= 0:
@@ -669,9 +1591,31 @@ FlavorFlow Team
         db.session.commit()
         return jsonify({"message": f"+{qty} stocked", "new_stock": stock.current_stock}), 200
 
+    @app.route("/api/admin/revenue-share", methods=["GET"])
+    @department_required("Finance")
+    def admin_revenue_share():
+        outlets = db.session.scalars(select(Outlet)).all()
+        results = []
+        for o in outlets:
+            total_sales = db.session.scalar(
+                select(func.sum(Order.total_price))
+                .where(Order.outlet_id == o.id)
+                .where(Order.status == 'completed')
+            ) or Decimal('0.00')
+            share_pct = o.revenue_share_percentage or Decimal('0.00')
+            brand_cut = Decimal(total_sales) * (Decimal(share_pct) / Decimal('100.0'))
+            results.append({
+                "outlet_id": o.id,
+                "outlet_name": o.name,
+                "total_sales": float(total_sales),
+                "revenue_share_percentage": float(share_pct),
+                "brand_cut": round(float(brand_cut), 2)
+            })
+        return jsonify(results), 200
+
     # --- Orders (admin) ---
     @app.route("/api/admin/orders", methods=["GET"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_get_orders():
         orders = db.session.scalars(
             select(Order).order_by(Order.created_at.desc()).limit(200)
@@ -679,36 +1623,64 @@ FlavorFlow Team
         return jsonify([o.to_dict() for o in orders]), 200
 
     @app.route("/api/admin/orders/<int:order_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_update_order(order_id):
         order = db.session.get(Order, order_id)
         if not order:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         valid = ("pending", "processing", "shipped", "delivered", "cancelled")
         if "status" in data and data["status"] in valid:
+            old_status = order.status
             order.status = data["status"]
+            if old_status != "cancelled" and order.status == "cancelled":
+                for item in order.items:
+                    menu_item = db.session.get(MenuItem, item.menu_item_id)
+                    if menu_item and menu_item.global_stock is not None:
+                        menu_item.global_stock += item.quantity
+                if order.applied_coupon_code:
+                    coupon = db.session.scalars(select(Coupon).where(Coupon.code == order.applied_coupon_code)).first()
+                    if coupon and coupon.usage_count > 0:
+                        coupon.usage_count -= 1
+
+                if order.customer_id:
+                    customer = db.session.scalars(select(User).where(User.id == order.customer_id).with_for_update()).first()
+                    if customer:
+                        if order.loyalty_points_earned and order.loyalty_points_earned > 0:
+                            customer.loyalty_points = max(0, (customer.loyalty_points or 0) - order.loyalty_points_earned)
+                            db.session.add(WalletTransaction(
+                                user_id=customer.id, amount=-order.loyalty_points_earned, transaction_type="debit",
+                                description=f"Points deducted due to cancellation of Order #{order.id}"
+                            ))
+                        if order.loyalty_points_redeemed and order.loyalty_points_redeemed > 0:
+                            customer.loyalty_points = (customer.loyalty_points or 0) + order.loyalty_points_redeemed
+                            db.session.add(WalletTransaction(
+                                user_id=customer.id, amount=order.loyalty_points_redeemed, transaction_type="credit",
+                                description=f"Points refunded due to cancellation of Order #{order.id}"
+                            ))
         if "tracking_code" in data:
             order.tracking_code = data["tracking_code"]
         db.session.commit()
         return jsonify({"message": "Updated", "order": order.to_dict()}), 200
 
     @app.route("/api/admin/orders/<int:order_id>/ship", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_ship_order(order_id):
         """Mark order as shipped with a tracking code and optional label upload."""
         order = db.session.get(Order, order_id)
         if not order:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         tracking_code = (data.get("tracking_code") or "").strip()
         tracking_label = data.get("tracking_label")
-        if not tracking_code:
-            return jsonify({"error": "Bad Request", "message": "tracking_code is required"}), 400
         order.status = "shipped"
-        order.tracking_code = tracking_code
+        order.tracking_id = tracking_code if tracking_code else None
+        order.delivery_confirmation_code = str(random.randint(100000, 999999))
         if tracking_label:
             order.tracking_label = tracking_label
+        tracking_link = (data.get("tracking_link") or "").strip()
+        if tracking_link:
+            order.tracking_link = tracking_link
         db.session.commit()
 
         # Send order shipped email to customer
@@ -720,26 +1692,28 @@ FlavorFlow Team
 
     # --- Staff Management ---
     @app.route("/api/admin/staff", methods=["GET"])
-    @role_required("admin")
+    @role_required("admin", "outlet_owner")
     def admin_get_staff():
         staff = db.session.scalars(
-            select(User).where(User.role == "staff").order_by(User.created_at.desc())
+            select(User).where(User.role.in_(["staff", "outlet_owner", "kitchen", "customer"])).order_by(User.created_at.desc())
         ).all()
         return jsonify([u.to_dict() for u in staff]), 200
 
     @app.route("/api/admin/staff", methods=["POST"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_create_staff():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         email = (data.get("email") or "").strip().lower()
         password = data.get("password", "staff1234")
         outlet_id = data.get("outlet_id")
         first_name = data.get("first_name")
         last_name = data.get("last_name")
-        phone = data.get("phone")
+        valid_phone, phone = validate_phone(data.get("phone"))
+        if not valid_phone:
+            return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
         role = (data.get("role") or "staff").strip().lower()
 
-        if role not in ("staff", "admin"):
+        if role not in ("staff", "admin", "outlet_owner", "kitchen"):
             return jsonify({"error": "Bad Request", "message": "Invalid role"}), 400
 
         if not email:
@@ -754,93 +1728,241 @@ FlavorFlow Team
             if admin_count >= 3:
                 return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
 
-        user = User(email=email, role=role, outlet_id=outlet_id if role == "staff" else None,
-                    first_name=first_name, last_name=last_name, phone=phone)
+        if role == "admin":
+            dept = data.get("admin_department")
+            if not dept or dept not in ["Finance", "Operations", "HR"]:
+                return jsonify({"error": "Bad Request", "message": "admin_department is required and must be Finance, Operations, or HR"}), 400
+            user = Admin(email=email, first_name=first_name, last_name=last_name, phone=phone)
+            user.admin_department = dept
+        elif role == "staff":
+            user = Staff(email=email, first_name=first_name, last_name=last_name, phone=phone, outlet_id=outlet_id)
+        elif role == "outlet_owner":
+            # pyrefly: ignore [unexpected-keyword]
+            user = OutletOwner(email=email, first_name=first_name, last_name=last_name, phone=phone, outlet_id=outlet_id)
+        elif role == "kitchen":
+            user = KitchenStaff(email=email, first_name=first_name, last_name=last_name, phone=phone, outlet_id=outlet_id)
+        elif role == "customer":
+            user = Customer(email=email, first_name=first_name, last_name=last_name, phone=phone)
+        else:
+            return jsonify({"error": "Bad Request", "message": "Invalid role"}), 400
         user.set_password(password, bcrypt)
+        # Generate 4-digit staff code for staff/kitchen
+        if role in ("staff", "kitchen"):
+            import random
+            while True:
+                code = str(random.randint(1000, 9999))
+                if not db.session.scalars(select(User).where(User.staff_code == code)).first():
+                    user.staff_code = code
+                    break
+        # Require 4-digit PIN for staff and kitchen
+        if role in ("staff", "kitchen"):
+            pin = (data.get("pin") or "").strip()
+            if not pin or len(pin) != 4 or not pin.isdigit():
+                return jsonify({"error": "Bad Request", "message": "A 4-digit PIN is required for staff and kitchen accounts"}), 400
+            user.set_pin(pin, bcrypt)
+
         db.session.add(user)
         db.session.commit()
 
-        if role == "staff":
+        if role in ("staff", "outlet_owner"):
             outlet = db.session.get(Outlet, outlet_id) if outlet_id else None
-            _send_staff_created_email(app, user, password, outlet)
+            _send_staff_created_email(app, user, outlet)
         else:
-            _send_admin_created_email(app, user, password)
+            _send_admin_created_email(app, user)
 
         return jsonify({"message": f"{role.capitalize()} created", "user": user.to_dict(), "default_password": password}), 201
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_edit_staff(user_id):
         user = db.session.get(User, user_id)
-        if not user or user.role not in ("staff", "admin"):
+        if not user or user.role not in ("staff", "admin", "outlet_owner", "kitchen", "customer"):
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
-        for field in ("first_name", "last_name", "phone"):
+        if getattr(user, 'is_superadmin', False):
+            return jsonify({"error": "Forbidden", "message": "Cannot modify a super-admin."}), 403
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        for field in ("first_name", "last_name"):
             if field in data:
                 setattr(user, field, data[field])
+        if "phone" in data:
+            valid_phone, phone_clean = validate_phone(data["phone"])
+            if not valid_phone:
+                return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
+            user.phone = phone_clean
         if "outlet_id" in data:
             user.outlet_id = data["outlet_id"]
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
-        
+        if "loyalty_points" in data and user.role == "customer":
+            user.loyalty_points = int(data["loyalty_points"])
+        if "pin" in data:
+            pin = (data["pin"] or "").strip()
+            if pin:
+                if not pin.isdigit() or len(pin) != 4:
+                    return jsonify({"error": "Bad Request", "message": "PIN must be exactly 4 digits"}), 400
+                user.set_pin(pin, bcrypt)
+            else:
+                # Empty string = remove PIN
+                user.pin_hash = None
         password_changed = False
-        if "password" in data and len(data["password"]) >= 4:
-            user.set_password(data["password"], bcrypt)
-            password_changed = True
+        import re
+        if "password" in data:
+            if len(data["password"]) >= 8 and re.search(r'[A-Za-z]', data["password"]) and re.search(r'[0-9]', data["password"]):
+                user.set_password(data["password"], bcrypt)
+                password_changed = True
+            else:
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
             
         db.session.commit()
 
         if password_changed and user.role == "admin" and user.email:
-            _send_admin_password_changed_email(app, user, data["password"])
+            _send_admin_password_changed_email(app, user)
 
         return jsonify({"message": "Updated", "user": user.to_dict()}), 200
 
     @app.route("/api/admin/staff/<int:user_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_delete_staff(user_id):
         user = db.session.get(User, user_id)
-        if not user:
+        if not user or user.role not in ("staff", "admin", "outlet_owner", "kitchen", "customer"):
             return jsonify({"error": "Not Found"}), 404
-        user.is_active = False
+
+        if getattr(user, 'is_superadmin', False):
+            return jsonify({"error": "Forbidden", "message": "Cannot delete a super-admin."}), 403
+
+        if user.role == "admin":
+            admin_count = db.session.scalar(select(func.count(User.id)).where(User.role == "admin"))
+            if admin_count <= 1:
+                return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
+
+        db.session.delete(user)
         db.session.commit()
-        return jsonify({"message": "Staff deactivated"}), 200
+        return jsonify({"message": "Staff deleted permanently"}), 200
+
+    # --- Coupons (Admin) ---
+    @app.route("/api/admin/coupons", methods=["GET"])
+    @role_required("admin", "outlet_owner")
+    def admin_get_coupons():
+        coupons = db.session.scalars(select(Coupon).order_by(Coupon.created_at.desc())).all()
+        return jsonify([c.to_dict() for c in coupons]), 200
+
+    @app.route("/api/admin/coupons", methods=["POST"])
+    @department_required("Finance")
+    def admin_add_coupon():
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        code = (data.get("code") or "").strip()
+        pct = data.get("discount_pct")
+        amt = data.get("discount_amount")
+        if not code or (pct is None and amt is None):
+            return jsonify({"error": "Bad Request", "message": "Code and either discount percentage or flat amount are required."}), 400
+        
+        expiry_date = None
+        if data.get("expiry_date"):
+            expiry_date = datetime.strptime(data.get("expiry_date"), "%Y-%m-%d").date()
+
+        coupon = Coupon(
+            code=code,
+            discount_pct=pct,
+            discount_amount=Decimal(str(amt)) if amt else None,
+            max_discount_amount=Decimal(str(data["max_discount_amount"])) if data.get("max_discount_amount") else None,
+            applicable_menu_item_id=data.get("applicable_menu_item_id") or None,
+            applicable_customer_id=data.get("applicable_customer_id") or None,
+            expiry_date=expiry_date,
+            usage_limit=data.get("usage_limit") or None,
+            is_active=bool(data.get("is_active", True)),
+            min_order_value=Decimal(str(data["min_order_value"])) if data.get("min_order_value") else Decimal("0"),
+            is_first_order_only=bool(data.get("is_first_order_only", False)),
+            scope=data.get("scope", "both")
+        )
+        db.session.add(coupon)
+        db.session.commit()
+        return jsonify({"message": "Coupon created", "coupon": coupon.to_dict()}), 201
+
+    @app.route("/api/admin/coupons/<int:id>", methods=["PUT"])
+    @department_required("Finance")
+    def admin_edit_coupon(id):
+        coupon = db.session.get(Coupon, id)
+        if not coupon:
+            return jsonify({"error": "Not Found"}), 404
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        if "discount_pct" in data:
+            coupon.discount_pct = data["discount_pct"]
+        if "discount_amount" in data:
+            coupon.discount_amount = Decimal(str(data["discount_amount"])) if data["discount_amount"] else None
+        if "max_discount_amount" in data:
+            coupon.max_discount_amount = Decimal(str(data["max_discount_amount"])) if data["max_discount_amount"] else None
+        if "expiry_date" in data:
+            if data["expiry_date"]:
+                coupon.expiry_date = datetime.strptime(data["expiry_date"], "%Y-%m-%d").date()
+            else:
+                coupon.expiry_date = None
+        if "usage_limit" in data:
+            coupon.usage_limit = data["usage_limit"]
+        if "is_active" in data:
+            coupon.is_active = bool(data["is_active"])
+        if "scope" in data:
+            coupon.scope = data["scope"] if data["scope"] in ("both", "outlet", "customer") else "both"
+        if "min_order_value" in data:
+            coupon.min_order_value = Decimal(str(data["min_order_value"])) if data["min_order_value"] else Decimal("0")
+        if "is_first_order_only" in data:
+            coupon.is_first_order_only = bool(data["is_first_order_only"])
+        db.session.commit()
+        return jsonify({"message": "Coupon updated", "coupon": coupon.to_dict()}), 200
+
+    @app.route("/api/admin/coupons/<int:id>", methods=["DELETE"])
+    @department_required("Finance")
+    def admin_delete_coupon(id):
+        coupon = db.session.get(Coupon, id)
+        if not coupon:
+            return jsonify({"error": "Not Found"}), 404
+        db.session.delete(coupon)
+        db.session.commit()
+        return jsonify({"message": "Coupon deleted"}), 200
 
     # --- Suppliers ---
     @app.route("/api/admin/suppliers", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_suppliers():
         suppliers = db.session.scalars(select(Supplier).order_by(Supplier.name)).all()
         return jsonify([s.to_dict() for s in suppliers]), 200
 
     @app.route("/api/admin/suppliers", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_add_supplier():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
         if not name:
             return jsonify({"error": "Bad Request", "message": "name required"}), 400
+        valid_phone, phone_clean = validate_phone(data.get("phone"))
+        if not valid_phone:
+            return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
         s = Supplier(name=name, contact_name=data.get("contact_name"),
-                     phone=data.get("phone"), email=data.get("email"),
+                     phone=phone_clean, email=data.get("email"),
                      address=data.get("address"), notes=data.get("notes"))
         db.session.add(s)
         db.session.commit()
         return jsonify({"message": "Supplier created", "supplier": s.to_dict()}), 201
 
     @app.route("/api/admin/suppliers/<int:sid>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_edit_supplier(sid):
         s = db.session.get(Supplier, sid)
         if not s:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
-        for f in ("name", "contact_name", "phone", "email", "address", "notes", "is_active"):
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        for f in ("name", "contact_name", "email", "address", "notes", "is_active"):
             if f in data:
                 setattr(s, f, data[f])
+        if "phone" in data:
+            valid_phone, phone_clean = validate_phone(data["phone"])
+            if not valid_phone:
+                return jsonify({"error": "Bad Request", "message": "Phone number must be exactly 10 digits"}), 400
+            s.phone = phone_clean
         db.session.commit()
         return jsonify({"message": "Updated", "supplier": s.to_dict()}), 200
 
     @app.route("/api/admin/suppliers/<int:sid>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_supplier(sid):
         s = db.session.get(Supplier, sid)
         if not s:
@@ -850,12 +1972,12 @@ FlavorFlow Team
         return jsonify({"message": "Supplier deleted"}), 200
 
     @app.route("/api/admin/suppliers/<int:sid>/items", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_link_supplier_item(sid):
         s = db.session.get(Supplier, sid)
         if not s:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         mid = data.get("menu_item_id")
         if not mid:
             return jsonify({"error": "Bad Request", "message": "menu_item_id required"}), 400
@@ -870,33 +1992,215 @@ FlavorFlow Team
         db.session.add(si)
         db.session.commit()
         return jsonify({"message": "Linked", "item": si.to_dict()}), 201
+    # ============================================================
+    # 2.5. KITCHEN ROUTES (role: kitchen)
+    # ============================================================
+    
+    @app.route("/api/kitchen/orders", methods=["GET"])
+    @role_required("kitchen", "admin")
+    def kitchen_get_orders():
+        # Get all online orders that need preparation
+        orders = db.session.scalars(
+            select(Order)
+            .where(Order.order_type == "online", Order.status.in_(["pending", "processing"]))
+            .order_by(Order.created_at.asc())
+        ).unique().all()
+        return jsonify([o.to_dict() for o in orders]), 200
+
+    @app.route("/api/kitchen/orders/<int:order_id>/status", methods=["PUT"])
+    @role_required("kitchen", "admin")
+    def kitchen_update_order_status(order_id):
+        order = db.session.get(Order, order_id)
+        if not order:
+            return jsonify({"error": "Not Found"}), 404
+            
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        status = data.get("status")
+        if status not in ["pending", "processing", "ready"]:
+            return jsonify({"error": "Bad Request", "message": "Invalid status"}), 400
+            
+        order.status = status
+        db.session.commit()
+        return jsonify({"message": "Status updated", "order": order.to_dict()}), 200
+
+    @app.route("/api/kitchen/stock-requests", methods=["GET"])
+    @role_required("kitchen", "admin")
+    def get_stock_requests():
+        requests = db.session.scalars(select(StockRequest).order_by(StockRequest.created_at.desc())).all()
+        return jsonify([req.to_dict() for req in requests]), 200
+
+    @app.route("/api/kitchen/stock-requests", methods=["POST"])
+    @jwt_required()
+    def create_stock_request():
+        uid = int(get_jwt_identity())
+        user = db.session.get(User, uid)
+        if not user or user.role not in ("staff", "admin", "outlet_owner", "kitchen"):
+            return jsonify({"error": "Forbidden"}), 403
+            
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        outlet_id = data.get("outlet_id")
+        if not outlet_id and getattr(user, 'outlet_id', None):
+            outlet_id = user.outlet_id
+        
+        if not outlet_id:
+            return jsonify({"error": "Bad Request", "message": "outlet_id is required"}), 400
+            
+        req = StockRequest(
+            outlet_id=outlet_id,
+            menu_item_id=data.get("menu_item_id"),
+            quantity=int(data.get("quantity", 1)),
+            staff_id=uid,
+            request_type=data.get("type", "Restock")
+        )
+        db.session.add(req)
+        db.session.commit()
+        return jsonify({"message": "Request submitted", "stock_request": req.to_dict()}), 201
+
+    @app.route("/api/kitchen/stock-requests/<int:req_id>/status", methods=["PUT"])
+    @role_required("kitchen", "admin")
+    def update_stock_request_status(req_id):
+        data = request.json or {}
+        new_status = data.get("status")
+        req = db.session.get(StockRequest, req_id)
+        if not req:
+            return jsonify({"error": "Not Found"}), 404
+            
+        req.status = new_status
+        
+        # Auto-update outlet stock only when dispatched/fulfilled
+        if new_status in ["Dispatched", "Fulfilled"]:
+            stock = db.session.scalars(select(OutletStock).where(OutletStock.outlet_id == req.outlet_id, OutletStock.menu_item_id == req.menu_item_id)).first()
+            if stock:
+                stock.current_stock += req.quantity
+            else:
+                stock = OutletStock(outlet_id=req.outlet_id, menu_item_id=req.menu_item_id, current_stock=req.quantity)
+                db.session.add(stock)
+            
+        db.session.commit()
+        return jsonify({"message": f"Request {new_status.lower()}", "stock_request": req.to_dict()}), 200
+
+    @app.route("/api/kitchen/produce", methods=["POST"])
+    @role_required("kitchen", "admin")
+    def kitchen_produce_batch():
+        import hashlib, hmac
+        uid = int(get_jwt_identity())
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        
+        menu_item_id = data.get("menu_item_id")
+        quantity = data.get("quantity")
+        expiry_date_str = data.get("expiry_date")
+        
+        if not menu_item_id or not quantity or not expiry_date_str:
+            return jsonify({"error": "Bad Request", "message": "Missing required fields"}), 400
+            
+        try:
+            expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "Bad Request", "message": "Invalid expiry_date format. Use YYYY-MM-DD"}), 400
+            
+        # Generate batch number
+        batch_number = f"B-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{random.randint(100, 999)}"
+        
+        batch = ProductionBatch(
+            menu_item_id=menu_item_id,
+            batch_number=batch_number,
+            quantity_produced=quantity,
+            expiry_date=expiry_date,
+            produced_by=uid
+        )
+        
+        db.session.add(batch)
+        db.session.flush() # get batch ID
+        
+        # Generate QR Code Payload
+        qr_payload = {
+            "action": "receive_batch",
+            "batch_number": batch_number,
+            "menu_item_id": menu_item_id,
+            "quantity": quantity,
+            "expiry_date": expiry_date_str
+        }
+        
+        # Sign payload
+        serialized = json.dumps(qr_payload, sort_keys=True)
+        signature = hmac.new(app.config["SECRET_KEY"].encode(), serialized.encode(), hashlib.sha256).hexdigest()
+        qr_payload["signature"] = signature
+        
+        try:
+            payload_str = json.dumps(qr_payload)
+            qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
+            qr.add_data(payload_str)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            # pyrefly: ignore [unexpected-keyword]
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            b64 = base64.b64encode(buf.read()).decode("utf-8")
+            
+            # Save QR to DB
+            batch.qr_code_base64 = f"data:image/png;base64,{b64}"
+            
+        except Exception as e:
+            logger.error(f"QR generation failed in kitchen_produce_batch: {e}")
+            
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Batch produced successfully", 
+            "batch": batch.to_dict()
+        }), 201
+
+
+    # ============================================================
+    # 3. ADMIN ROUTES
+    # ============================================================
 
     # --- Analytics ---
     @app.route("/api/admin/analytics", methods=["GET"])
-    @role_required("admin")
+    @role_required("admin", "outlet_owner")
     def admin_analytics():
+        claims = get_jwt()
+        role = claims.get("role")
+        user_outlet_id = claims.get("outlet_id")
+
         days = int(request.args.get("days", 30))
         since = datetime.now(timezone.utc) - timedelta(days=days)
 
+        # Base conditions
+        b2c_conditions = [Order.created_at >= since, Order.order_type == "online", Order.status != "cancelled"]
+        pos_conditions = [Order.created_at >= since, Order.order_type == "pos", Order.status != "cancelled"]
+        
+        if role == "outlet_owner" and user_outlet_id:
+            b2c_conditions.append(Order.outlet_id == user_outlet_id)
+            pos_conditions.append(Order.outlet_id == user_outlet_id)
+
         # B2C revenue
         b2c_rev = db.session.scalar(
-            select(func.sum(Order.total_price)).where(
-                Order.created_at >= since,
-                Order.status != "cancelled"
-            )
+            select(func.sum(Order.total_price)).where(*b2c_conditions)
         ) or 0
 
         # POS revenue
         pos_rev = db.session.scalar(
-            select(func.sum(POSSale.total_amount)).where(POSSale.created_at >= since)
+            select(func.sum(Order.total_price)).where(*pos_conditions)
         ) or 0
+
+        if role == "outlet_owner" and user_outlet_id:
+            outlet = db.session.get(Outlet, user_outlet_id)
+            share_pct = float(outlet.revenue_share_percentage) if outlet and outlet.revenue_share_percentage else 100.0
+            if share_pct > 0 and share_pct <= 100:
+                b2c_rev = b2c_rev * (share_pct / 100.0)
+                pos_rev = pos_rev * (share_pct / 100.0)
+            elif share_pct == 0:
+                b2c_rev = 0
+                pos_rev = 0
 
         # Orders count
         b2c_count = db.session.scalar(
-            select(func.count(Order.id)).where(Order.created_at >= since, Order.status != "cancelled")
+            select(func.count(Order.id)).where(*b2c_conditions)
         ) or 0
         pos_count = db.session.scalar(
-            select(func.count(POSSale.id)).where(POSSale.created_at >= since)
+            select(func.count(Order.id)).where(*pos_conditions)
         ) or 0
 
         # Top B2C items
@@ -904,66 +2208,95 @@ FlavorFlow Team
             select(MenuItem.name, func.sum(OrderItem.quantity).label("qty"))
             .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
             .join(Order, Order.id == OrderItem.order_id)
-            .where(Order.created_at >= since, Order.status != "cancelled")
+            .where(*b2c_conditions)
             .group_by(MenuItem.name).order_by(func.sum(OrderItem.quantity).desc()).limit(5)
         ).fetchall()
 
         # Top POS items
         top_pos = db.session.execute(
-            select(MenuItem.name, func.sum(POSSaleItem.quantity).label("qty"))
-            .join(POSSaleItem, POSSaleItem.menu_item_id == MenuItem.id)
-            .join(POSSale, POSSale.id == POSSaleItem.sale_id)
-            .where(POSSale.created_at >= since)
-            .group_by(MenuItem.name).order_by(func.sum(POSSaleItem.quantity).desc()).limit(5)
+            select(MenuItem.name, func.sum(OrderItem.quantity).label("qty"))
+            .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(*pos_conditions)
+            .group_by(MenuItem.name).order_by(func.sum(OrderItem.quantity).desc()).limit(5)
         ).fetchall()
 
         # Outlet revenue
         outlet_rev = db.session.execute(
-            select(Outlet.name, func.sum(POSSale.total_amount).label("rev"))
-            .join(POSSale, POSSale.outlet_id == Outlet.id)
-            .where(POSSale.created_at >= since)
-            .group_by(Outlet.name).order_by(func.sum(POSSale.total_amount).desc())
+            select(Outlet.name, func.sum(Order.total_price).label("rev"))
+            .join(Order, Order.outlet_id == Outlet.id)
+            .where(*pos_conditions)
+            .group_by(Outlet.name).order_by(func.sum(Order.total_price).desc())
         ).fetchall()
 
-        # Daily B2C revenue (last 7 days)
+        # Daily B2C & POS revenue (last 7 days)
         daily_data = []
+        end_date = datetime.now(timezone.utc)
+        start_date = (end_date - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        d_cond = [Order.created_at >= start_date, Order.status != "cancelled"]
+        if role == "outlet_owner" and user_outlet_id:
+            d_cond.append(Order.outlet_id == user_outlet_id)
+
+        sales_data = db.session.execute(
+            select(
+                func.date(Order.created_at).label('sale_date'),
+                Order.order_type,
+                func.sum(Order.total_price).label('total_rev')
+            )
+            .where(*d_cond)
+            .group_by(func.date(Order.created_at), Order.order_type)
+        ).fetchall()
+
+        sales_map = {}
+        for row in sales_data:
+            date_str = str(row.sale_date)
+            if date_str not in sales_map:
+                sales_map[date_str] = {"online": 0, "pos": 0}
+            
+            val = float(row.total_rev or 0)
+            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+                val = val * (share_pct / 100.0)
+
+            if row.order_type in sales_map[date_str]:
+                sales_map[date_str][row.order_type] += val
+
         for i in range(6, -1, -1):
-            day = datetime.now(timezone.utc) - timedelta(days=i)
-            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + timedelta(days=1)
-            rev = db.session.scalar(
-                select(func.sum(Order.total_price)).where(
-                    Order.created_at >= day_start,
-                    Order.created_at < day_end,
-                    Order.status != "cancelled"
-                )
-            ) or 0
-            pos_day = db.session.scalar(
-                select(func.sum(POSSale.total_amount)).where(
-                    POSSale.created_at >= day_start,
-                    POSSale.created_at < day_end
-                )
-            ) or 0
+            day = end_date - timedelta(days=i)
+            day_str = day.strftime("%Y-%m-%d")
+            
             daily_data.append({
-                "date": day_start.strftime("%d/%m"),
-                "b2c": float(rev),
-                "pos": float(pos_day)
+                "date": day.strftime("%d/%m"),
+                "b2c": sales_map.get(day_str, {}).get("online", 0),
+                "pos": sales_map.get(day_str, {}).get("pos", 0)
             })
 
         # Low stock
+        low_stock_cond = [OutletStock.current_stock <= OutletStock.restock_limit]
+        if role == "outlet_owner" and user_outlet_id:
+            low_stock_cond.append(OutletStock.outlet_id == user_outlet_id)
+            
         low_stock = db.session.scalars(
-            select(OutletStock).where(OutletStock.current_stock <= OutletStock.restock_limit)
+            select(OutletStock).where(*low_stock_cond)
         ).all()
 
         # Expiring batches (within 3 days)
         from datetime import date as date_cls
         today = date_cls.today()
+        expiring_cond = [ProductBatch.expiry_date != None, ProductBatch.expiry_date <= today + timedelta(days=3)]
+        if role == "outlet_owner" and user_outlet_id:
+            expiring_cond.append(ProductBatch.outlet_id == user_outlet_id)
+            
         expiring = db.session.scalars(
-            select(ProductBatch).where(
-                ProductBatch.expiry_date != None,
-                ProductBatch.expiry_date <= today + timedelta(days=3)
-            )
+            select(ProductBatch).where(*expiring_cond)
         ).all()
+
+        outlets_res = []
+        for r in outlet_rev:
+            val = float(r.rev)
+            if role == "outlet_owner" and user_outlet_id and 'share_pct' in locals():
+                val = val * (share_pct / 100.0)
+            outlets_res.append({"name": r.name, "revenue": val})
 
         return jsonify({
             "summary": {
@@ -976,14 +2309,14 @@ FlavorFlow Team
             "daily": daily_data,
             "top_b2c_items": [{"name": r.name, "qty": r.qty} for r in top_b2c],
             "top_pos_items": [{"name": r.name, "qty": r.qty} for r in top_pos],
-            "outlet_revenue": [{"name": r.name, "revenue": float(r.rev)} for r in outlet_rev],
+            "outlet_revenue": outlets_res,
             "low_stock_count": len(low_stock),
             "expiring_count": len(expiring)
         }), 200
 
     # --- Stock Audit Log ---
     @app.route("/api/admin/audit-log", methods=["GET"])
-    @role_required("admin")
+    @department_required()
     def admin_audit_log():
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 50))
@@ -997,19 +2330,31 @@ FlavorFlow Team
 
     # --- Demand Forecast ---
     @app.route("/api/admin/forecast", methods=["GET"])
-    @role_required("admin")
+    @department_required("Finance", "Operations")
     def admin_forecast():
         since = datetime.now(timezone.utc) - timedelta(days=30)
+        
+        sales_query = db.session.execute(
+            select(
+                Order.outlet_id, 
+                OrderItem.menu_item_id, 
+                func.sum(OrderItem.quantity).label('total_sold')
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                Order.created_at >= since,
+                Order.order_type == "pos",
+                Order.status != "cancelled"
+            )
+            .group_by(Order.outlet_id, OrderItem.menu_item_id)
+        ).fetchall()
+        
+        sales_map = {(row.outlet_id, row.menu_item_id): row.total_sold or 0 for row in sales_query}
+        
         results = []
-        stocks = db.session.scalars(select(OutletStock)).all()
+        stocks = db.session.scalars(select(OutletStock).options(joinedload(OutletStock.outlet), joinedload(OutletStock.menu_item))).unique().all()
         for s in stocks:
-            sold = db.session.scalar(
-                select(func.sum(POSSaleItem.quantity))
-                .join(POSSale, POSSale.id == POSSaleItem.sale_id)
-                .where(POSSale.outlet_id == s.outlet_id,
-                       POSSaleItem.menu_item_id == s.menu_item_id,
-                       POSSale.created_at >= since)
-            ) or 0
+            sold = sales_map.get((s.outlet_id, s.menu_item_id), 0)
             daily_rate = round(sold / 30, 2)
             days_left = round(s.current_stock / daily_rate, 1) if daily_rate > 0 else None
             results.append({
@@ -1030,7 +2375,7 @@ FlavorFlow Team
 
     # --- Product Batches ---
     @app.route("/api/admin/batches", methods=["GET"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_get_batches():
         batches = db.session.scalars(
             select(ProductBatch).order_by(ProductBatch.expiry_date.is_(None), ProductBatch.expiry_date.asc())
@@ -1039,9 +2384,9 @@ FlavorFlow Team
 
     # --- QR Code ---
     @app.route("/api/admin/generate-qr", methods=["POST"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_generate_qr():
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         if not data:
             return jsonify({"error": "Bad Request", "message": "Payload required"}), 400
         try:
@@ -1075,11 +2420,11 @@ FlavorFlow Team
             return jsonify({"qr_image": f"data:image/png;base64,{b64}", "payload": data}), 200
         except Exception as e:
             logger.error(f"QR generation failed: {e}")
-            return jsonify({"error": "Server Error", "message": str(e)}), 500
+            return jsonify({"error": "Server Error", "message": "Internal server error"}), 500
 
     # --- Users list ---
     @app.route("/api/admin/users", methods=["GET"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_get_users():
         users = db.session.scalars(
             select(User).order_by(User.created_at.desc())
@@ -1087,13 +2432,16 @@ FlavorFlow Team
         return jsonify([u.to_dict() for u in users]), 200
 
     @app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
-    @role_required("admin")
+    @department_required("HR")
     def admin_update_user(user_id):
         user = db.session.get(User, user_id)
         if not user:
             return jsonify({"error": "Not Found", "message": "User not found"}), 404
 
-        data = request.get_json() or {}
+        if getattr(user, 'is_superadmin', False):
+            return jsonify({"error": "Forbidden", "message": "Cannot modify a super-admin."}), 403
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         if "is_active" in data:
             user.is_active = bool(data["is_active"])
         if "role" in data:
@@ -1105,22 +2453,56 @@ FlavorFlow Team
                     )
                     if admin_count >= 3:
                         return jsonify({"error": "Conflict", "message": "Maximum of 3 admin accounts allowed."}), 409
+                    dept = data.get("admin_department") or getattr(user, 'admin_department', None)
+                    if not dept or dept not in ["Finance", "Operations", "HR"]:
+                        return jsonify({"error": "Bad Request", "message": "admin_department is required for admin role"}), 400
                 user.role = new_role
         if "outlet_id" in data:
             oid = data["outlet_id"]
             user.outlet_id = int(oid) if oid is not None else None
+            
+        if "admin_department" in data:
+            dept = data["admin_department"]
+            if dept and dept not in ["Finance", "Operations", "HR"]:
+                return jsonify({"error": "Bad Request", "message": "admin_department must be Finance, Operations, or HR"}), 400
+            user.admin_department = dept if dept else None
         
         password_changed = False
-        if "password" in data and len(data["password"]) >= 4:
-            user.set_password(data["password"], bcrypt)
-            password_changed = True
+        import re
+        if "password" in data and data["password"]:
+            new_pwd = data["password"]
+            if len(new_pwd) >= 8 and re.search(r'[A-Za-z]', new_pwd) and re.search(r'[0-9]', new_pwd):
+                user.set_password(new_pwd, bcrypt)
+                user.set_pin(new_pwd, bcrypt)
+                password_changed = True
+            else:
+                return jsonify({"error": "Bad Request", "message": "Password must be at least 8 characters and contain both letters and numbers."}), 400
 
         db.session.commit()
 
         if password_changed and user.role == "admin" and user.email:
-            _send_admin_password_changed_email(app, user, data["password"])
+            _send_admin_password_changed_email(app, user)
 
         return jsonify({"message": "User updated successfully", "user": user.to_dict()}), 200
+
+    @app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+    @department_required("HR")
+    def admin_delete_user(user_id):
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+
+        if getattr(user, 'is_superadmin', False):
+            return jsonify({"error": "Forbidden", "message": "Cannot delete a super-admin."}), 403
+
+        if user.role == "admin":
+            admin_count = db.session.scalar(select(func.count(User.id)).where(User.role == "admin"))
+            if admin_count <= 1:
+                return jsonify({"error": "Conflict", "message": "Cannot delete the last admin account."}), 409
+
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify({"message": "User deleted successfully"}), 200
 
     # ============================================================
     # 4. STAFF / POS ROUTES
@@ -1182,13 +2564,25 @@ FlavorFlow Team
         if not oid:
             return jsonify({"error": "Forbidden", "message": "No outlet assigned"}), 403
         oid = int(oid)
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         items_data = data.get("items", [])
         payment_method = data.get("payment_method", "cash")
         coupon_code = data.get("coupon_code")
+        # CRM: optional customer email to link the sale for loyalty tracking
+        customer_email = (data.get("customer_email") or "").strip().lower()
+        # Loyalty: optional points to redeem (staff toggles this per customer request)
+        redeem_points = int(data.get("redeem_loyalty_points") or 0)
 
         if not items_data:
             return jsonify({"error": "Bad Request", "message": "No items"}), 400
+
+        # Resolve customer (optional)
+        customer = None
+        if customer_email:
+            customer = db.session.scalars(
+                select(User).where(User.email == customer_email, User.role == "customer").with_for_update()
+            ).first()
+            # Silently ignore if not found — sale still proceeds
 
         total = Decimal("0.00")
         sale_items = []
@@ -1199,34 +2593,105 @@ FlavorFlow Team
                 select(OutletStock).filter_by(outlet_id=oid, menu_item_id=mid)
             ).first()
             if not stock:
+                db.session.rollback()
                 return jsonify({"error": "Not Found", "message": f"Item {mid} not assigned to outlet"}), 404
             if stock.current_stock < qty:
+                db.session.rollback()
                 mi = db.session.get(MenuItem, mid)
                 return jsonify({"error": "Conflict", "message": f"Insufficient stock for {mi.name if mi else mid}"}), 409
             before = stock.current_stock
             stock.current_stock -= qty
             price = stock.menu_item.price
             total += price * qty
-            sale_items.append(POSSaleItem(menu_item_id=mid, price=price, quantity=qty))
+            sale_items.append(OrderItem(menu_item_id=mid, price=price, quantity=qty))
             log_stock_change(db.session, outlet_id=oid, menu_item_id=mid,
                              change_qty=-qty, change_type="sale",
                              stock_before=before, stock_after=stock.current_stock,
                              performed_by=staff_id)
 
         discount_pct = 0
+        coupon = None
         if coupon_code:
             coupon = db.session.scalars(
                 select(Coupon).where(Coupon.code == coupon_code.upper().strip(), Coupon.is_active == True)
             ).first()
             if coupon:
-                discount_pct = coupon.discount_pct
+                if coupon.expiry_date and coupon.expiry_date < datetime.now(timezone.utc).date():
+                    return jsonify({"error": "Bad Request", "message": "Coupon has expired"}), 400
+                if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
+                    return jsonify({"error": "Bad Request", "message": "Coupon usage limit reached"}), 400
+                # Check scope
+                if coupon.scope == 'customer':
+                    return jsonify({"error": "Bad Request", "message": "This coupon is only valid for online delivery orders"}), 400
 
-        if discount_pct > 0:
-            total = total * Decimal(str((100 - discount_pct) / 100))
+                # Check min order value
+                if coupon.min_order_value and total < Decimal(str(coupon.min_order_value)):
+                    return jsonify({"error": "Bad Request", "message": f"Minimum order value of ₹{coupon.min_order_value} required"}), 400
 
-        sale = POSSale(outlet_id=oid, staff_id=staff_id,
-                       total_amount=total, payment_method=payment_method, items=sale_items)
+                # Check if first order only
+                if coupon.is_first_order_only:
+                    if customer:
+                        has_orders = db.session.scalars(select(Order).where(Order.customer_id == customer.id)).first()
+                        if has_orders:
+                            return jsonify({"error": "Bad Request", "message": "This coupon is only valid for a customer's first order"}), 400
+                    else:
+                        return jsonify({"error": "Bad Request", "message": "This coupon requires a registered customer account"}), 400
+
+                # Check if this customer already used it
+                if customer:
+                    used = db.session.scalars(select(Order).where(Order.customer_id == customer.id, Order.applied_coupon_code == coupon.code)).first()
+                    if used:
+                        return jsonify({"error": "Bad Request", "message": "You have already used this coupon. Sorry, try other options."}), 400
+                coupon.usage_count += 1
+                
+                # Apply discount
+                if coupon.discount_amount and coupon.discount_amount > 0:
+                    total = max(Decimal("0.00"), total - Decimal(str(coupon.discount_amount)))
+                elif coupon.discount_pct and coupon.discount_pct > 0:
+                    discount_pct = min(100, coupon.discount_pct)
+                    discount_value = total * Decimal(str(discount_pct / 100))
+                    if coupon.max_discount_amount and discount_value > Decimal(str(coupon.max_discount_amount)):
+                        discount_value = Decimal(str(coupon.max_discount_amount))
+                    total = max(Decimal("0.00"), total - discount_value)
+
+        earn_rate, redeem_rate = get_loyalty_settings()
+        
+        # Loyalty points: redemption
+        points_redeemed = 0
+        if customer and redeem_points > 0:
+            max_redeem_allowed = int(float(total) / redeem_rate)
+            actual_redeem = min(redeem_points, customer.loyalty_points, max_redeem_allowed)
+            
+            if actual_redeem > 0:
+                points_discount = Decimal(str(actual_redeem * redeem_rate))
+                total -= points_discount
+                total = max(Decimal("0.00"), total)
+                customer.loyalty_points -= actual_redeem
+                points_redeemed = actual_redeem
+
+        # Loyalty points: earning
+        points_earned = 0
+        if customer:
+            points_earned = int(float(total) * earn_rate)
+            customer.loyalty_points = (customer.loyalty_points or 0) + points_earned
+
+        sale = Order(
+            order_type='pos',
+            outlet_id=oid,
+            staff_id=staff_id,
+            total_price=total,
+            status='completed',
+            payment_method=payment_method,
+            items=sale_items,
+            customer_id=customer.id if customer else None,
+            loyalty_points_earned=points_earned,
+            loyalty_points_redeemed=points_redeemed,
+            applied_coupon_code=coupon.code if coupon else None
+        )
         db.session.add(sale)
+        db.session.flush() # ensure we have sale.id
+        
+        _generate_order_qr(app, sale)
         db.session.commit()
 
         # Send email alerts if low stock threshold is reached
@@ -1240,8 +2705,332 @@ FlavorFlow Team
             "message": "Sale recorded",
             "sale": sale.to_dict(),
             "remaining_stock": outlet_obj.current_stock if outlet_obj else 0,
-            "restock_alert": restock_alert
+            "restock_alert": restock_alert,
+            "loyalty_points_earned": points_earned,
+            "loyalty_points_redeemed": points_redeemed,
+            "customer_loyalty_balance": customer.loyalty_points if customer else None
         }), 201
+
+    # --- POS: Staff Shift (Clock-In / Clock-Out) ---
+    @app.route("/api/pos/shift/clock-in", methods=["POST"])
+    @role_required("staff")
+    def pos_clock_in():
+        """Verify staff email + PIN and open a new shift. Reject if shift already active."""
+        claims = get_jwt()
+        staff_id = int(get_jwt_identity())
+        oid = claims.get("outlet_id")
+        if not oid:
+            return jsonify({"error": "Forbidden", "message": "No outlet assigned"}), 403
+        oid = int(oid)
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        email = (data.get("email") or "").strip().lower()
+        pin = (data.get("pin") or "").strip()
+
+        if not email or not pin:
+            return jsonify({"error": "Bad Request", "message": "Email and PIN are required"}), 400
+
+        # Validate PIN belongs to the currently logged-in staff
+        staff = db.session.get(User, staff_id)
+        if not staff or staff.email.lower() != email:
+            return jsonify({"error": "Unauthorized", "message": "Email does not match your account"}), 401
+
+        if not staff.pin_hash:
+            return jsonify({"error": "Forbidden", "message": "No PIN set. Contact your administrator."}), 403
+
+        if not staff.check_pin(pin, bcrypt):
+            return jsonify({"error": "Unauthorized", "message": "Incorrect PIN"}), 401
+
+        # Check for already active shift
+        active = db.session.scalars(
+            select(StaffShift).where(
+                StaffShift.staff_id == staff_id,
+                StaffShift.status == "active"
+            )
+        ).first()
+        if active:
+            return jsonify({
+                "error": "Conflict",
+                "message": "You already have an active shift. Please clock out first.",
+                "shift": active.to_dict()
+            }), 409
+
+        shift = StaffShift(staff_id=staff_id, outlet_id=oid)
+        db.session.add(shift)
+        db.session.commit()
+        return jsonify({"message": "Clocked in successfully", "shift": shift.to_dict()}), 201
+
+    @app.route("/api/pos/shift/active", methods=["GET"])
+    @role_required("staff")
+    def pos_get_active_shift():
+        """Returns the currently active shift for this staff, or null."""
+        staff_id = int(get_jwt_identity())
+        shift = db.session.scalars(
+            select(StaffShift).where(
+                StaffShift.staff_id == staff_id,
+                StaffShift.status == "active"
+            )
+        ).first()
+        return jsonify({"shift": shift.to_dict() if shift else None}), 200
+
+    @app.route("/api/pos/sales/history", methods=["GET"])
+    @role_required("staff")
+    def pos_sales_history():
+        """Returns sales for the currently active shift to compute shift totals."""
+        staff_id = int(get_jwt_identity())
+        shift = db.session.scalars(
+            select(StaffShift).where(
+                StaffShift.staff_id == staff_id,
+                StaffShift.status == "active"
+            )
+        ).first()
+        
+        if not shift:
+            return jsonify([]), 200
+
+        orders = db.session.scalars(
+            select(Order).where(
+                Order.staff_id == staff_id,
+                Order.created_at >= shift.clock_in_time,
+                Order.order_type == "pos",
+                Order.status != "cancelled"
+            ).order_by(Order.created_at.desc())
+        ).all()
+        
+        # Format for frontend expecting total_amount instead of total_price just to be safe
+        result = []
+        for o in orders:
+            d = o.to_dict()
+            d["total_amount"] = d["total_price"]
+            result.append(d)
+        
+        return jsonify(result), 200
+
+    @app.route("/api/pos/shift/clock-out", methods=["POST"])
+    @role_required("staff")
+    def pos_clock_out():
+        """Close the active shift; record cash drawer count and compute discrepancy."""
+        staff_id = int(get_jwt_identity())
+        claims = get_jwt()
+        oid = int(claims.get("outlet_id", 0))
+
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        
+        shift = db.session.scalars(
+            select(StaffShift).where(
+                StaffShift.staff_id == staff_id,
+                StaffShift.status == "active"
+            )
+        ).first()
+        if not shift:
+            return jsonify({"error": "Not Found", "message": "No active shift found"}), 404
+
+        # Sum cash sales made during this shift
+        expected_cash = db.session.scalar(
+            select(func.sum(Order.total_price)).where(
+                Order.staff_id == staff_id,
+                Order.outlet_id == oid,
+                Order.payment_method.in_(["cash", "Cash", "CASH"]),
+                Order.created_at >= shift.clock_in_time,
+                Order.order_type == "pos",
+                Order.status != "cancelled"
+            )
+        ) or Decimal("0.00")
+
+        actual_cash_raw = data.get("actual_cash")
+        if actual_cash_raw is None:
+            actual_cash = expected_cash  # Auto-clockout assumes expected cash
+        else:
+            try:
+                actual_cash = Decimal(str(actual_cash_raw))
+                if actual_cash < 0:
+                    raise ValueError()
+            except (ValueError, Exception):
+                return jsonify({"error": "Bad Request", "message": "actual_cash must be a non-negative number"}), 400
+
+        shift.close_shift(actual_cash=actual_cash, expected_cash=expected_cash)
+        if data.get("notes"):
+            shift.notes = str(data["notes"])[:500]
+        db.session.commit()
+
+        return jsonify({
+            "message": "Shift closed successfully",
+            "shift": shift.to_dict()
+        }), 200
+
+    # --- POS: Customer CRM Lookup ---
+    @app.route("/api/pos/customer/lookup", methods=["GET"])
+    @role_required("staff")
+    def pos_customer_lookup():
+        """Look up a customer by email: returns profile, loyalty balance, and top items."""
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"error": "Bad Request", "message": "email query param required"}), 400
+
+        customer = db.session.scalars(
+            select(User).where(User.email == email, User.role == "customer")
+        ).first()
+        if not customer:
+            return jsonify({"error": "Not Found", "message": "Customer not found"}), 404
+
+        # Get purchase history (top 5 items by frequency from both POS and B2C orders)
+        from sqlalchemy import desc
+        pos_items = db.session.execute(
+            select(OrderItem.menu_item_id, func.sum(OrderItem.quantity).label("qty"))
+            .join(Order, OrderItem.order_id == Order.id)
+            .where(Order.customer_id == customer.id, Order.status != "cancelled")
+            .group_by(OrderItem.menu_item_id)
+            .order_by(desc("qty"))
+            .limit(5)
+        ).all()
+
+        top_items = []
+        for mid, qty in pos_items:
+            mi = db.session.get(MenuItem, mid)
+            if mi:
+                top_items.append({"name": mi.name, "total_ordered": int(qty), "price": float(mi.price)})
+
+        return jsonify({
+            "customer": {
+                "id": customer.id,
+                "email": customer.email,
+                "name": f"{customer.first_name or ''} {customer.last_name or ''}".strip() or customer.email,
+                "loyalty_points": customer.loyalty_points or 0,
+            },
+            "top_items": top_items
+        }), 200
+
+    @app.route("/api/pos/my-shifts", methods=["GET"])
+    @role_required("staff")
+    def pos_my_shifts():
+        """Returns the staff member's own shifts and sales summary."""
+        staff_id = int(get_jwt_identity())
+        shifts = db.session.scalars(
+            select(StaffShift)
+            .where(StaffShift.staff_id == staff_id)
+            .order_by(StaffShift.clock_in_time.desc())
+        ).all()
+        
+        result = []
+        for s in shifts:
+            s_dict = s.to_dict()
+            end_time = s.clock_out_time or datetime.now(timezone.utc)
+            sales = db.session.execute(
+                select(
+                    OrderItem.menu_item_name,
+                    func.sum(OrderItem.quantity).label("total_qty"),
+                    func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
+                )
+                .join(Order, Order.id == OrderItem.order_id)
+                .where(
+                    Order.staff_id == s.staff_id,
+                    Order.outlet_id == s.outlet_id,
+                    Order.created_at >= s.clock_in_time,
+                    Order.created_at <= end_time,
+                    Order.status != "cancelled"
+                )
+                .group_by(OrderItem.menu_item_name)
+            ).all()
+            
+            s_dict["sales_summary"] = [
+                {
+                    "item_name": row.menu_item_name,
+                    "total_qty": int(row.total_qty),
+                    "total_revenue": float(row.total_revenue)
+                } for row in sales
+            ]
+            result.append(s_dict)
+            
+        return jsonify(result), 200
+
+    # --- Admin: Staff Timesheets ---
+    @app.route("/api/admin/shifts", methods=["GET"])
+    @department_required("HR")
+    def admin_get_shifts():
+        """Returns all staff shifts for timesheet management with pagination and filtering."""
+        page = request.args.get("page", 1, type=int)
+        limit = request.args.get("limit", 20, type=int)
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        outlet_id = request.args.get("outlet_id")
+
+        query = select(StaffShift)
+        
+        if outlet_id and str(outlet_id).lower() != "all" and str(outlet_id).strip() != "":
+            query = query.where(StaffShift.outlet_id == int(outlet_id))
+            
+        if start_date:
+            try:
+                sd = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                query = query.where(StaffShift.clock_in_time >= sd)
+            except ValueError:
+                pass
+                
+        if end_date:
+            try:
+                ed = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                ed = ed + timedelta(days=1)
+                query = query.where(StaffShift.clock_in_time < ed)
+            except ValueError:
+                pass
+                
+        total = db.session.scalar(select(func.count()).select_from(query.subquery())) or 0
+        
+        shifts = db.session.scalars(
+            query.order_by(StaffShift.clock_in_time.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+        ).all()
+        
+        result = []
+        for s in shifts:
+            s_dict = s.to_dict()
+            
+            # Fetch sales summary for this shift
+            end_time = s.clock_out_time or datetime.now(timezone.utc)
+            sales = db.session.execute(
+                select(
+                    OrderItem.menu_item_name,
+                    func.sum(OrderItem.quantity).label("total_qty"),
+                    func.sum(OrderItem.price * OrderItem.quantity).label("total_revenue")
+                )
+                .join(Order, Order.id == OrderItem.order_id)
+                .where(
+                    Order.staff_id == s.staff_id,
+                    Order.outlet_id == s.outlet_id,
+                    Order.created_at >= s.clock_in_time,
+                    Order.created_at <= end_time,
+                    Order.status != "cancelled"
+                )
+                .group_by(OrderItem.menu_item_name)
+            ).all()
+            
+            s_dict["sales_summary"] = [
+                {
+                    "item_name": row.menu_item_name,
+                    "total_qty": int(row.total_qty),
+                    "total_revenue": float(row.total_revenue)
+                } for row in sales
+            ]
+            
+            result.append(s_dict)
+            
+        return jsonify({
+            "shifts": result,
+            "total": total,
+            "pages": (total + limit - 1) // limit if limit > 0 else 1,
+            "current_page": page
+        }), 200
+
+    @app.route("/api/admin/shifts/<int:shift_id>", methods=["DELETE"])
+    @department_required("HR")
+    def admin_delete_shift(shift_id):
+        shift = db.session.get(StaffShift, shift_id)
+        if not shift:
+            return jsonify({"error": "Not Found"}), 404
+        db.session.delete(shift)
+        db.session.commit()
+        return jsonify({"message": "Shift record deleted"}), 200
 
     @app.route("/api/pos/scan-arrival", methods=["POST"])
     @role_required("staff")
@@ -1252,7 +3041,7 @@ FlavorFlow Team
         if not oid:
             return jsonify({"error": "Forbidden", "message": "No outlet assigned"}), 403
         oid = int(oid)
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         qr_raw = data.get("qr_data", "")
         batch_number = data.get("batch_number")
         expiry_date_str = data.get("expiry_date")
@@ -1358,7 +3147,7 @@ FlavorFlow Team
         if not oid:
             return jsonify({"error": "Forbidden", "message": "Staff not assigned to any outlet"}), 403
 
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         mid = data.get("menu_item_id")
         qty = data.get("quantity")
         reason = (data.get("reason") or "damaged").strip()
@@ -1388,18 +3177,7 @@ FlavorFlow Team
         return jsonify({"message": f"Successfully logged disposal of {qty} units", "new_stock": stock.current_stock}), 200
 
 
-    @app.route("/api/pos/sales/history", methods=["GET"])
-    @role_required("staff")
-    def pos_sales_history():
-        claims = get_jwt()
-        oid = claims.get("outlet_id")
-        if not oid:
-            return jsonify({"error": "Forbidden"}), 403
-        sales = db.session.scalars(
-            select(POSSale).where(POSSale.outlet_id == int(oid))
-            .order_by(POSSale.created_at.desc()).limit(50)
-        ).unique().all()
-        return jsonify([s.to_dict() for s in sales]), 200
+
 
     # ============================================================
     # 5. OUTLET OWNER ROUTES
@@ -1418,7 +3196,7 @@ FlavorFlow Team
     @role_required("outlet_owner")
     def owner_create_outlet():
         uid = int(get_jwt_identity())
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         name = (data.get("name") or "").strip()
         address = (data.get("address") or "").strip()
         if not name or not address:
@@ -1437,7 +3215,7 @@ FlavorFlow Team
         outlet = db.session.get(Outlet, outlet_id)
         if not outlet or outlet.owner_id != uid:
             return jsonify({"error": "Not Found"}), 404
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         for f in ("name", "address", "latitude", "longitude"):
             if f in data:
                 setattr(outlet, f, data[f])
@@ -1460,7 +3238,7 @@ FlavorFlow Team
     @app.route("/api/foods/menu-items/<int:item_id>/reviews", methods=["GET"])
     def get_menu_item_reviews(item_id):
         reviews = db.session.scalars(
-            select(MenuItemReview).where(MenuItemReview.menu_item_id == item_id).order_by(MenuItemReview.created_at.desc())
+            select(Review).where(Review.menu_item_id == item_id, Review.is_hidden == False).order_by(Review.created_at.desc())
         ).all()
         return jsonify([r.to_dict() for r in reviews]), 200
 
@@ -1476,12 +3254,13 @@ FlavorFlow Team
         if not item:
             return jsonify({"error": "Not Found", "message": "Menu item not found"}), 404
         
-        data = request.get_json() or {}
+        data = (sanitize_input(request.get_json(silent=True)) or {})
         rating = data.get("rating")
         comment = data.get("comment", "")
+        order_id = data.get("order_id")
         
-        if rating is None:
-            return jsonify({"error": "Bad Request", "message": "Rating is required"}), 400
+        if rating is None or order_id is None:
+            return jsonify({"error": "Bad Request", "message": "Rating and order_id are required"}), 400
         try:
             rating_val = int(rating)
             if not (1 <= rating_val <= 5):
@@ -1489,28 +3268,168 @@ FlavorFlow Team
         except ValueError:
             return jsonify({"error": "Bad Request", "message": "Rating must be between 1 and 5"}), 400
         
-        review = MenuItemReview(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment)
-        db.session.add(review)
-        db.session.commit()
-        return jsonify({"message": "Review submitted successfully", "review": review.to_dict()}), 201
+        existing_review = db.session.scalars(select(Review).where(
+            Review.customer_id == uid,
+            Review.menu_item_id == item_id,
+            Review.order_id == order_id
+        )).first()
+        
+        if existing_review:
+            return jsonify({"error": "Conflict", "message": "You have already reviewed this item for this order"}), 409
 
-    @app.route("/api/admin/reviews", methods=["GET"])
-    @role_required("admin")
-    def admin_get_reviews():
+        # Ensure user has actually ordered this item before and it has been delivered
+        has_ordered = db.session.scalars(
+            select(Order).join(OrderItem).where(
+                Order.id == order_id,
+                Order.customer_id == uid,
+                OrderItem.menu_item_id == item_id,
+                Order.is_received == True
+            )
+        ).first()
+        if not has_ordered:
+            return jsonify({"error": "Forbidden", "message": "You can only review items you have ordered and received"}), 403
+        
+        review = Review(menu_item_id=item_id, customer_id=uid, rating=rating_val, comment=comment, order_id=order_id)
+        db.session.add(review)
+        
+        review_points_setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == 'loyalty_review_points')).first()
+        points = int(review_points_setting.setting_value) if review_points_setting and review_points_setting.setting_value.isdigit() else 10
+        if points > 0:
+            user.loyalty_points = (user.loyalty_points or 0) + points
+            history_entry = WalletTransaction(
+                user_id=uid, transaction_type='credit', amount=points,
+                description=f"Earned points for reviewing {item.name}"
+            )
+            db.session.add(history_entry)
+            
+        db.session.commit()
+        msg = f"Review submitted successfully! You earned {points} loyalty points." if points > 0 else "Review submitted successfully"
+        return jsonify({"message": msg, "review": review.to_dict(), "loyalty_points_earned": points, "new_balance": user.loyalty_points}), 201
+
+    @app.route("/api/customer/reviews", methods=["GET"])
+    @role_required("customer")
+    def get_customer_reviews():
+        user_id = int(get_jwt_identity())
         reviews = db.session.scalars(
-            select(MenuItemReview).order_by(MenuItemReview.created_at.desc())
+            select(Review).where(Review.customer_id == user_id).order_by(Review.created_at.desc())
         ).all()
         return jsonify([r.to_dict() for r in reviews]), 200
 
+    @app.route("/api/customer/reviews/<int:review_id>", methods=["DELETE"])
+    @role_required("customer")
+    def delete_customer_review(review_id):
+        user_id = int(get_jwt_identity())
+        review = db.session.get(Review, review_id)
+        if not review:
+            return jsonify({"error": "Not Found", "message": "Review not found"}), 404
+        if review.customer_id != user_id:
+            return jsonify({"error": "Forbidden", "message": "You can only delete your own reviews"}), 403
+            
+        db.session.delete(review)
+        db.session.commit()
+        return jsonify({"message": "Review deleted successfully"}), 200
+
+    @app.route("/api/admin/reviews", methods=["GET"])
+    @role_required("admin", "outlet_owner")
+    def admin_get_reviews():
+        reviews = db.session.scalars(
+            select(Review).order_by(Review.created_at.desc())
+        ).all()
+        return jsonify([r.to_dict() for r in reviews]), 200
+
+    @app.route("/api/admin/reviews/<int:review_id>", methods=["PATCH", "PUT"])
+    @department_required("Operations")
+    def admin_update_review(review_id):
+        review = db.session.get(Review, review_id)
+        if not review:
+            return jsonify({"error": "Not Found", "message": "Review not found"}), 404
+        
+        data = (sanitize_input(request.get_json(silent=True)) or {})
+        if "is_hidden" in data:
+            review.is_hidden = bool(data["is_hidden"])
+        if "admin_reply" in data:
+            review.admin_reply = data["admin_reply"]
+            
+        db.session.commit()
+        return jsonify({"message": "Review updated successfully", "review": review.to_dict()}), 200
+
     @app.route("/api/admin/reviews/<int:review_id>", methods=["DELETE"])
-    @role_required("admin")
+    @department_required("Operations")
     def admin_delete_review(review_id):
-        review = db.session.get(MenuItemReview, review_id)
+        review = db.session.get(Review, review_id)
         if not review:
             return jsonify({"error": "Not Found", "message": "Review not found"}), 404
         db.session.delete(review)
         db.session.commit()
         return jsonify({"message": "Review deleted successfully"}), 200
+
+    @app.route("/api/whatsapp/webhook", methods=["GET", "POST"])
+    def whatsapp_webhook():
+        """
+        Endpoint for WhatsApp Business API integration.
+        GET: Handles Meta's webhook verification challenge.
+        POST: Handles incoming messages/orders from WhatsApp.
+        """
+        if request.method == "GET":
+            # Meta verification challenge
+            mode = request.args.get("hub.mode")
+            token = request.args.get("hub.verify_token")
+            challenge = request.args.get("hub.challenge")
+            
+            # Verify against token in Meta Dashboard (via env vars)
+            if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
+                return challenge, 200
+            else:
+                return "Forbidden", 403
+                
+        elif request.method == "POST":
+            # Receive incoming messages/orders
+            data = request.get_json(silent=True)
+            if data:
+                # Placeholder logic to log the incoming payload
+                logger.info(f"Received WhatsApp Webhook payload: {json.dumps(data)}")
+                
+                # TODO: Parse the data to extract customer phone, message/cart contents.
+                # TODO: Create a new Order in the database with order_type='whatsapp'.
+                # TODO: Send a reply back to the customer via WhatsApp API confirming the order.
+                
+                # Acknowledge receipt of the webhook to Meta
+                return "EVENT_RECEIVED", 200
+            return "Bad Request", 400
+
+
+    @app.route("/api/coupons/active", methods=["GET"])
+    def get_active_coupons():
+        """Return all active public coupons. Optionally filter by scope query param."""
+        from datetime import date
+        today = date.today()
+        scope = request.args.get("scope")  # 'customer', 'outlet', or None for all
+        query = select(Coupon).where(
+            Coupon.is_active == True,
+            (Coupon.expiry_date.is_(None)) | (Coupon.expiry_date >= today),
+            Coupon.applicable_customer_id.is_(None)
+        )
+        if scope == "customer":
+            query = query.where(Coupon.scope.in_(["customer", "both"]))
+        elif scope == "outlet":
+            query = query.where(Coupon.scope.in_(["outlet", "both"]))
+        coupons = db.session.scalars(query).all()
+        return jsonify([c.to_dict() for c in coupons]), 200
+
+    @app.route("/api/outlet/coupons", methods=["GET"])
+    def get_outlet_coupons():
+        """Return active coupons available for the outlet POS terminal."""
+        from datetime import date
+        today = date.today()
+        coupons = db.session.scalars(
+            select(Coupon).where(
+                Coupon.is_active == True,
+                (Coupon.expiry_date.is_(None)) | (Coupon.expiry_date >= today),
+                Coupon.applicable_customer_id.is_(None),
+                Coupon.scope.in_(["outlet", "both"])
+            )
+        ).all()
+        return jsonify([c.to_dict() for c in coupons]), 200
 
     @app.route("/api/coupons/<string:code>", methods=["GET"])
     def get_coupon(code):
@@ -1522,65 +3441,368 @@ FlavorFlow Team
             return jsonify({"error": "Not Found", "message": "Invalid or inactive coupon code"}), 404
         return jsonify(coupon.to_dict()), 200
 
-    @app.route("/api/admin/coupons", methods=["GET"])
+
+    # ============================================================
+    # WALLET & CRM ROUTES
+    # ============================================================
+    
+    @app.route("/api/admin/wallet/credit", methods=["POST"])
     @role_required("admin")
-    def admin_get_coupons():
-        coupons = db.session.scalars(select(Coupon).order_by(Coupon.created_at.desc())).all()
-        return jsonify([c.to_dict() for c in coupons]), 200
+    def credit_wallet():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        user_id = data.get("user_id")
+        amount = data.get("amount")
+        description = data.get("description", "Wallet Credit")
+        if not user_id or not amount:
+            return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        user.loyalty_points = (user.loyalty_points or 0) + int(amount)
+        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="credit", description=description)
+        db.session.add(tx)
+        
+        log_admin_action(db.session, get_jwt_identity(), "credit_wallet", "User", user.id, f"Credited {amount} points")
+        db.session.commit()
+        return jsonify({"message": "Wallet credited successfully", "new_balance": user.loyalty_points}), 200
 
-    @app.route("/api/admin/coupons", methods=["POST"])
+    @app.route("/api/admin/wallet/debit", methods=["POST"])
     @role_required("admin")
-    def admin_create_coupon():
-        data = request.get_json() or {}
-        code = (data.get("code") or "").strip().upper()
-        discount = data.get("discount_pct")
-        if not code or discount is None:
-            return jsonify({"error": "Bad Request", "message": "code and discount_pct required"}), 400
-        try:
-            discount = int(discount)
-            if not 1 <= discount <= 100:
-                raise ValueError()
-        except ValueError:
-            return jsonify({"error": "Bad Request", "message": "discount_pct must be between 1 and 100"}), 400
+    def debit_wallet():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        user_id = data.get("user_id")
+        amount = data.get("amount")
+        description = data.get("description", "Wallet Debit")
+        if not user_id or not amount:
+            return jsonify({"error": "Bad Request", "message": "user_id and amount are required"}), 400
+        
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"error": "Not Found", "message": "User not found"}), 404
+        
+        if (user.loyalty_points or 0) < int(amount):
+            return jsonify({"error": "Bad Request", "message": "Insufficient wallet balance"}), 400
+            
+        user.loyalty_points = (user.loyalty_points or 0) - int(amount)
+        tx = WalletTransaction(user_id=user.id, amount=int(amount), transaction_type="debit", description=description)
+        db.session.add(tx)
+        
+        log_admin_action(db.session, get_jwt_identity(), "debit_wallet", "User", user.id, f"Debited {amount} points")
+        db.session.commit()
+        return jsonify({"message": "Wallet debited successfully", "new_balance": user.loyalty_points}), 200
 
-        # Check unique
-        exists = db.session.scalars(select(Coupon).where(Coupon.code == code)).first()
-        if exists:
-            return jsonify({"error": "Conflict", "message": "Coupon code already exists"}), 409
+    @app.route("/api/admin/wallet/transactions/<int:user_id>", methods=["GET"])
+    @role_required("admin")
+    def get_wallet_transactions(user_id):
+        txs = db.session.scalars(
+            select(WalletTransaction).where(WalletTransaction.user_id == user_id).order_by(WalletTransaction.created_at.desc())
+        ).all()
+        return jsonify([t.to_dict() for t in txs]), 200
 
-        coupon = Coupon(code=code, discount_pct=discount, is_active=data.get("is_active", True))
+    @app.route("/api/admin/customers/segments", methods=["GET"])
+    @department_required("Operations", "Finance")
+    def get_customer_segments():
+        # A simple dynamic segmentation for now
+        # High Value: Total spent > 5000
+        # Frequent Buyers: Order count > 5
+        # Inactive for 30 days
+        customers = db.session.scalars(select(User).where(User.role == 'customer').options(joinedload(User.orders))).unique().all()
+        
+        segments = {
+            "all": [],
+            "frequent_buyers": [],
+            "high_value": [],
+            "inactive_30_days": []
+        }
+        
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        
+        for c in customers:
+            c_dict = c.to_dict()
+            orders = c.orders
+            
+            c_dict['order_count'] = len(orders)
+            c_dict['total_spent'] = sum(float(o.total_price) for o in orders)
+            
+            # Find last order date, handle timezone aware/naive
+            c_dict['last_order_date'] = max([o.created_at for o in orders]) if orders else None
+            if c_dict['last_order_date'] and c_dict['last_order_date'].tzinfo is None:
+                c_dict['last_order_date'] = c_dict['last_order_date'].replace(tzinfo=timezone.utc)
+            
+            segments["all"].append(c_dict)
+            
+            if c_dict['order_count'] >= 5:
+                segments["frequent_buyers"].append(c_dict)
+            if c_dict['total_spent'] >= 5000:
+                segments["high_value"].append(c_dict)
+            
+            if c_dict['last_order_date']:
+                if c_dict['last_order_date'] < thirty_days_ago:
+                    segments["inactive_30_days"].append(c_dict)
+            else:
+                # If they never ordered
+                segments["inactive_30_days"].append(c_dict)
+                
+        return jsonify(segments), 200
+
+    @app.route("/api/admin/bulk-coupons", methods=["POST"])
+    @role_required("admin")
+    def bulk_coupons():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        min_loyalty_points = data.get("min_loyalty_points")
+        coupon_data = data.get("coupon")
+        
+        if min_loyalty_points is None or not coupon_data:
+            return jsonify({"error": "Bad Request", "message": "min_loyalty_points and coupon data are required"}), 400
+            
+        customers = db.session.scalars(
+            select(User).where(User.role == 'customer', User.loyalty_points >= int(min_loyalty_points))
+        ).all()
+        
+        # Create a single coupon that can be used multiple times
+        from decimal import Decimal
+        from datetime import datetime
+        coupon = Coupon(
+            code=coupon_data.get("code"),
+            discount_pct=coupon_data.get("discount_pct", 0),
+            discount_amount=Decimal(str(coupon_data.get("discount_amount"))) if coupon_data.get("discount_amount") else None,
+            usage_limit=len(customers),
+            expiry_date=datetime.strptime(coupon_data["expires_at"], "%Y-%m-%d").date() if coupon_data.get("expires_at") else None,
+            is_active=True
+        )
         db.session.add(coupon)
         db.session.commit()
-        return jsonify({"message": "Coupon created successfully", "coupon": coupon.to_dict()}), 201
+        
+        # In a real app, we would send an email/SMS broadcast to `customers` here.
+        log_admin_action(db.session, get_jwt_identity(), "bulk_coupons", "Coupon", coupon.id, f"Created coupon {coupon.code} for {len(customers)} users with >={min_loyalty_points} points")
+        
+        return jsonify({"message": f"Coupon {coupon.code} generated and assigned to {len(customers)} customers.", "matched_customers": len(customers)}), 201
 
-    @app.route("/api/admin/coupons/<int:coupon_id>", methods=["PUT"])
+    @app.route("/api/admin/broadcast", methods=["POST"])
     @role_required("admin")
-    def admin_update_coupon(coupon_id):
-        coupon = db.session.get(Coupon, coupon_id)
-        if not coupon:
-            return jsonify({"error": "Not Found", "message": "Coupon not found"}), 404
-        data = request.get_json() or {}
-        if "is_active" in data:
-            coupon.is_active = bool(data["is_active"])
-        if "discount_pct" in data:
-            try:
-                discount = int(data["discount_pct"])
-                if 1 <= discount <= 100:
-                    coupon.discount_pct = discount
-            except ValueError:
-                pass
+    def send_broadcast():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        target_segment = data.get("segment")
+        message = data.get("message")
+        medium = data.get("medium")
+        
+        if not target_segment or not message or not medium:
+            return jsonify({"error": "Bad Request", "message": "segment, message, and medium are required"}), 400
+            
+        broadcast = BroadcastMessage(target_segment=target_segment, message=message, medium=medium, status="sent")
+        db.session.add(broadcast)
+        
+        log_admin_action(db.session, get_jwt_identity(), "send_broadcast", "BroadcastMessage", None, f"Sent {medium} to {target_segment}")
         db.session.commit()
-        return jsonify({"message": "Coupon updated successfully", "coupon": coupon.to_dict()}), 200
+        
+        return jsonify({"message": "Broadcast scheduled/sent successfully", "broadcast": broadcast.to_dict()}), 201
 
-    @app.route("/api/admin/coupons/<int:coupon_id>", methods=["DELETE"])
+    # ============================================================
+    # BANNERS & STORE SETTINGS ROUTES
+    # ============================================================
+
+    @app.route("/api/public/banners", methods=["GET"])
+    def get_public_banners():
+        zone = request.args.get("zone")
+        location = request.args.get("location") # Keeping location for backward compatibility
+        user_id = request.args.get("user_id", type=int)
+        
+        now = datetime.now(timezone.utc)
+        
+        # Base query
+        query = select(Banner).where(Banner.is_active == True)
+        
+        # Time logic
+        query = query.where(
+            db.or_(
+                Banner.start_date == None,
+                Banner.start_date <= now
+            )
+        ).where(
+            db.or_(
+                Banner.end_date == None,
+                Banner.end_date >= now
+            )
+        )
+        
+        # Zone/Location logic
+        if zone:
+            query = query.where(Banner.placement_zone == zone)
+        elif location:
+            query = query.where(Banner.display_location == location)
+            
+        # Execute to get initial list
+        banners = db.session.scalars(query.order_by(Banner.display_order.asc())).all()
+        
+        # Audience logic
+        filtered_banners = []
+        is_new_user = False
+        is_inactive = False
+        
+        if user_id:
+            # Check user stats
+            user_orders_count = db.session.query(Order).filter(Order.customer_id == user_id).count()
+            if user_orders_count == 0:
+                is_new_user = True
+            else:
+                last_order = db.session.query(Order).filter(Order.customer_id == user_id).order_by(Order.created_at.desc()).first()
+                if last_order and (now - last_order.created_at.replace(tzinfo=timezone.utc)).days > 30:
+                    is_inactive = True
+                    
+        for banner in banners:
+            # Check audience
+            if banner.target_audience == 'new_user' and not is_new_user:
+                continue
+            if banner.target_audience == 'inactive_30_days' and not is_inactive:
+                continue
+                
+            # Check inventory if linked to a product
+            if banner.linked_product_id:
+                product = db.session.get(MenuItem, banner.linked_product_id)
+                if not product or not product.is_active:
+                    continue
+                if product.global_stock is not None and product.global_stock <= 0:
+                    continue
+            
+            filtered_banners.append(banner)
+            
+        return jsonify([b.to_dict() for b in filtered_banners]), 200
+
+    @app.route("/api/public/banners/<int:id>/impression", methods=["POST"])
+    def track_banner_impression(id):
+        banner = db.session.get(Banner, id)
+        if banner:
+            banner.impressions = (banner.impressions or 0) + 1
+            db.session.commit()
+        return jsonify({"success": True}), 200
+
+    @app.route("/api/public/banners/<int:id>/click", methods=["POST"])
+    def track_banner_click(id):
+        banner = db.session.get(Banner, id)
+        if banner:
+            banner.clicks = (banner.clicks or 0) + 1
+            db.session.commit()
+        return jsonify({"success": True}), 200
+
+    @app.route("/api/admin/banners", methods=["GET"])
     @role_required("admin")
-    def admin_delete_coupon(coupon_id):
-        coupon = db.session.get(Coupon, coupon_id)
-        if not coupon:
-            return jsonify({"error": "Not Found", "message": "Coupon not found"}), 404
-        db.session.delete(coupon)
+    def admin_get_banners():
+        banners = db.session.scalars(select(Banner).order_by(Banner.display_order.asc())).all()
+        return jsonify([b.to_dict() for b in banners]), 200
+        
+    @app.route("/api/admin/banners", methods=["POST"])
+    @role_required("admin")
+    def admin_create_banner():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        title = data.get("title")
+        image_url = data.get("image_url")
+        if not title or not image_url:
+            return jsonify({"error": "Bad Request", "message": "title and image_url are required"}), 400
+            
+        # Parse dates
+        start_date = datetime.fromisoformat(data["start_date"].replace('Z', '+00:00')) if data.get("start_date") else None
+        end_date = datetime.fromisoformat(data["end_date"].replace('Z', '+00:00')) if data.get("end_date") else None
+        countdown_end_time = datetime.fromisoformat(data["countdown_end_time"].replace('Z', '+00:00')) if data.get("countdown_end_time") else None
+
+        banner = Banner(
+            title=title,
+            image_url=image_url,
+            target_url=data.get("target_url"),
+            is_active=data.get("is_active", True),
+            display_order=data.get("display_order", 0),
+            display_location=data.get("display_location", "home"),
+            start_date=start_date,
+            end_date=end_date,
+            target_audience=data.get("target_audience", "all"),
+            placement_zone=data.get("placement_zone", "hero_carousel"),
+            display_style=data.get("display_style", "cinematic_21_9"),
+            has_countdown=data.get("has_countdown", False),
+            countdown_end_time=countdown_end_time,
+            linked_product_id=data.get("linked_product_id"),
+            linked_coupon_code=data.get("linked_coupon_code")
+        )
+        db.session.add(banner)
+        log_admin_action(db.session, get_jwt_identity(), "create_banner", "Banner", None, f"Created banner {title}")
         db.session.commit()
-        return jsonify({"message": "Coupon deleted successfully"}), 200
+        return jsonify(banner.to_dict()), 201
+        
+    @app.route("/api/admin/banners/<int:id>", methods=["PUT"])
+    @role_required("admin")
+    def admin_update_banner(id):
+        banner = db.session.get(Banner, id)
+        if not banner:
+            return jsonify({"error": "Not Found", "message": "Banner not found"}), 404
+            
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        if "title" in data: banner.title = data["title"]
+        if "image_url" in data: banner.image_url = data["image_url"]
+        if "target_url" in data: banner.target_url = data["target_url"]
+        if "is_active" in data: banner.is_active = data["is_active"]
+        if "display_order" in data: banner.display_order = data["display_order"]
+        if "display_location" in data: banner.display_location = data["display_location"]
+        if "target_audience" in data: banner.target_audience = data["target_audience"]
+        if "placement_zone" in data: banner.placement_zone = data["placement_zone"]
+        if "display_style" in data: banner.display_style = data["display_style"]
+        if "has_countdown" in data: banner.has_countdown = data["has_countdown"]
+        if "linked_product_id" in data: banner.linked_product_id = data["linked_product_id"]
+        if "linked_coupon_code" in data: banner.linked_coupon_code = data["linked_coupon_code"]
+
+        if "start_date" in data:
+            banner.start_date = datetime.fromisoformat(data["start_date"].replace('Z', '+00:00')) if data["start_date"] else None
+        if "end_date" in data:
+            banner.end_date = datetime.fromisoformat(data["end_date"].replace('Z', '+00:00')) if data["end_date"] else None
+        if "countdown_end_time" in data:
+            banner.countdown_end_time = datetime.fromisoformat(data["countdown_end_time"].replace('Z', '+00:00')) if data["countdown_end_time"] else None
+        
+        db.session.commit()
+        return jsonify(banner.to_dict()), 200
+
+    @app.route("/api/admin/banners/<int:id>", methods=["DELETE"])
+    @role_required("admin")
+    def admin_delete_banner(id):
+        banner = db.session.get(Banner, id)
+        if not banner:
+            return jsonify({"error": "Not Found", "message": "Banner not found"}), 404
+            
+        db.session.delete(banner)
+        db.session.commit()
+        return jsonify({"message": "Banner deleted"}), 200
+
+    @app.route("/api/public/store-settings", methods=["GET"])
+    def get_public_store_settings():
+        settings = db.session.scalars(select(StoreSetting)).all()
+        # Return as key-value pairs
+        return jsonify({s.setting_key: s.setting_value for s in settings}), 200
+
+    @app.route("/api/admin/store-settings", methods=["GET"])
+    @role_required("admin")
+    def admin_get_store_settings():
+        settings = db.session.scalars(select(StoreSetting)).all()
+        return jsonify({s.setting_key: s.setting_value for s in settings}), 200
+
+    @app.route("/api/admin/store-settings", methods=["PUT"])
+    @role_required("admin")
+    def admin_update_store_settings():
+        data = sanitize_input(request.get_json(silent=True)) or {}
+        for k, v in data.items():
+            # Convert python booleans to JSON-compatible lowercase strings
+            if isinstance(v, bool):
+                val_str = "true" if v else "false"
+            else:
+                val_str = str(v)
+                
+            setting = db.session.scalars(select(StoreSetting).where(StoreSetting.setting_key == k)).first()
+            if not setting:
+                setting = StoreSetting(setting_key=k, setting_value=val_str)
+                db.session.add(setting)
+            else:
+                setting.setting_value = val_str
+        
+        log_admin_action(db.session, get_jwt_identity(), "update_store_settings", "StoreSetting", None, "Updated store settings")
+        db.session.commit()
+        return jsonify({"message": "Settings updated successfully"}), 200
 
     return app
 
@@ -1594,7 +3816,8 @@ def _seed_admin(app):
         # 1. Seed Admin
         admin = db.session.scalars(select(User).where(User.email == "admin")).first()
         if not admin:
-            admin = User(email="admin", role="admin", first_name="System", last_name="Admin")
+            admin = Admin(email="admin", first_name="System", last_name="Admin")
+            admin.is_superadmin = True
             admin.set_password("admin", bcrypt)
             admin.is_first_login = True
             db.session.add(admin)
@@ -1689,7 +3912,7 @@ def _seed_admin(app):
         # 4. Seed Staff & Customer Users if missing
         staff_user = db.session.scalars(select(User).where(User.email == "staff@brand.com")).first()
         if not staff_user:
-            staff_user = User(email="staff@brand.com", role="staff", outlet_id=1, first_name="Alex", last_name="Staff", phone="9848022338")
+            staff_user = Staff(email="staff@brand.com", outlet_id=1, first_name="Alex", last_name="Staff", phone="9848022338")
             staff_user.set_password("staff", bcrypt)
             db.session.add(staff_user)
             db.session.commit()
@@ -1697,9 +3920,18 @@ def _seed_admin(app):
 
         cust_user = db.session.scalars(select(User).where(User.email == "customer@gmail.com")).first()
         if not cust_user:
-            cust_user = User(email="customer@gmail.com", role="customer", first_name="Sarah", last_name="Customer", phone="9999999999")
+            cust_user = Customer(email="customer@gmail.com", first_name="Sarah", last_name="Customer", phone="9999999999")
             cust_user.set_password("customer", bcrypt)
+            cust_user.referral_code = "SARAHCUST1"
+            cust_user.loyalty_points = 1500
             db.session.add(cust_user)
+            db.session.commit()
+            
+            # Generate dummy loyalty history
+            tx1 = WalletTransaction(user_id=cust_user.id, amount=1000, transaction_type="credit", description="Signup Bonus")
+            tx2 = WalletTransaction(user_id=cust_user.id, amount=500, transaction_type="credit", description="Referral Bonus for inviting John")
+            db.session.add(tx1)
+            db.session.add(tx2)
             db.session.commit()
             logger.info("Default customer seeded: customer@gmail.com / customer")
 
@@ -1721,15 +3953,17 @@ def _seed_admin(app):
                 o2.owner_id = owner_user.id
             db.session.commit()
 
-        # 5. Seed stock items to Outlet 1 if empty
+        # 5. Seed stock items to first available outlet if empty
         if db.session.scalar(select(func.count(OutletStock.id))) == 0:
-            samosa = db.session.scalars(select(MenuItem).where(MenuItem.name == "Snack Supply Samosa 250g")).first()
-            chakralu = db.session.scalars(select(MenuItem).where(MenuItem.name == "Challa Chakralu 250g")).first()
-            if samosa and chakralu:
-                db.session.add(OutletStock(outlet_id=1, menu_item_id=samosa.id, current_stock=20, restock_limit=10))
-                db.session.add(OutletStock(outlet_id=1, menu_item_id=chakralu.id, current_stock=15, restock_limit=10))
-                db.session.commit()
-                logger.info("Default outlet stocks seeded for Outlet 1")
+            first_outlet = db.session.scalars(select(Outlet)).first()
+            if first_outlet:
+                samosa = db.session.scalars(select(MenuItem).where(MenuItem.name == "Snack Supply Samosa 250g")).first()
+                chakralu = db.session.scalars(select(MenuItem).where(MenuItem.name == "Challa Chakralu 250g")).first()
+                if samosa and chakralu:
+                    db.session.add(OutletStock(outlet_id=first_outlet.id, menu_item_id=samosa.id, current_stock=20, restock_limit=10))
+                    db.session.add(OutletStock(outlet_id=first_outlet.id, menu_item_id=chakralu.id, current_stock=15, restock_limit=10))
+                    db.session.commit()
+                    logger.info(f"Default outlet stocks seeded for {first_outlet.name}")
 
 
 
@@ -1861,6 +4095,33 @@ def _get_email_html_wrapper(title, content):
     """
 
 
+
+def _send_verification_email(app, user):
+    try:
+        serializer = URLSafeTimedSerializer(app.config.get("SECRET_KEY", "default_secret_key"))
+        token = serializer.dumps(user.email, salt="email-verify-salt")
+        sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
+        msg = Message(subject="Verify your Email - FlavorFlow 🧡", sender=sender, recipients=[user.email])
+        
+        # Determine base URL for frontend
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()
+        verify_link = f"{frontend_url}/verify-email?token={token}"
+        
+        content = f"""
+        <h2 style="color: #f97316; margin-top: 0;">Verify your email address, {user.first_name or 'Friend'}! 👋</h2>
+        <p>Thank you for signing up to <strong>FlavorFlow</strong>! To activate your account and place your first order, please verify your email address.</p>
+        <p>Click the button below to verify your email:</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{verify_link}" class="btn" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Email</a>
+        </div>
+        <p>If you did not sign up for this account, please ignore this email.</p>
+        """
+        msg.html = _get_email_html_wrapper("Email Verification", content)
+        mail.send(msg)
+    except Exception as e:
+        logger.warning(f"Failed to send verification email: {e}")
+
+
 def _send_welcome_email(app, user):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
@@ -1876,7 +4137,7 @@ def _send_welcome_email(app, user):
         </div>
         <p>Go ahead and browse our kitchen catalog to place your very first order!</p>
         <div style="text-align: center;">
-            <a href="http://localhost:5173" class="btn">Explore the Shop</a>
+            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Explore the Shop</a>
         </div>
         """
         msg.html = _get_email_html_wrapper("Welcome", content)
@@ -1932,24 +4193,38 @@ def _send_order_placed_email(app, order, customer):
         <p>We'll notify you as soon as your delicious box is dispatched and on its way!</p>
         """
         msg.html = _get_email_html_wrapper("Order Confirmed", content)
-        mail.send(msg)
+        
+        import threading
+        def send_async():
+            with app.app_context():
+                try:
+                    mail.send(msg)
+                except Exception as ex:
+                    logger.warning(f"Failed to send order placed email async: {ex}")
+        threading.Thread(target=send_async).start()
     except Exception as e:
-        logger.warning(f"Failed to send order placed email: {e}")
+        logger.warning(f"Failed to setup order placed email: {e}")
 
 
 def _send_order_shipped_email(app, order, customer, tracking_code):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
-        msg = Message(subject=f"Your FlavorFlow Box is on its way! 🚚", sender=sender, recipients=[customer.email])
+        msg = Message(subject="Your FlavorFlow Box is on its way! 📦", sender=sender, recipients=[customer.email])
         content = f"""
-        <h2 style="color: #f97316; margin-top: 0;">Your food is on the way! 🚚</h2>
+        <h2 style="color: #f97316; margin-top: 0;">Your food is on the way! 🛵</h2>
         <p>Hi {customer.first_name or 'there'}, your order #{order.id} has been packed, handed over to our delivery partner, and is officially en route!</p>
         <p>Get ready for a warm, delightful feast.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 25px; text-align: center;">
-            <div style="font-size: 13px; color: #64748b;">SHIPPING TRACKING CODE</div>
+            <div style="font-size: 13px; color: #64748b; margin-bottom: 5px;">SHIPPING TRACKING CODE</div>
             <div style="font-size: 22px; font-weight: 800; color: #f97316; letter-spacing: 1px; margin: 5px 0;">{tracking_code}</div>
-            <div style="font-size: 12px; color: #94a3b8;">Use this code to track delivery with our logistics partner.</div>
+            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Use this code to track delivery with our logistics partner.</div>
+            
+            <div style="border-top: 1px dashed #cbd5e1; margin: 15px 0;"></div>
+            
+            <div style="font-size: 13px; color: #64748b; margin-bottom: 5px;">DELIVERY CONFIRMATION PIN</div>
+            <div style="font-size: 26px; font-weight: 900; color: #22c55e; letter-spacing: 3px; margin: 5px 0;">{order.delivery_confirmation_code}</div>
+            <div style="font-size: 12px; color: #94a3b8;">Enter this PIN in your order history to confirm receipt!</div>
         </div>
         
         <p>If you have any questions or need to make last-minute changes, please contact our support team immediately.</p>
@@ -1960,23 +4235,22 @@ def _send_order_shipped_email(app, order, customer, tracking_code):
         logger.warning(f"Failed to send order shipped email: {e}")
 
 
-def _send_admin_created_email(app, admin, temp_password):
+def _send_admin_created_email(app, admin):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Welcome to FlavorFlow Admin Team! 🛡️", sender=sender, recipients=[admin.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Welcome to the Admin Team, {admin.first_name or 'Admin'}! 🛡️</h2>
         <p>Your administrator profile has been successfully set up on the FlavorFlow ERP platform.</p>
-        <p>Here are your credentials to log in to the admin panel:</p>
+        <p>Please use the temporary credentials provided to you securely by the system administrator to log in.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Role:</strong> Administrator<br>
             <strong>Username/Email:</strong> {admin.email}<br>
-            <strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{temp_password}</code>
         </div>
         
         <div style="text-align: center;">
-            <a href="http://localhost:5173" class="btn">Launch Admin Dashboard</a>
+            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Launch Admin Dashboard</a>
         </div>
         """
         msg.html = _get_email_html_wrapper("Admin Onboarding", content)
@@ -1985,18 +4259,16 @@ def _send_admin_created_email(app, admin, temp_password):
         logger.warning(f"Failed to send admin onboarding email: {e}")
 
 
-def _send_admin_password_changed_email(app, admin, new_password):
+def _send_admin_password_changed_email(app, admin):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="FlavorFlow Admin Password Update 🔐", sender=sender, recipients=[admin.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Password Successfully Updated 🔐</h2>
         <p>Hi {admin.first_name or 'Admin'}, the password for your FlavorFlow administrator account has been changed.</p>
-        <p>Here is your new password:</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Username/Email:</strong> {admin.email}<br>
-            <strong>New Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{new_password}</code>
         </div>
         
         <p>If you did not request this change, please contact support immediately.</p>
@@ -2007,25 +4279,24 @@ def _send_admin_password_changed_email(app, admin, new_password):
         logger.warning(f"Failed to send password changed email: {e}")
 
 
-def _send_staff_created_email(app, staff, temp_password, outlet):
+def _send_staff_created_email(app, staff, outlet):
     try:
         sender = app.config.get("MAIL_DEFAULT_SENDER") or "noreply@fooderp.local"
         msg = Message(subject="Welcome to FlavorFlow POS Team! 🏪", sender=sender, recipients=[staff.email])
         content = f"""
         <h2 style="color: #f97316; margin-top: 0;">Welcome to the Team, {staff.first_name or 'Partner'}! 🏪</h2>
         <p>Your cashier profile has been successfully set up on the FlavorFlow ERP platform.</p>
-        <p>Here are your temporary credentials to log in and access your terminal:</p>
+        <p>Please use the temporary credentials provided to you securely by the system administrator to log in.</p>
         
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; line-height: 1.8;">
             <strong>Assigned Outlet:</strong> {outlet.name if outlet else 'Not Assigned'}<br>
             <strong>Username/Email:</strong> {staff.email}<br>
-            <strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 14px;">{temp_password}</code>
         </div>
         
         <p style="font-size: 13px; color: #64748b; font-style: italic;">* Note: You will be prompted to set a secure password of your own upon your very first login.</p>
         
         <div style="text-align: center;">
-            <a href="http://localhost:5173" class="btn">Launch Cashier POS Terminal</a>
+            <a href="{os.environ.get('FRONTEND_URL', 'https://flavorflow.local').split(',')[0].strip()}" class="btn">Launch Cashier POS Terminal</a>
         </div>
         """
         msg.html = _get_email_html_wrapper("Staff Onboarding", content)
@@ -2104,8 +4375,12 @@ def _generate_daily_report():
             )
         ) or 0
         pos_rev = db.session.scalar(
-            select(func.sum(POSSale.total_amount)).where(POSSale.created_at >= since)
-        ) or 0
+            select(func.sum(Order.total_price)).where(
+                Order.created_at >= since,
+                Order.order_type == "pos",
+                Order.status != "cancelled"
+            )
+        ) or 0 or 0
         b2c_cnt = db.session.scalar(
             select(func.count(Order.id)).where(Order.created_at >= since, Order.status != "cancelled")
         ) or 0
@@ -2167,5 +4442,4 @@ def _start_scheduler(app):
 if __name__ == "__main__":
     app = create_app()
     debug_mode = os.environ.get("FLASK_ENV", "production") == "development"
-    app.run(debug=debug_mode, port=5000)
-    CORS(app, resources={r"/*": {"origins": "https://foodsk.netlify.app"}})
+    app.run(debug=debug_mode, host="0.0.0.0", port=5000)

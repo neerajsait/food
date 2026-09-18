@@ -1,0 +1,58 @@
+**JWT config audit**
+
+### 1. Access token expiry — OK
+
+```python
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+```
+
+- **8 hours** is reasonable for this kind of app (food ordering / admin).
+- Set once in `create_app`; production also requires `JWT_SECRET_KEY` to be set (fails hard if missing).
+
+### 2. Refresh tokens — **not implemented**
+
+| Item | Status |
+|------|--------|
+| `create_refresh_token` | Not used |
+| `JWT_REFRESH_TOKEN_EXPIRES` | Not configured |
+| `/api/auth/refresh` (or similar) | Does not exist |
+| Login response | Returns only `access_token` + `user` |
+
+There is **no refresh-token flow**. Clients use a single access token until it expires (or is cleared client-side).
+
+### 3. Logout / revocation / blacklist — **not implemented server-side**
+
+| Item | Status |
+|------|--------|
+| `/api/auth/logout` | **Does not exist** |
+| JWT blocklist / blacklist (`token_in_blocklist_loader`, Redis/DB store of `jti`) | **Not present** |
+| Revoke on password change | **No** — password is updated; existing JWTs stay valid until expiry |
+| Revoke on profile password change | **No** — same |
+| Frontend “logout” | Only `localStorage.removeItem("token")` / `user` — **client-only** |
+
+So:
+
+- “Logout” only drops the token in the browser.
+- Anyone who still has a copy of the JWT can use it for up to **8 hours**.
+- After password change / account disable, old tokens remain valid until they expire (unless you also check `is_active` / `deleted_at` / `is_banned` on every request — login checks those, but existing tokens are not re-validated against DB state beyond what the JWT claims already contain).
+
+### Summary
+
+| Check | Result |
+|--------|--------|
+| `JWT_ACCESS_TOKEN_EXPIRES` = 8 hours | ✅ Reasonable |
+| Refresh tokens | ❌ None |
+| Server-side logout / token blacklist | ❌ None |
+| Token revoked on password change | ❌ No |
+
+**Verdict for this item:** partial pass on expiry; **fail** on refresh tokens and on logout / password-change revocation.
+
+### Recommended hardening (if you want to fix it)
+
+1. Add a blocklist (e.g. Redis or a `revoked_tokens` table keyed by JWT `jti`).
+2. Register `@jwt.token_in_blocklist_loader`.
+3. Add `POST /api/auth/logout` that puts the current `jti` in the blocklist.
+4. On password change (and ideally ban/deactivate), revoke all tokens for that user (or bump a `token_version` claim and store it on the user).
+5. Optionally add short-lived access tokens + refresh tokens if you want sessions longer than 8 hours without keeping a long-lived access token.
+
+I can add a small `test_jwt_security.py` and/or sketch the logout + blocklist code if you want that next.
